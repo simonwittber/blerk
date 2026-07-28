@@ -174,99 +174,6 @@ AFTER DELETE ON symbols BEGIN
 END;
 """
 
-MIGRATIONS = [
-    "ALTER TABLE symbols ADD COLUMN end_line INTEGER",
-    "ALTER TABLE symbols ADD COLUMN snippet TEXT",
-    "CREATE INDEX IF NOT EXISTS idx_symbols_file_line ON symbols(file_id, line)",
-    """CREATE TABLE IF NOT EXISTS daemon_status (
-        daemon           TEXT    PRIMARY KEY,
-        status           TEXT    NOT NULL DEFAULT 'idle',
-        queue_depth      INTEGER NOT NULL DEFAULT 0,
-        processed_today  INTEGER NOT NULL DEFAULT 0,
-        rate_per_minute  REAL    NOT NULL DEFAULT 0.0,
-        eta_seconds      INTEGER,
-        last_heartbeat   INTEGER NOT NULL DEFAULT (unixepoch()),
-        last_error       TEXT
-    )""",
-    "ALTER TABLE files ADD COLUMN size INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE daemon_status ADD COLUMN retries_today INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE daemon_status ADD COLUMN failures_today INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE daemon_status ADD COLUMN eta_display TEXT",
-    "ALTER TABLE symbol_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 1",
-    "ALTER TABLE git_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 1",
-    "ALTER TABLE description_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 1",
-    "ALTER TABLE embedding_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 1",
-    "DROP TRIGGER IF EXISTS symbols_after_insert",
-    """CREATE TRIGGER symbols_after_insert
-        AFTER INSERT ON symbols
-        WHEN NEW.kind IN ('function', 'method')
-        BEGIN
-            INSERT INTO description_queue(symbol_id) VALUES (NEW.id);
-        END""",
-    """DELETE FROM description_queue WHERE symbol_id IN (
-        SELECT id FROM symbols WHERE kind NOT IN ('function', 'method')
-    )""",
-    """DELETE FROM embeddings WHERE id NOT IN (
-        SELECT MAX(id) FROM embeddings GROUP BY symbol_id, model
-    )""",
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_symbol_model ON embeddings(symbol_id, model)",
-    "DROP TRIGGER IF EXISTS symbols_after_insert",
-    """CREATE TRIGGER symbols_after_insert
-        AFTER INSERT ON symbols
-        WHEN NEW.kind IN ('function', 'method')
-        BEGIN
-            INSERT INTO description_queue(symbol_id) VALUES (NEW.id);
-            INSERT INTO embedding_queue(symbol_id) VALUES (NEW.id);
-        END""",
-    "CREATE TABLE IF NOT EXISTS symbol_refs (id INTEGER PRIMARY KEY, caller_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE, callee_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE)",
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbol_refs_pair ON symbol_refs(caller_id, callee_id)",
-    "CREATE INDEX IF NOT EXISTS idx_symbol_refs_callee ON symbol_refs(callee_id)",
-    # FTS5 table and sync triggers for hybrid BM25 + vector search.
-    """CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
-        name, description, snippet,
-        content=symbols, content_rowid=id
-    )""",
-    """CREATE TRIGGER IF NOT EXISTS symbols_fts_insert
-        AFTER INSERT ON symbols BEGIN
-            INSERT INTO symbols_fts(rowid, name, description, snippet)
-            VALUES (NEW.id, NEW.name, NEW.description, NEW.snippet);
-        END""",
-    """CREATE TRIGGER IF NOT EXISTS symbols_fts_update
-        AFTER UPDATE ON symbols BEGIN
-            INSERT INTO symbols_fts(symbols_fts, rowid, name, description, snippet)
-            VALUES ('delete', OLD.id, OLD.name, OLD.description, OLD.snippet);
-            INSERT INTO symbols_fts(rowid, name, description, snippet)
-            VALUES (NEW.id, NEW.name, NEW.description, NEW.snippet);
-        END""",
-    """CREATE TRIGGER IF NOT EXISTS symbols_fts_delete
-        AFTER DELETE ON symbols BEGIN
-            INSERT INTO symbols_fts(symbols_fts, rowid, name, description, snippet)
-            VALUES ('delete', OLD.id, OLD.name, OLD.description, OLD.snippet);
-        END""",
-    # Populate FTS index from existing rows on first migration.
-    "INSERT INTO symbols_fts(rowid, name, description, snippet) SELECT id, name, description, snippet FROM symbols",
-    # Restructure insert triggers: description for function/method only; embedding for all except heading.
-    "DROP TRIGGER IF EXISTS symbols_after_insert",
-    """CREATE TRIGGER IF NOT EXISTS symbols_description_insert
-        AFTER INSERT ON symbols
-        WHEN NEW.kind IN ('function', 'method')
-        BEGIN
-            INSERT INTO description_queue(symbol_id) VALUES (NEW.id);
-        END""",
-    """CREATE TRIGGER IF NOT EXISTS symbols_embedding_insert
-        AFTER INSERT ON symbols
-        WHEN NEW.kind != 'heading'
-        BEGIN
-            INSERT INTO embedding_queue(symbol_id) VALUES (NEW.id);
-        END""",
-    # Backfill embedding_queue for existing symbols that have no embedding yet.
-    """INSERT INTO embedding_queue(symbol_id)
-        SELECT s.id FROM symbols s
-        LEFT JOIN embeddings e ON e.symbol_id = s.id
-        WHERE e.id IS NULL AND s.kind != 'heading'""",
-    "ALTER TABLE symbols ADD COLUMN params TEXT",
-]
-
 
 class QueueRow(NamedTuple):
     id: int
@@ -297,18 +204,6 @@ def open_db(path: str) -> sqlite3.Connection:
 
 def _init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
-    _migrate(conn)
-
-
-def _migrate(conn: sqlite3.Connection) -> None:
-    for stmt in MIGRATIONS:
-        try:
-            conn.execute(stmt)
-        except sqlite3.OperationalError as e:
-            msg = str(e)
-            if "duplicate column" in msg or "already exists" in msg:
-                continue
-            raise
 
 
 def claim_batch(conn: sqlite3.Connection, queue: str, target_col: str, n: int) -> list[QueueRow]:
