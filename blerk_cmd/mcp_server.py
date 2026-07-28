@@ -1,23 +1,36 @@
 from __future__ import annotations
 
-import contextlib
-import io
 import os
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
 from blerk import config, db
 from blerk_cmd.browse import browse as _browse
-from blerk_cmd.query import embed, run_query, to_blob
+from blerk_cmd.query import format_compact, query_symbols, to_blob
 
 mcp = FastMCP("blerk")
 
 _N = 10
 _MIN_SCORE = 0.01
 
+_cfg = config.load(config.default_path())
+_conn = db.open_db(_cfg.db.path)
+
+
+async def _embed(endpoint: str, model: str, text: str) -> list[float]:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            endpoint + "/api/embeddings",
+            json={"model": model, "prompt": text},
+        )
+    if r.status_code != 200:
+        raise RuntimeError(f"ollama {r.status_code}: {r.text}")
+    return r.json()["embedding"]
+
 
 @mcp.tool()
-def search(
+async def search(
     query: str,
     file_extensions: list[str] = [],
 ) -> str:
@@ -29,21 +42,13 @@ def search(
             e.g. [".py"] for Python, [".cs"] for C#, [".go"] for Go.
             Leave empty to search across all indexed languages.
     """
-    cfg = config.load(config.default_path())
-    conn = db.open_db(cfg.db.path)
-    try:
-        vec = embed(cfg.embedder.endpoint, cfg.embedder.model, query)
-        blob = to_blob(vec)
-        buf = io.StringIO()
-        reranker_endpoint = cfg.reranker.endpoint if cfg.reranker.enabled else ""
-        reranker_model = cfg.reranker.model if cfg.reranker.enabled else ""
-        with contextlib.redirect_stdout(buf):
-            run_query(conn, blob, query, _N, False, file_extensions, _MIN_SCORE,
-                      reranker_endpoint=reranker_endpoint, reranker_model=reranker_model)
-        result = buf.getvalue().strip()
-        return result or "No results found."
-    finally:
-        conn.close()
+    vec = await _embed(_cfg.embedder.endpoint, _cfg.embedder.model, query)
+    blob = to_blob(vec)
+    reranker_endpoint = _cfg.reranker.endpoint if _cfg.reranker.enabled else ""
+    reranker_model = _cfg.reranker.model if _cfg.reranker.enabled else ""
+    results = query_symbols(_conn, blob, query, _N, file_extensions, _MIN_SCORE,
+                            reranker_endpoint=reranker_endpoint, reranker_model=reranker_model)
+    return format_compact(results) or "No results found."
 
 
 @mcp.tool()
@@ -61,12 +66,7 @@ def browse(directory: str = "", file_extensions: list[str] = []) -> str:
     """
     if not directory:
         directory = os.getcwd()
-    cfg = config.load(config.default_path())
-    conn = db.open_db(cfg.db.path)
-    try:
-        return _browse(conn, directory, file_extensions)
-    finally:
-        conn.close()
+    return _browse(_conn, directory, file_extensions)
 
 
 def main() -> None:

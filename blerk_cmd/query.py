@@ -4,6 +4,7 @@ import argparse
 import sqlite3
 import struct
 import sys
+from typing import NamedTuple
 
 import httpx
 
@@ -141,17 +142,29 @@ def _rerank(
         return rows
 
 
-def run_query(
+class QueryResult(NamedTuple):
+    id: int
+    name: str
+    kind: str
+    path: str
+    line: int
+    end_line: int
+    description: str
+    snippet: str
+    params: str
+    score: float
+
+
+def query_symbols(
     conn,
     blob: bytes,
     query_text: str,
     n: int,
-    refs: bool,
     exts: list[str] | None = None,
     min_score: float = 0.0,
     reranker_endpoint: str = "",
     reranker_model: str = "",
-) -> None:
+) -> list[QueryResult]:
     k = n * _OVERFETCH
     exts = exts or []
 
@@ -173,7 +186,7 @@ def run_query(
 
     top_ids = sorted(scores, key=lambda x: scores[x], reverse=True)[:n]
     if not top_ids:
-        return
+        return []
 
     placeholders = ",".join("?" * len(top_ids))
     rows = conn.execute(
@@ -200,21 +213,61 @@ def run_query(
     if reranker_endpoint and reranker_model:
         rows = _rerank(reranker_endpoint, reranker_model, query_text, rows)
 
-    for i, (id_, name, kind, path, line, end_line, desc, snippet, params) in enumerate(rows):
-        score = scores[id_]
-        sig = f"({params})" if params else ""
-        print(f"[{i + 1}] {kind} {name}{sig}")
-        print(f"path: {path}")
-        print(f"lines: {line}-{end_line}")
-        print(f"score: {score:.3f}")
-        if desc:
-            print(f"desc: {desc}")
-        if snippet:
-            indented = "\n".join("  " + l for l in snippet.splitlines())
-            print(f"snippet:\n{indented}")
+    return [
+        QueryResult(id_, name, kind, path, line, end_line, desc, snippet, params, scores[id_])
+        for id_, name, kind, path, line, end_line, desc, snippet, params in rows
+    ]
+
+
+def format_verbose(conn, results: list[QueryResult], refs: bool = False) -> str:
+    lines: list[str] = []
+    for i, r in enumerate(results):
+        sig = f"({r.params})" if r.params else ""
+        lines.append(f"[{i + 1}] {r.kind} {r.name}{sig}")
+        lines.append(f"path: {r.path}")
+        lines.append(f"lines: {r.line}-{r.end_line}")
+        lines.append(f"score: {r.score:.3f}")
+        if r.description:
+            lines.append(f"desc: {r.description}")
+        if r.snippet:
+            indented = "\n".join("  " + l for l in r.snippet.splitlines())
+            lines.append(f"snippet:\n{indented}")
         if refs:
-            print_refs(conn, id_)
-        print()
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                print_refs(conn, r.id)
+            lines.append(buf.getvalue().rstrip())
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def format_compact(results: list[QueryResult]) -> str:
+    lines: list[str] = []
+    for r in results:
+        sig = f"({r.params})" if r.params else ""
+        lines.append(f"{r.kind} {r.name}{sig}  {r.path}:{r.line}-{r.end_line}")
+        if r.description:
+            lines.append(f"  {r.description}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def run_query(
+    conn,
+    blob: bytes,
+    query_text: str,
+    n: int,
+    refs: bool,
+    exts: list[str] | None = None,
+    min_score: float = 0.0,
+    reranker_endpoint: str = "",
+    reranker_model: str = "",
+) -> None:
+    results = query_symbols(conn, blob, query_text, n, exts, min_score,
+                            reranker_endpoint, reranker_model)
+    if results:
+        print(format_verbose(conn, results, refs))
 
 
 def main(argv: list[str] | None = None) -> int:

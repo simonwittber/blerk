@@ -2,6 +2,23 @@
 
 blerk indexes source code into a local SQLite database and lets you search it with natural language. It watches folders, extracts symbols, enriches them with git metadata, generates LLM descriptions, and stores vector embeddings for semantic search.
 
+## Why blerk exists
+
+The primary use case is as a context source for AI coding assistants via the MCP server.
+
+When an AI assistant like Claude needs to understand a codebase, the naive approach is to read files directly: scan directories, open files, grep for symbols. This burns context window space fast and produces raw file content that the model must then parse and reason about.
+
+blerk inverts this. Symbols are pre-extracted, pre-described, and pre-embedded. When the assistant needs to understand how something works, it calls `search` or `browse` and gets back a compact, structured list of relevant symbols with descriptions and signatures. No file reads, no grep, no directory traversal in the prompt.
+
+This matters most for large codebases where the assistant cannot fit the relevant code into context in one shot. Instead of reading ten files to locate the right function, the assistant issues one search query and gets the answer directly. The saved context can be used for actual reasoning about the problem.
+
+The MCP tools blerk exposes are:
+
+- `search` - semantic + keyword hybrid search over all indexed symbols. Returns the most relevant functions, methods, and types for a query.
+- `browse` - lists all symbols in a directory with their signatures and line ranges. Useful for orienting in an unfamiliar package before doing targeted searches.
+
+blerk can also be used directly from the command line for human-readable search output.
+
 
 ## Requirements
 
@@ -108,6 +125,28 @@ To index once and exit without watching for changes:
 ```
 blerk-watch --scan
 ```
+
+## MCP server
+
+To use blerk as a context source for Claude or another MCP-compatible assistant, add it to your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "blerk": {
+      "command": "blerk-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+Once connected, the assistant can call:
+
+- `search(query, file_extensions?)` - find symbols by meaning
+- `browse(directory?, file_extensions?)` - list symbols in a directory
+
+The assistant decides when to call these based on what it needs. No prompting required.
 
 ## Query
 
