@@ -146,6 +146,14 @@ def test_is_ignored_dir_only(tmp_path: Path):
     assert is_ignored(build_path, False, sets) is False
 
 
+def test_is_ignored_file_inside_ignored_dir(tmp_path: Path):
+    root = str(tmp_path)
+    sets = [IgnoreSet(dir=root, patterns=[compile_pattern("build", True, False)])]
+    assert is_ignored(os.path.join(root, "build", "output.cs"), False, sets) is True
+    assert is_ignored(os.path.join(root, "build", "sub", "deep.cs"), False, sets) is True
+    assert is_ignored(os.path.join(root, "src", "main.cs"), False, sets) is False
+
+
 def test_is_ignored_has_slash_matches_rel(tmp_path: Path):
     root = str(tmp_path)
     sets = [IgnoreSet(dir=root, patterns=[compile_pattern("src/foo.txt", False, True)])]
@@ -175,7 +183,7 @@ def test_is_ignored_top_level_blerk_ignore():
     sets = [IgnoreSet(dir=root, patterns=patterns)]
 
     assert is_ignored(os.path.join(root, "node_modules"), True, sets) is True
-    assert is_ignored(os.path.join(root, "node_modules", "foo"), False, sets) is False
+    assert is_ignored(os.path.join(root, "node_modules", "foo"), False, sets) is True
     assert is_ignored(os.path.join(root, ".git"), True, sets) is True
     assert is_ignored(os.path.join(root, "foo.pyc"), False, sets) is True
     assert is_ignored(os.path.join(root, "app.log"), False, sets) is True

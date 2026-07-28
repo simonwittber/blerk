@@ -122,8 +122,14 @@ def is_ignored(path: str, is_dir: bool, sets: list[IgnoreSet]) -> bool:
         except ValueError:
             continue
         rel = _to_slash(rel).lower()
+        parts = rel.split("/")
         for p in s.patterns:
             if p.dir_only and not is_dir:
+                # Check if any ancestor directory matches the dir_only pattern.
+                for i, part in enumerate(parts[:-1]):
+                    ancestor_rel = "/".join(parts[: i + 1])
+                    if match_pattern(p, part, ancestor_rel):
+                        return True
                 continue
             if match_pattern(p, name, rel):
                 return True
