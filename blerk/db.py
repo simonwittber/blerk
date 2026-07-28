@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS symbols (
     line         INTEGER NOT NULL,
     end_line     INTEGER,
     snippet      TEXT,
+    params       TEXT,
     description  TEXT,
     described_at INTEGER
 );
@@ -263,6 +264,7 @@ MIGRATIONS = [
         SELECT s.id FROM symbols s
         LEFT JOIN embeddings e ON e.symbol_id = s.id
         WHERE e.id IS NULL AND s.kind != 'heading'""",
+    "ALTER TABLE symbols ADD COLUMN params TEXT",
 ]
 
 

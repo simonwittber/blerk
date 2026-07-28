@@ -1,6 +1,6 @@
 GO_DECL = """
-(function_declaration name: (identifier) @name) @func
-(method_declaration name: (field_identifier) @name) @method
+(function_declaration name: (identifier) @name parameters: (parameter_list) @params) @func
+(method_declaration name: (field_identifier) @name parameters: (parameter_list) @params) @method
 (type_declaration (type_spec name: (type_identifier) @name)) @type
 """
 
@@ -10,7 +10,7 @@ GO_CALL = """
 """
 
 PY_DECL = """
-(function_definition name: (identifier) @name) @func
+(function_definition name: (identifier) @name parameters: (parameters) @params) @func
 (class_definition name: (identifier) @name) @class
 """
 
@@ -20,9 +20,9 @@ PY_CALL = """
 """
 
 JS_DECL = """
-(function_declaration name: (identifier) @name) @func
+(function_declaration name: (identifier) @name parameters: (formal_parameters) @params) @func
 (class_declaration name: (identifier) @name) @class
-(method_definition name: (property_identifier) @name) @method
+(method_definition name: (property_identifier) @name parameters: (formal_parameters) @params) @method
 """
 
 JS_CALL = """
@@ -31,7 +31,7 @@ JS_CALL = """
 """
 
 C_DECL = """
-(function_definition declarator: (function_declarator declarator: (identifier) @name)) @func
+(function_definition declarator: (function_declarator declarator: (identifier) @name parameters: (parameter_list) @params)) @func
 (struct_specifier name: (type_identifier) @name body: (_)) @struct
 """
 
@@ -40,8 +40,8 @@ C_CALL = """
 """
 
 CPP_DECL = """
-(function_definition declarator: (function_declarator declarator: (identifier) @name)) @func
-(function_definition declarator: (function_declarator declarator: (qualified_identifier name: (identifier) @name))) @func
+(function_definition declarator: (function_declarator declarator: (identifier) @name parameters: (parameter_list) @params)) @func
+(function_definition declarator: (function_declarator declarator: (qualified_identifier name: (identifier) @name) parameters: (parameter_list) @params)) @func
 (class_specifier name: (type_identifier) @name body: (_)) @class
 (struct_specifier name: (type_identifier) @name body: (_)) @struct
 """
@@ -53,12 +53,12 @@ CPP_CALL = """
 """
 
 CS_DECL = """
-(method_declaration name: (identifier) @name) @method
+(method_declaration name: (identifier) @name parameters: (parameter_list) @params) @method
 (class_declaration name: (identifier) @name) @class
 (interface_declaration name: (identifier) @name) @interface
 (struct_declaration name: (identifier) @name) @struct
 (enum_declaration name: (identifier) @name) @enum
-(constructor_declaration name: (identifier) @name) @method
+(constructor_declaration name: (identifier) @name parameters: (parameter_list) @params) @method
 """
 
 CS_CALL = """

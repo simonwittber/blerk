@@ -117,6 +117,30 @@ def _rrf_score(rank: int) -> float:
     return 1.0 / (_RRF_K + rank + 1)
 
 
+def _rerank(
+    endpoint: str,
+    model: str,
+    query_text: str,
+    rows: list,
+) -> list:
+    docs = [
+        f"{kind} {name}({params})\n{path}\n{desc}\n{snippet}"
+        for _, name, kind, path, _, _, desc, snippet, params in rows
+    ]
+    try:
+        r = httpx.post(
+            endpoint + "/api/rerank",
+            json={"model": model, "query": query_text, "documents": docs},
+            timeout=30.0,
+        )
+        if r.status_code != 200:
+            return rows
+        results = sorted(r.json()["results"], key=lambda x: x["relevance_score"], reverse=True)
+        return [rows[x["index"]] for x in results]
+    except Exception:
+        return rows
+
+
 def run_query(
     conn,
     blob: bytes,
@@ -124,6 +148,9 @@ def run_query(
     n: int,
     refs: bool,
     exts: list[str] | None = None,
+    min_score: float = 0.0,
+    reranker_endpoint: str = "",
+    reranker_model: str = "",
 ) -> None:
     k = n * _OVERFETCH
     exts = exts or []
@@ -141,6 +168,9 @@ def run_query(
             score += _rrf_score(bm25[id_])
         scores[id_] = score
 
+    if min_score > 0.0:
+        scores = {id_: s for id_, s in scores.items() if s >= min_score}
+
     top_ids = sorted(scores, key=lambda x: scores[x], reverse=True)[:n]
     if not top_ids:
         return
@@ -156,7 +186,8 @@ def run_query(
             s.line,
             COALESCE(s.end_line, s.line),
             COALESCE(s.description, ''),
-            COALESCE(s.snippet, '')
+            COALESCE(s.snippet, ''),
+            COALESCE(s.params, '')
         FROM symbols s
         JOIN files f ON f.id = s.file_id
         WHERE s.id IN ({placeholders})
@@ -166,16 +197,21 @@ def run_query(
 
     rows.sort(key=lambda r: scores[r[0]], reverse=True)
 
-    for i, (id_, name, kind, path, line, end_line, desc, snippet) in enumerate(rows):
+    if reranker_endpoint and reranker_model:
+        rows = _rerank(reranker_endpoint, reranker_model, query_text, rows)
+
+    for i, (id_, name, kind, path, line, end_line, desc, snippet, params) in enumerate(rows):
         score = scores[id_]
-        print(f"[{i + 1}] {kind} {name}")
+        sig = f"({params})" if params else ""
+        print(f"[{i + 1}] {kind} {name}{sig}")
         print(f"path: {path}")
         print(f"lines: {line}-{end_line}")
         print(f"score: {score:.3f}")
         if desc:
-            print(f"description: {desc}")
+            print(f"desc: {desc}")
         if snippet:
-            print(f"snippet:\n{snippet}")
+            indented = "\n".join("  " + l for l in snippet.splitlines())
+            print(f"snippet:\n{indented}")
         if refs:
             print_refs(conn, id_)
         print()
@@ -197,7 +233,10 @@ def main(argv: list[str] | None = None) -> int:
     vec = embed(cfg.embedder.endpoint, cfg.embedder.model, args.query)
     blob = to_blob(vec)
 
-    run_query(conn, blob, args.query, args.n, args.refs, args.exts)
+    reranker_endpoint = cfg.reranker.endpoint if cfg.reranker.enabled else ""
+    reranker_model = cfg.reranker.model if cfg.reranker.enabled else ""
+    run_query(conn, blob, args.query, args.n, args.refs, args.exts,
+              reranker_endpoint=reranker_endpoint, reranker_model=reranker_model)
     return 0
 
 

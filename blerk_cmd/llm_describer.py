@@ -81,14 +81,14 @@ def beginning_of_day(t: datetime) -> datetime:
     return datetime(t.year, t.month, t.day, 0, 0, 0, 0, tzinfo=t.tzinfo)
 
 
-def run(cfg: config.Config, shutdown: threading.Event) -> None:
+def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_name: str = DAEMON) -> None:
     conn = db.open_db(cfg.db.path)
     try:
         db.recover_orphans(conn, QUEUE)
     except sqlite3.Error as e:
         log.warning("recover orphans: %s", e)
 
-    poll = cfg.llm.poll_ms / 1000.0
+    poll = llm.poll_ms / 1000.0
 
     processed_today = 0
     retries_today = 0
@@ -101,7 +101,7 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
         last_err = ""
 
         try:
-            rows = db.claim_batch(conn, QUEUE, TARGET_COL, cfg.llm.batch_size)
+            rows = db.claim_batch(conn, QUEUE, TARGET_COL, llm.batch_size)
         except sqlite3.Error as e:
             log.warning("claim batch: %s", e)
             status = "error"
@@ -133,14 +133,14 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
                     end_line=int(sym_row[4]),
                 )
 
-                prompt = build_prompt(sym, cfg.llm.prompt_template, cfg.llm.max_context_chars)
+                prompt = build_prompt(sym, llm.prompt_template, llm.max_context_chars)
 
                 try:
-                    desc = describe(cfg.llm.endpoint, cfg.llm.model, cfg.llm.api_key, prompt)
+                    desc = describe(llm.endpoint, llm.model, llm.api_key, prompt)
                 except Exception as e:
                     log.warning("describe %s: %s", sym.name, e)
                     try:
-                        failed = db.requeue(conn, QUEUE, row.id, str(e), cfg.llm.max_retries)
+                        failed = db.requeue(conn, QUEUE, row.id, str(e), llm.max_retries)
                     except sqlite3.Error as req_err:
                         log.warning("requeue %s %d: %s", QUEUE, row.id, req_err)
                         failed = False
@@ -156,7 +156,7 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
                     )
                 except sqlite3.Error as e:
                     try:
-                        failed = db.requeue(conn, QUEUE, row.id, str(e), cfg.llm.max_retries)
+                        failed = db.requeue(conn, QUEUE, row.id, str(e), llm.max_retries)
                     except sqlite3.Error as req_err:
                         log.warning("requeue %s %d: %s", QUEUE, row.id, req_err)
                         failed = False
@@ -200,7 +200,7 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
         try:
             db.write_heartbeat(
                 conn,
-                DAEMON,
+                daemon_name,
                 status,
                 queue_depth,
                 processed_today,
@@ -231,6 +231,10 @@ def main() -> None:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=config.default_path())
+    parser.add_argument("--endpoint", default="", help="override LLM endpoint URL")
+    parser.add_argument("--model", default="", help="override LLM model name")
+    parser.add_argument("--daemon-name", default="", dest="daemon_name",
+                        help="daemon name for status table (default: llm-describer)")
     args = parser.parse_args()
 
     try:
@@ -238,6 +242,13 @@ def main() -> None:
     except (FileNotFoundError, OSError) as e:
         log.error("load config: %s", e)
         sys.exit(1)
+
+    llm = cfg.llm[0] if cfg.llm else config.defaults().llm[0]
+    if args.endpoint:
+        llm = config.dc_replace(llm, endpoint=args.endpoint)
+    if args.model:
+        llm = config.dc_replace(llm, model=args.model)
+    daemon_name = args.daemon_name or DAEMON
 
     shutdown = threading.Event()
 
@@ -250,7 +261,7 @@ def main() -> None:
     except (ValueError, AttributeError):
         pass
 
-    run(cfg, shutdown)
+    run(cfg, llm, shutdown, daemon_name)
 
 
 if __name__ == "__main__":

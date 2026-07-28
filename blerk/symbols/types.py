@@ -19,6 +19,7 @@ class Symbol:
     line: int
     end_line: int
     snippet: str
+    params: str = ""
 
 
 @dataclass

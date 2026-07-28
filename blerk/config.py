@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace as dc_replace
 from pathlib import Path
 
 
@@ -57,14 +57,22 @@ class Embedder:
 
 
 @dataclass
+class Reranker:
+    endpoint: str = ""
+    model: str = ""
+    enabled: bool = False
+
+
+@dataclass
 class Config:
     secrets_file: str = ""
     db: DB = field(default_factory=DB)
     watch: Watch = field(default_factory=Watch)
     symbolizer: Symbolizer = field(default_factory=Symbolizer)
     git_enricher: GitEnricher = field(default_factory=GitEnricher)
-    llm: LLM = field(default_factory=LLM)
+    llm: list[LLM] = field(default_factory=list)
     embedder: Embedder = field(default_factory=Embedder)
+    reranker: Reranker = field(default_factory=Reranker)
 
 
 def defaults() -> Config:
@@ -84,7 +92,7 @@ def defaults() -> Config:
             poll_ms=2000,
             max_retries=3,
         ),
-        llm=LLM(
+        llm=[LLM(
             endpoint="http://localhost:11434",
             model="llama3.2",
             batch_size=5,
@@ -92,6 +100,11 @@ def defaults() -> Config:
             max_retries=3,
             max_context_chars=16000,
             prompt_template='Describe the following {kind} named "{name}" from {path}. Be concise and technical.\n\n{context}',
+        )],
+        reranker=Reranker(
+            endpoint="http://localhost:11434",
+            model="",
+            enabled=False,
         ),
         embedder=Embedder(
             endpoint="http://localhost:11434",
@@ -132,6 +145,18 @@ def load(path: str) -> Config:
     cfg = defaults()
     with open(path, "rb") as f:
         data = tomllib.load(f)
+
+    if "llm" in data:
+        llm_data = data.pop("llm")
+        if isinstance(llm_data, dict):
+            llm_data = [llm_data]
+        default_llm = defaults().llm[0]
+        cfg.llm = []
+        for d in llm_data:
+            entry = dc_replace(default_llm)
+            _merge(entry, d)
+            cfg.llm.append(entry)
+
     _merge(cfg, data)
 
     cfg.db.path = expand_home(cfg.db.path)
@@ -144,7 +169,9 @@ def load(path: str) -> Config:
             secrets = tomllib.load(f)
         api_key = secrets.get("llm", {}).get("api_key", "")
         if api_key:
-            cfg.llm.api_key = api_key
+            for llm in cfg.llm:
+                if not llm.api_key:
+                    llm.api_key = api_key
     except (FileNotFoundError, tomllib.TOMLDecodeError):
         pass
 

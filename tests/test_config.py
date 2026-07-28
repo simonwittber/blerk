@@ -55,13 +55,13 @@ max_retries = 9
     assert cfg.symbolizer.poll_ms == 500
     assert cfg.git_enricher.batch_size == 4
     assert cfg.git_enricher.poll_ms == 600
-    assert cfg.llm.endpoint == "http://ollama:11434"
-    assert cfg.llm.model == "codellama"
-    assert cfg.llm.batch_size == 5
-    assert cfg.llm.poll_ms == 700
-    assert cfg.llm.max_retries == 6
-    assert cfg.llm.max_context_chars == 8000
-    assert cfg.llm.prompt_template == "T {name}"
+    assert cfg.llm[0].endpoint == "http://ollama:11434"
+    assert cfg.llm[0].model == "codellama"
+    assert cfg.llm[0].batch_size == 5
+    assert cfg.llm[0].poll_ms == 700
+    assert cfg.llm[0].max_retries == 6
+    assert cfg.llm[0].max_context_chars == 8000
+    assert cfg.llm[0].prompt_template == "T {name}"
     assert cfg.embedder.endpoint == "http://ollama:11434"
     assert cfg.embedder.model == "nomic"
     assert cfg.embedder.batch_size == 7
@@ -84,12 +84,12 @@ path = "/abs/db.sqlite"
     assert cfg.git_enricher.batch_size == 20
     assert cfg.git_enricher.poll_ms == 2000
     assert cfg.git_enricher.max_retries == 3
-    assert cfg.llm.max_context_chars == 16000
-    assert cfg.llm.endpoint == "http://localhost:11434"
-    assert cfg.llm.model == "llama3.2"
-    assert cfg.llm.batch_size == 5
-    assert cfg.llm.poll_ms == 3000
-    assert cfg.llm.max_retries == 3
+    assert cfg.llm[0].max_context_chars == 16000
+    assert cfg.llm[0].endpoint == "http://localhost:11434"
+    assert cfg.llm[0].model == "llama3.2"
+    assert cfg.llm[0].batch_size == 5
+    assert cfg.llm[0].poll_ms == 3000
+    assert cfg.llm[0].max_retries == 3
     assert cfg.embedder.vector_dim == 768
     assert cfg.embedder.max_embed_chars == 8000
     assert cfg.embedder.endpoint == "http://localhost:11434"
@@ -159,7 +159,7 @@ def test_defaults_values() -> None:
     assert d.secrets_file == "~/.blerk/secrets.toml"
     assert d.db.path == "~/.blerk/blerk.db"
     assert d.symbolizer.engine == "regexp"
-    assert d.llm.model == "llama3.2"
+    assert d.llm[0].model == "llama3.2"
     assert d.embedder.vector_dim == 768
 
 
@@ -173,7 +173,7 @@ secrets_file = "{secrets_path.as_posix()}"
 path = "/abs/db.sqlite"
 """
     cfg = config.load(write_cfg(tmp_path, toml))
-    assert cfg.llm.api_key == "sk-test-123"
+    assert cfg.llm[0].api_key == "sk-test-123"
 
 
 def test_secrets_missing_ok(tmp_path: Path) -> None:
@@ -185,7 +185,7 @@ secrets_file = "{missing.as_posix()}"
 path = "/abs/db.sqlite"
 """
     cfg = config.load(write_cfg(tmp_path, toml))
-    assert cfg.llm.api_key == ""
+    assert cfg.llm[0].api_key == ""
 
 
 def test_secrets_empty_api_key_does_not_override(tmp_path: Path) -> None:
@@ -201,4 +201,4 @@ path = "/abs/db.sqlite"
 api_key = "from-config"
 """
     cfg = config.load(write_cfg(tmp_path, toml))
-    assert cfg.llm.api_key == "from-config"
+    assert cfg.llm[0].api_key == "from-config"

@@ -122,6 +122,21 @@ def _find_end(lang: str, lines: list[str], start_idx: int) -> int:
     return find_end_brace(lines, start_idx)
 
 
+def _extract_params(line: str) -> str:
+    start = line.find("(")
+    if start == -1:
+        return ""
+    depth = 0
+    for j in range(start, len(line)):
+        if line[j] == "(":
+            depth += 1
+        elif line[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return line[start + 1:j].strip()
+    return line[start + 1:].strip()
+
+
 def extract_from_lines(lang: str, lines: list[str]) -> list[Symbol]:
     patterns = LANG_PATTERNS.get(lang)
     if not patterns:
@@ -142,7 +157,8 @@ def extract_from_lines(lang: str, lines: list[str]) -> list[Symbol]:
                 continue
             end_line = _find_end(lang, lines, i)
             snippet = "\n".join(lines[i:end_line])
-            syms.append(Symbol(name=name, kind=p.kind, line=i + 1, end_line=end_line, snippet=snippet))
+            params = _extract_params(line) if p.kind in ("function", "method") else ""
+            syms.append(Symbol(name=name, kind=p.kind, line=i + 1, end_line=end_line, snippet=snippet, params=params))
             break
     return syms
 

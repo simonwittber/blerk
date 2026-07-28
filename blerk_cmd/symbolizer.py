@@ -47,9 +47,9 @@ def process_symbols(
         inserted_ids: list[int] = []
         for sym in syms:
             cur = conn.execute(
-                "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet) "
-                "VALUES(?,?,?,?,?,?) RETURNING id",
-                (row.target_id, sym.name, sym.kind, sym.line, sym.end_line, sym.snippet),
+                "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, params) "
+                "VALUES(?,?,?,?,?,?,?) RETURNING id",
+                (row.target_id, sym.name, sym.kind, sym.line, sym.end_line, sym.snippet, sym.params or None),
             )
             r = cur.fetchone()
             if r is None:

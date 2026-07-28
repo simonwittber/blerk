@@ -114,6 +114,7 @@ def extract_decls(root: Any, src: bytes, ld: LangDef) -> list[Symbol]:
     for _pattern_idx, captures in matches:
         name_node = None
         def_node = None
+        params_node = None
         kind = ""
         for cap_name, nodes in captures.items():
             if not nodes:
@@ -121,6 +122,8 @@ def extract_decls(root: Any, src: bytes, ld: LangDef) -> list[Symbol]:
             node = nodes[0]
             if cap_name == "name":
                 name_node = node
+            elif cap_name == "params":
+                params_node = node
             elif cap_name == "func":
                 def_node = node
                 kind = "function"
@@ -147,12 +150,18 @@ def extract_decls(root: Any, src: bytes, ld: LangDef) -> list[Symbol]:
         name = _node_text(name_node, src)
         if ld.key == "py" and kind == "function" and is_inside_class(def_node):
             kind = "method"
+        params = ""
+        if params_node is not None:
+            raw = _node_text(params_node, src).strip()
+            inner = raw[1:-1] if raw.startswith("(") else raw
+            params = " ".join(inner.split())
         out.append(Symbol(
             name=name,
             kind=kind,
             line=def_node.start_point[0] + 1,
             end_line=def_node.end_point[0] + 1,
             snippet=snippet_content(def_node, src),
+            params=params,
         ))
     return out
 

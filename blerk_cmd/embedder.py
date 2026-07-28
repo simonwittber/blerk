@@ -34,6 +34,17 @@ def embed(endpoint: str, model: str, text: str) -> list[float]:
     return r.json()["embedding"]
 
 
+def embed_with_truncation(endpoint: str, model: str, text: str) -> list[float]:
+    while text:
+        try:
+            return embed(endpoint, model, text)
+        except RuntimeError as e:
+            if "context length" not in str(e).lower():
+                raise
+            text = text[: len(text) // 2]
+    raise RuntimeError("text truncated to empty string")
+
+
 def to_float32_blob(vec: list[float]) -> bytes:
     return struct.pack(f"<{len(vec)}f", *vec)
 
@@ -73,8 +84,8 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
             status = "running"
             for row in rows:
                 sym_row = conn.execute(
-                    "SELECT name, COALESCE(description, ''), COALESCE(snippet, '') "
-                    "FROM symbols WHERE id=?",
+                    "SELECT s.name, COALESCE(s.description, ''), COALESCE(s.snippet, ''), f.path, COALESCE(s.params, ''), s.kind "
+                    "FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id=?",
                     (row.target_id,),
                 ).fetchone()
                 if not sym_row:
@@ -84,12 +95,30 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
                         log.warning("mark done %s %d: %s", QUEUE, row.id, e)
                     continue
 
-                name, description, snippet = sym_row[0], sym_row[1], sym_row[2]
-                parts = [name]
+                name, description, snippet, path, params, kind = sym_row
+
+                callers = conn.execute(
+                    "SELECT s.name FROM symbol_refs r JOIN symbols s ON s.id = r.caller_id "
+                    "WHERE r.callee_id=? LIMIT 10",
+                    (row.target_id,),
+                ).fetchall()
+                callees = conn.execute(
+                    "SELECT s.name FROM symbol_refs r JOIN symbols s ON s.id = r.callee_id "
+                    "WHERE r.caller_id=? LIMIT 10",
+                    (row.target_id,),
+                ).fetchall()
+
+                sig = f"({params})" if params else ""
+                parts = [f"{name}{sig}"]
                 if description:
                     parts.append(": ")
                     parts.append(description)
-                if snippet:
+                parts.append(f"\nin {path}")
+                if callers:
+                    parts.append("\ncallers: " + ", ".join(r[0] for r in callers))
+                if callees:
+                    parts.append("\ncallees: " + ", ".join(r[0] for r in callees))
+                if snippet and kind in ("function", "method"):
                     parts.append("\n\n")
                     parts.append(snippet)
                 text = "".join(parts)
@@ -97,7 +126,7 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
                     text = text[:cfg.embedder.max_embed_chars]
 
                 try:
-                    vec = embed(cfg.embedder.endpoint, cfg.embedder.model, text)
+                    vec = embed_with_truncation(cfg.embedder.endpoint, cfg.embedder.model, text)
                 except Exception as e:
                     log.warning("embed %s: %s", name, e)
                     try:

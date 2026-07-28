@@ -152,8 +152,8 @@ def test_run_query_block_format(tmp_path, capsys):
     assert "path: src/main.py" in out
     assert "lines: 10-25" in out
     assert "score:" in out
-    assert "description: does alpha stuff" in out
-    assert "snippet:\ndef alpha(): pass" in out
+    assert "desc: does alpha stuff" in out
+    assert "snippet:\n  def alpha(): pass" in out
 
 
 def test_run_query_no_description_or_snippet(tmp_path, capsys):

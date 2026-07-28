@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 from blerk import config
+
+PID_FILE = Path.home() / ".blerk" / "blerk.pid"
 
 
 MIN_BACKOFF = 1.0
@@ -19,7 +23,6 @@ DAEMONS = [
     ("watch-folder", "blerk_cmd.watch_folder"),
     ("symbolizer", "blerk_cmd.symbolizer"),
     ("git-enricher", "blerk_cmd.git_enricher"),
-    ("llm-describer", "blerk_cmd.llm_describer"),
     ("embedder", "blerk_cmd.embedder"),
 ]
 
@@ -88,7 +91,7 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        config.load(args.config)
+        cfg = config.load(args.config)
     except (FileNotFoundError, OSError) as e:
         log.error("[hub] load config: %s", e)
         sys.exit(1)
@@ -110,23 +113,35 @@ def main() -> None:
     except (ValueError, AttributeError):
         pass
 
+    cfg = config.load(args.config)
+
     threads: list[threading.Thread] = []
     for name, module in DAEMONS:
         argv = build_argv(module, args.config)
-        t = threading.Thread(
-            target=managed,
-            args=(name, argv, shutdown),
-            name=name,
-            daemon=False,
-        )
+        t = threading.Thread(target=managed, args=(name, argv, shutdown), name=name, daemon=False)
         t.start()
         threads.append(t)
 
+    llms = cfg.llm
+    for i, llm in enumerate(llms):
+        daemon_name = "llm-describer" if len(llms) == 1 else f"llm-describer-{i}"
+        argv = build_argv("blerk_cmd.llm_describer", args.config) + [
+            "--endpoint", llm.endpoint,
+            "--model", llm.model,
+            "--daemon-name", daemon_name,
+        ]
+        t = threading.Thread(target=managed, args=(daemon_name, argv, shutdown), name=daemon_name, daemon=False)
+        t.start()
+        threads.append(t)
+
+    PID_FILE.write_text(str(os.getpid()))
     try:
         while not shutdown.is_set():
             shutdown.wait(timeout=1.0)
     except KeyboardInterrupt:
         shutdown.set()
+    finally:
+        PID_FILE.unlink(missing_ok=True)
 
     for t in threads:
         t.join(timeout=10)

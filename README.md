@@ -1,15 +1,13 @@
-# blerk
+# blerk - a local RAG for source code
 
 blerk indexes source code into a local SQLite database and lets you search it with natural language. It watches folders, extracts symbols, enriches them with git metadata, generates LLM descriptions, and stores vector embeddings for semantic search.
 
-It is a Python port of [unirag](https://github.com/wittber/unirag), preserving the same architecture and SQLite schema while removing the CGO/MSYS2/MinGW build requirements on Windows.
 
 ## Requirements
 
 - Python 3.11+
 - [Ollama](https://ollama.com) running locally (for embeddings and optional LLM descriptions)
 
-No compiler toolchain required. All dependencies are pure-Python wheels.
 
 ## Install
 
