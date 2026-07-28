@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blerk"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "sqlite-vec",
+    "watchdog",
+    "tree-sitter",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "tree-sitter-c-sharp",
+    "tree-sitter-go",
+    "httpx",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+blerk            = "blerk_cmd.hub:main"
+blerk-init       = "blerk_cmd.init:main"
+blerk-hub        = "blerk_cmd.hub:main"
+blerk-watch      = "blerk_cmd.watch_folder:main"
+blerk-symbolize  = "blerk_cmd.symbolizer:main"
+blerk-git        = "blerk_cmd.git_enricher:main"
+blerk-describe   = "blerk_cmd.llm_describer:main"
+blerk-embed      = "blerk_cmd.embedder:main"
+blerk-query      = "blerk_cmd.query:main"
+
+[tool.setuptools.packages.find]
+include = ["blerk*", "blerk_cmd*"]

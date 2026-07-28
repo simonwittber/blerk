@@ -1,0 +1,58 @@
+# Path to secrets file (LLM API key lives here, keep out of version control).
+secrets_file = "~/.blerk/secrets.toml"
+
+[db]
+# SQLite database file.
+path = "~/.blerk/blerk.db"
+
+[watch]
+# Folders to index. Supports ~ expansion.
+folders = [
+    "~/git/myproject",
+]
+# Milliseconds to wait after a file event before processing (coalesces rapid writes).
+debounce_ms = 100
+# Gitignore-format file listing paths to skip.
+ignore_file = "~/.blerk/ignore"
+
+[symbolizer]
+# Symbol extraction engine: "regexp" (fast, no call refs) or "treesitter" (accurate, extracts call graph).
+engine = "regexp"
+# Symbols per batch claimed from the queue.
+batch_size = 10
+# Milliseconds between queue polls.
+poll_ms = 1000
+# Maximum retry attempts before marking a queue item failed.
+max_retries = 3
+# Skip LLM description for symbols shorter than this many lines.
+min_describe_lines = 5
+
+[git_enricher]
+batch_size = 20
+poll_ms = 2000
+max_retries = 3
+
+[llm]
+# Endpoint for LLM descriptions. Accepts any OpenAI-compatible API (Ollama, OpenAI, etc.).
+endpoint = "http://localhost:11434"
+model = "llama3.2"
+batch_size = 5
+poll_ms = 3000
+max_retries = 3
+# Maximum characters of source context included in the description prompt.
+max_context_chars = 16000
+# Prompt template. Available variables: {kind}, {name}, {path}, {context}.
+prompt_template = """Describe the following {kind} named "{name}" from {path}. Be concise and technical.
+
+{context}"""
+
+[embedder]
+# Endpoint for vector embeddings. Must support Ollama's native /api/embeddings format.
+endpoint = "http://localhost:11434"
+model = "nomic-embed-text"
+batch_size = 10
+poll_ms = 2000
+max_retries = 3
+# Maximum characters of symbol text sent to the embedding model.
+# nomic-embed-text has an 8192-token context; ~2000 chars is a safe ceiling for dense code.
+max_embed_chars = 2000

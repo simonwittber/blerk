@@ -1,0 +1,224 @@
+from __future__ import annotations
+
+import argparse
+import logging
+import signal
+import sqlite3
+import struct
+import sys
+import threading
+import time
+from datetime import datetime
+
+import httpx
+
+from blerk import config, db
+
+
+QUEUE = "embedding_queue"
+TARGET_COL = "symbol_id"
+DAEMON = "embedder"
+
+log = logging.getLogger("embedder")
+
+_client = httpx.Client(timeout=30.0)
+
+
+def embed(endpoint: str, model: str, text: str) -> list[float]:
+    r = _client.post(
+        endpoint + "/api/embeddings",
+        json={"model": model, "prompt": text},
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"ollama {r.status_code}: {r.text}")
+    return r.json()["embedding"]
+
+
+def to_float32_blob(vec: list[float]) -> bytes:
+    return struct.pack(f"<{len(vec)}f", *vec)
+
+
+def beginning_of_day(t: datetime) -> datetime:
+    return datetime(t.year, t.month, t.day, 0, 0, 0, 0, tzinfo=t.tzinfo)
+
+
+def run(cfg: config.Config, shutdown: threading.Event) -> None:
+    conn = db.open_db(cfg.db.path)
+    try:
+        db.recover_orphans(conn, QUEUE)
+    except sqlite3.Error as e:
+        log.warning("recover orphans: %s", e)
+
+    poll = cfg.embedder.poll_ms / 1000.0
+
+    processed_today = 0
+    retries_today = 0
+    failures_today = 0
+    rate_window: list[float] = []
+    day_start = beginning_of_day(datetime.now())
+
+    while not shutdown.is_set():
+        status = "idle"
+        last_err = ""
+
+        try:
+            rows = db.claim_batch(conn, QUEUE, TARGET_COL, cfg.embedder.batch_size)
+        except sqlite3.Error as e:
+            log.warning("claim batch: %s", e)
+            status = "error"
+            last_err = str(e)
+            rows = []
+
+        if rows:
+            status = "running"
+            for row in rows:
+                sym_row = conn.execute(
+                    "SELECT name, COALESCE(description, ''), COALESCE(snippet, '') "
+                    "FROM symbols WHERE id=?",
+                    (row.target_id,),
+                ).fetchone()
+                if not sym_row:
+                    try:
+                        db.mark_done(conn, QUEUE, row.id)
+                    except sqlite3.Error as e:
+                        log.warning("mark done %s %d: %s", QUEUE, row.id, e)
+                    continue
+
+                name, description, snippet = sym_row[0], sym_row[1], sym_row[2]
+                parts = [name]
+                if description:
+                    parts.append(": ")
+                    parts.append(description)
+                if snippet:
+                    parts.append("\n\n")
+                    parts.append(snippet)
+                text = "".join(parts)
+                if cfg.embedder.max_embed_chars > 0 and len(text) > cfg.embedder.max_embed_chars:
+                    text = text[:cfg.embedder.max_embed_chars]
+
+                try:
+                    vec = embed(cfg.embedder.endpoint, cfg.embedder.model, text)
+                except Exception as e:
+                    log.warning("embed %s: %s", name, e)
+                    try:
+                        failed = db.requeue(conn, QUEUE, row.id, str(e), cfg.embedder.max_retries)
+                    except sqlite3.Error as req_err:
+                        log.warning("requeue %s %d: %s", QUEUE, row.id, req_err)
+                        failed = False
+                    retries_today += 1
+                    if failed:
+                        failures_today += 1
+                    continue
+
+                blob = to_float32_blob(vec)
+
+                try:
+                    conn.execute(
+                        "INSERT INTO embeddings(symbol_id, model, vector, embedded_at) "
+                        "VALUES(?, ?, ?, unixepoch()) "
+                        "ON CONFLICT(symbol_id, model) DO UPDATE SET "
+                        "vector = excluded.vector, "
+                        "embedded_at = excluded.embedded_at",
+                        (row.target_id, cfg.embedder.model, blob),
+                    )
+                except sqlite3.Error as e:
+                    try:
+                        failed = db.requeue(conn, QUEUE, row.id, str(e), cfg.embedder.max_retries)
+                    except sqlite3.Error as req_err:
+                        log.warning("requeue %s %d: %s", QUEUE, row.id, req_err)
+                        failed = False
+                    retries_today += 1
+                    if failed:
+                        failures_today += 1
+                    continue
+
+                try:
+                    db.mark_done(conn, QUEUE, row.id)
+                except sqlite3.Error as e:
+                    log.warning("mark done %s %d: %s", QUEUE, row.id, e)
+
+                now = datetime.now()
+                if (now - day_start).total_seconds() >= 24 * 3600:
+                    day_start = beginning_of_day(now)
+                    processed_today = 0
+                    retries_today = 0
+                    failures_today = 0
+                rate_window.append(time.monotonic())
+                processed_today += 1
+
+        cutoff = time.monotonic() - 60.0
+        while rate_window and rate_window[0] < cutoff:
+            rate_window.pop(0)
+
+        try:
+            queue_depth = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM {QUEUE} WHERE status='pending'"
+                ).fetchone()[0]
+            )
+        except sqlite3.Error:
+            queue_depth = 0
+
+        rate = float(len(rate_window))
+        eta: int | None = None
+        if rate > 0:
+            eta = int(queue_depth / rate * 60)
+
+        try:
+            db.write_heartbeat(
+                conn,
+                DAEMON,
+                status,
+                queue_depth,
+                processed_today,
+                retries_today,
+                failures_today,
+                rate,
+                eta,
+                last_err,
+            )
+        except sqlite3.Error as e:
+            log.warning("heartbeat: %s", e)
+
+        if shutdown.wait(timeout=poll):
+            break
+
+    try:
+        conn.close()
+    except sqlite3.Error:
+        pass
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(message)s",
+        datefmt="%Y/%m/%d %H:%M:%S",
+    )
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=config.default_path())
+    args = parser.parse_args()
+
+    try:
+        cfg = config.load(args.config)
+    except (FileNotFoundError, OSError) as e:
+        log.error("load config: %s", e)
+        sys.exit(1)
+
+    shutdown = threading.Event()
+
+    def _sig(_signum, _frame):
+        shutdown.set()
+
+    signal.signal(signal.SIGINT, _sig)
+    try:
+        signal.signal(signal.SIGTERM, _sig)
+    except (ValueError, AttributeError):
+        pass
+
+    run(cfg, shutdown)
+
+
+if __name__ == "__main__":
+    main()
