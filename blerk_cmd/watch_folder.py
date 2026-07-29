@@ -296,7 +296,8 @@ def watch_folder(
 def start_heartbeat_thread(conn: sqlite3.Connection, shutdown: threading.Event) -> threading.Thread:
     def run() -> None:
         def write_stats(processed_today: int) -> None:
-            row = conn.execute("SELECT COUNT(*) FROM files").fetchone()
+            with _conn_lock:
+                row = conn.execute("SELECT COUNT(*) FROM files").fetchone()
             total = int(row[0]) if row else 0
             try:
                 db.write_heartbeat(

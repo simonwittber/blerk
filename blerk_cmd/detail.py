@@ -33,6 +33,8 @@ def detail(conn, name: str, path_filter: str = "") -> str:
         return f"No symbol named '{name}' found."
 
     lines: list[str] = []
+    if len(rows) > 1:
+        lines.append(f"({len(rows)} symbols named '{name}', showing all)\n")
     for id_, sym_name, kind, path, line, end_line, desc, snippet, sig_params in rows:
         sig = f"({sig_params})" if sig_params else ""
         lines.append(f"{kind} {sym_name}{sig}")

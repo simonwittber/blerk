@@ -33,6 +33,8 @@ blerk-git        = "blerk_cmd.git_enricher:main"
 blerk-describe   = "blerk_cmd.llm_describer:main"
 blerk-embed      = "blerk_cmd.embedder:main"
 blerk-mcp        = "blerk_cmd.mcp_server:main"
+blerk-rescan     = "blerk_cmd.rescan:main"
+blerk-lint       = "blerk_cmd.lint:main"
 
 [tool.setuptools.packages.find]
 include = ["blerk*", "blerk_cmd*"]

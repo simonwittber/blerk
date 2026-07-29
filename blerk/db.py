@@ -116,6 +116,16 @@ CREATE TABLE IF NOT EXISTS symbol_refs (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_symbol_refs_pair ON symbol_refs(caller_id, callee_id);
 CREATE INDEX IF NOT EXISTS idx_symbol_refs_callee ON symbol_refs(callee_id);
+CREATE INDEX IF NOT EXISTS idx_symbol_refs_caller ON symbol_refs(caller_id);
+
+CREATE TABLE IF NOT EXISTS external_refs (
+    id          INTEGER PRIMARY KEY,
+    caller_id   INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    callee_name TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_external_refs_caller ON external_refs(caller_id);
+CREATE INDEX IF NOT EXISTS idx_external_refs_callee_name ON external_refs(callee_name);
 
 CREATE TRIGGER IF NOT EXISTS files_after_insert
 AFTER INSERT ON files BEGIN

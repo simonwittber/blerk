@@ -82,6 +82,14 @@ def process_symbols(
                         )
                     except sqlite3.Error as e:
                         log.warning("insert symbol_ref %d->%d: %s", caller_id, callee_id, e)
+                elif callee_id is None:
+                    try:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO external_refs(caller_id, callee_name) VALUES(?,?)",
+                            (caller_id, ref.callee_name),
+                        )
+                    except sqlite3.Error as e:
+                        log.warning("insert external_ref %d->%s: %s", caller_id, ref.callee_name, e)
 
         min_lines = cfg.symbolizer.min_describe_lines
         if min_lines > 0:

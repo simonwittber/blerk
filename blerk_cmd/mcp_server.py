@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 import httpx
 from mcp.server.fastmcp import FastMCP
 
@@ -17,7 +15,6 @@ _N = 10
 _MIN_SCORE = 0.01
 
 _cfg = config.load(config.default_path())
-_conn = db.open_db(_cfg.db.path)
 
 
 async def _embed(endpoint: str, model: str, text: str) -> list[float]:
@@ -44,13 +41,20 @@ async def search(
             e.g. [".py"] for Python, [".cs"] for C#, [".go"] for Go.
             Leave empty to search across all indexed languages.
     """
-    vec = await _embed(_cfg.embedder.endpoint, _cfg.embedder.model, query)
+    try:
+        vec = await _embed(_cfg.embedder.endpoint, _cfg.embedder.model, query)
+    except Exception as e:
+        return f"Embedding service unavailable: {e}"
     blob = to_blob(vec)
     reranker_endpoint = _cfg.reranker.endpoint if _cfg.reranker.enabled else ""
     reranker_model = _cfg.reranker.model if _cfg.reranker.enabled else ""
-    results = query_symbols(_conn, blob, query, _N, file_extensions, _MIN_SCORE,
-                            reranker_endpoint=reranker_endpoint, reranker_model=reranker_model)
-    return format_compact(results) or "No results found."
+    conn = db.open_db(_cfg.db.path)
+    try:
+        results = query_symbols(conn, blob, query, _N, file_extensions, _MIN_SCORE,
+                                reranker_endpoint=reranker_endpoint, reranker_model=reranker_model)
+        return format_compact(results) or "No results found."
+    finally:
+        conn.close()
 
 
 @mcp.tool()
@@ -58,17 +62,24 @@ def browse(directory: str = "", file_extensions: list[str] = []) -> str:
     """List all indexed source files and their symbols.
 
     Useful for orienting within a codebase before doing targeted searches.
-    When directory is omitted, restricts to the current working directory.
+    When directory is omitted, lists all indexed files.
 
     Args:
         directory: Absolute or relative path to restrict results to.
-            Defaults to the current working directory.
+            Leave empty to list all indexed files.
         file_extensions: Restrict to specific file types, e.g. [".py"], [".cs"].
             Leave empty to list all indexed files.
     """
-    if not directory:
-        directory = os.getcwd()
-    return _browse(_conn, directory, file_extensions)
+    conn = db.open_db(_cfg.db.path)
+    try:
+        result = _browse(conn, directory, file_extensions)
+    finally:
+        conn.close()
+    lines = result.splitlines()
+    if len(lines) > 500:
+        lines = lines[:500]
+        lines.append("... (truncated, use file_extensions or directory to narrow results)")
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -79,11 +90,18 @@ def deps(directory: str = "") -> str:
     Paths are relative to the given directory. Requires treesitter engine.
 
     Args:
-        directory: Directory to scope the graph to. Defaults to the current working directory.
+        directory: Directory to scope the graph to. Leave empty to show the full graph.
     """
-    if not directory:
-        directory = os.getcwd()
-    return _deps(_conn, directory)
+    conn = db.open_db(_cfg.db.path)
+    try:
+        result = _deps(conn, directory)
+    finally:
+        conn.close()
+    lines = result.splitlines()
+    if len(lines) > 300:
+        lines = lines[:300]
+        lines.append("... (truncated, use directory to narrow results)")
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -97,7 +115,11 @@ def detail(name: str, file_path: str = "") -> str:
         file_path: Optional path substring to disambiguate when the same name
             appears in multiple files, e.g. "watcher.py".
     """
-    return _detail(_conn, name, file_path)
+    conn = db.open_db(_cfg.db.path)
+    try:
+        return _detail(conn, name, file_path)
+    finally:
+        conn.close()
 
 
 def main() -> None:

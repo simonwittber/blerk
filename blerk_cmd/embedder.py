@@ -35,7 +35,12 @@ def embed(endpoint: str, model: str, text: str) -> list[float]:
 
 
 def embed_with_truncation(endpoint: str, model: str, text: str) -> list[float]:
+    max_iters = 20
+    iters = 0
     while text:
+        if iters >= max_iters:
+            raise RuntimeError("embed_with_truncation exceeded max iterations")
+        iters += 1
         try:
             return embed(endpoint, model, text)
         except RuntimeError as e:

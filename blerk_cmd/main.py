@@ -13,6 +13,8 @@ _DISPATCH = {
     "browse": "blerk_cmd.browse",
     "detail": "blerk_cmd.detail",
     "deps":   "blerk_cmd.deps",
+    "lint":   "blerk_cmd.lint",
+    "rescan": "blerk_cmd.rescan",
 }
 
 _HELP = {
@@ -24,6 +26,8 @@ _HELP = {
     "browse": "Browse indexed files and symbols",
     "detail": "Show full detail for a symbol by name",
     "deps":   "Show file-level dependency graph",
+    "lint":   "Lint code using the blerk index",
+    "rescan": "Re-queue files for symbolization",
     "add":    "Add a folder to the watch list",
     "remove": "Remove a folder from the watch list",
 }
