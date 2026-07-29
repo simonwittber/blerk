@@ -42,19 +42,45 @@ def process_symbols(
 ) -> None:
     conn.execute("BEGIN")
     try:
+        # Snapshot descriptions before delete so unchanged snippets can be carried forward.
+        old_descs: dict[tuple[str, str], tuple[str | None, int | None]] = {}
+        for r_name, r_kind, r_snippet, r_desc, r_at in conn.execute(
+            "SELECT name, kind, snippet, description, described_at FROM symbols WHERE file_id=?",
+            (row.target_id,),
+        ).fetchall():
+            if r_desc is not None and r_snippet is not None:
+                old_descs[(r_name, r_kind)] = (r_snippet, r_desc, r_at)
+
         conn.execute("DELETE FROM symbols WHERE file_id=?", (row.target_id,))
 
         inserted_ids: list[int] = []
+        carried_ids: list[int] = []
         for sym in syms:
+            old = old_descs.get((sym.name, sym.kind))
+            carry_desc: str | None = None
+            carry_at: int | None = None
+            if old is not None and old[0] == sym.snippet:
+                carry_desc, carry_at = old[1], old[2]
+
             cur = conn.execute(
-                "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, params) "
-                "VALUES(?,?,?,?,?,?,?) RETURNING id",
-                (row.target_id, sym.name, sym.kind, sym.line, sym.end_line, sym.snippet, sym.params or None),
+                "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, params, description, described_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?) RETURNING id",
+                (row.target_id, sym.name, sym.kind, sym.line, sym.end_line, sym.snippet, sym.params or None, carry_desc, carry_at),
             )
             r = cur.fetchone()
             if r is None:
                 raise sqlite3.Error("insert symbols failed")
-            inserted_ids.append(int(r[0]))
+            new_id = int(r[0])
+            inserted_ids.append(new_id)
+            if carry_desc is not None:
+                carried_ids.append(new_id)
+
+        if carried_ids:
+            placeholders = ",".join("?" * len(carried_ids))
+            conn.execute(
+                f"DELETE FROM description_queue WHERE symbol_id IN ({placeholders})",
+                carried_ids,
+            )
 
         if refs:
             name_to_id: dict[str, int] = {}
