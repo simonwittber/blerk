@@ -11,6 +11,7 @@ _DISPATCH = {
     "status": "blerk_cmd.status",
     "query":  "blerk_cmd.query",
     "browse": "blerk_cmd.browse",
+    "detail": "blerk_cmd.detail",
 }
 
 _HELP = {
@@ -20,6 +21,7 @@ _HELP = {
     "status": "Show daemon status",
     "query":  "Search indexed symbols",
     "browse": "Browse indexed files and symbols",
+    "detail": "Show full detail for a symbol by name",
     "add":    "Add a folder to the watch list",
     "remove": "Remove a folder from the watch list",
 }

@@ -7,6 +7,7 @@ from mcp.server.fastmcp import FastMCP
 
 from blerk import config, db
 from blerk_cmd.browse import browse as _browse
+from blerk_cmd.detail import detail as _detail
 from blerk_cmd.query import format_compact, query_symbols, to_blob
 
 mcp = FastMCP("blerk")
@@ -67,6 +68,20 @@ def browse(directory: str = "", file_extensions: list[str] = []) -> str:
     if not directory:
         directory = os.getcwd()
     return _browse(_conn, directory, file_extensions)
+
+
+@mcp.tool()
+def detail(name: str, file_path: str = "") -> str:
+    """Get full detail for a symbol by exact name: description, snippet, callers, and callees.
+
+    Use this after browse or search to drill into a specific symbol.
+
+    Args:
+        name: Exact symbol name, e.g. "Debouncer" or "run_query".
+        file_path: Optional path substring to disambiguate when the same name
+            appears in multiple files, e.g. "watcher.py".
+    """
+    return _detail(_conn, name, file_path)
 
 
 def main() -> None:
