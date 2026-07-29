@@ -1,6 +1,6 @@
 # blerk Architecture
 
-blerk indexes source code into a SQLite database and makes it searchable by vector similarity. It is a Python port of [unirag](https://github.com/simonwittber/unirag).
+blerk indexes source code into a SQLite database and makes it searchable by vector similarity.
 
 ## Process layout
 

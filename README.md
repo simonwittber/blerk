@@ -220,9 +220,6 @@ Each daemon writes a heartbeat row to the `daemon_status` table every poll cycle
 | `blerk add <path>` | Add a folder to the watch list |
 | `blerk remove <path>` | Remove a folder from the watch list |
 
-## Data compatibility
-
-blerk uses the same SQLite schema as unirag. blerk can open a database that the Go build created, and vice versa.
 
 ## Development
 
