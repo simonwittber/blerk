@@ -7,6 +7,7 @@ from mcp.server.fastmcp import FastMCP
 
 from blerk import config, db
 from blerk_cmd.browse import browse as _browse
+from blerk_cmd.deps import deps as _deps
 from blerk_cmd.detail import detail as _detail
 from blerk_cmd.query import format_compact, query_symbols, to_blob
 
@@ -68,6 +69,21 @@ def browse(directory: str = "", file_extensions: list[str] = []) -> str:
     if not directory:
         directory = os.getcwd()
     return _browse(_conn, directory, file_extensions)
+
+
+@mcp.tool()
+def deps(directory: str = "") -> str:
+    """Show the file-level dependency graph for a directory.
+
+    Returns a plain adjacency list: each line is a file followed by the files it depends on.
+    Paths are relative to the given directory. Requires treesitter engine.
+
+    Args:
+        directory: Directory to scope the graph to. Defaults to the current working directory.
+    """
+    if not directory:
+        directory = os.getcwd()
+    return _deps(_conn, directory)
 
 
 @mcp.tool()

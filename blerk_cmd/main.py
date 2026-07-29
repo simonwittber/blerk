@@ -12,6 +12,7 @@ _DISPATCH = {
     "query":  "blerk_cmd.query",
     "browse": "blerk_cmd.browse",
     "detail": "blerk_cmd.detail",
+    "deps":   "blerk_cmd.deps",
 }
 
 _HELP = {
@@ -22,6 +23,7 @@ _HELP = {
     "query":  "Search indexed symbols",
     "browse": "Browse indexed files and symbols",
     "detail": "Show full detail for a symbol by name",
+    "deps":   "Show file-level dependency graph",
     "add":    "Add a folder to the watch list",
     "remove": "Remove a folder from the watch list",
 }
