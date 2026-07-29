@@ -131,9 +131,9 @@ def test_rrf_boosts_symbol_in_both_legs(tmp_path, capsys):
     query.run_query(conn, blob, "debounce", 10, False)
     out = capsys.readouterr().out
 
-    # alpha should appear at [1] because RRF fuses both signals
+    # alpha should appear first because RRF fuses both signals
     lines = out.splitlines()
-    assert lines[0] == "[1] function alpha_debounce"
+    assert lines[0].startswith("function alpha_debounce")
 
 
 # --- output format ---
@@ -145,7 +145,7 @@ def test_run_query_block_format(tmp_path, capsys):
                      description="does alpha stuff", snippet="def alpha(): pass")
     _seed_embedding(conn, a, [1.0, 0.0, 0.0])
 
-    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "alpha", 10, False)
+    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "alpha", 10, False, verbose=True)
     out = capsys.readouterr().out
 
     assert "[1] function alpha" in out
@@ -299,7 +299,7 @@ def test_main_end_to_end(tmp_path, capsys, monkeypatch):
     cfg_path = _write_config(tmp_path, db_path)
     monkeypatch.setattr(query, "embed", lambda *a: [1.0, 0.0, 0.0])
 
-    assert query.main(["--config", str(cfg_path), "-n", "1", "alpha"]) == 0
+    assert query.main(["--config", str(cfg_path), "-n", "1", "--verbose", "alpha"]) == 0
     out = capsys.readouterr().out
     assert "[1] function alpha" in out
     assert "bravo" not in out

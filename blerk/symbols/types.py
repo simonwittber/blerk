@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 
@@ -20,9 +20,10 @@ class Symbol:
     end_line: int
     snippet: str
     params: str = ""
-    is_static: bool = False
     nesting_depth: int = 0
     param_count: int = 0
+    description: str = ""
+    tags: dict[str, str] = field(default_factory=dict)
 
 
 def count_params(params_str: str) -> int:

@@ -106,6 +106,9 @@ def _run_matches(query: Query, node: Any) -> list[tuple[int, dict[str, list[Any]
 
 class Extractor:
     def extract(self, path: str) -> tuple[list[Symbol], list[CallRef]]:
+        if os.path.basename(path) == "package.json":
+            from blerk.symbols import package_json_extractor
+            return package_json_extractor.extract(path), []
         ext = os.path.splitext(path)[1].lower()
         ld = _EXT_TO_LANG.get(ext)
         if ld is None:
@@ -187,6 +190,7 @@ def extract_decls(root: Any, src: bytes, ld: LangDef) -> list[Symbol]:
             raw = _node_text(params_node, src).strip()
             inner = raw[1:-1] if raw.startswith("(") else raw
             params = " ".join(inner.split())
+        tags = _symbol_tags(def_node, src, ld.key, name)
         out.append(Symbol(
             name=name,
             kind=kind,
@@ -194,9 +198,9 @@ def extract_decls(root: Any, src: bytes, ld: LangDef) -> list[Symbol]:
             end_line=def_node.end_point[0] + 1,
             snippet=snippet_content(def_node, src),
             params=params,
-            is_static=_has_static_modifier(def_node, src),
             nesting_depth=_nesting_depth(def_node),
             param_count=count_params(params),
+            tags=tags,
         ))
     return out
 
@@ -206,68 +210,58 @@ def extract_calls(root: Any, src: bytes, ld: LangDef, syms: list[Symbol]) -> lis
         q = Query(ld.language, ld.call_query)
     except Exception:
         return []
-    body_types = ld.body_types
+    ranges = sorted(
+        (sym.line, sym.end_line, sym.name)
+        for sym in syms
+        if sym.kind in ("function", "method")
+    )
+    if not ranges:
+        return []
+    seen: set[tuple[str, str]] = set()
     refs: list[CallRef] = []
-    for sym in syms:
-        if sym.kind != "function" and sym.kind != "method":
-            continue
-        def_node = node_at_line(root, sym.line - 1)
-        if def_node is None:
-            continue
-        body = find_body_child(def_node, body_types)
-        if body is None:
-            continue
-        matches = _run_matches(q, body)
-        for _pattern_idx, captures in matches:
-            callees = captures.get("callee") or []
-            for callee_node in callees:
-                callee = _node_text(callee_node, src)
-                if callee != sym.name:
-                    refs.append(CallRef(caller_name=sym.name, callee_name=callee))
+    for _pattern_idx, captures in _run_matches(q, root):
+        for callee_node in (captures.get("callee") or []):
+            callee_line = callee_node.start_point[0] + 1
+            callee = _node_text(callee_node, src)
+            for start, end, name in ranges:
+                if start <= callee_line <= end:
+                    key = (name, callee)
+                    if callee != name and key not in seen:
+                        seen.add(key)
+                        refs.append(CallRef(caller_name=name, callee_name=callee))
+                    break
     return refs
 
 
-def node_at_line(root: Any, row: int) -> Any:
-    node = root
-    while True:
-        found = False
+_VISIBILITY_KEYWORDS = frozenset({"public", "private", "protected", "internal"})
+
+
+def _symbol_tags(node: Any, src: bytes, lang_key: str, name: str) -> dict[str, str]:
+    tags: dict[str, str] = {}
+    if lang_key in ("cs", "go", "c", "cpp", "js"):
+        modifiers: list[str] = []
         for i in range(node.child_count):
             child = node.child(i)
-            if child.start_point[0] == row:
-                node = child
-                found = True
-                break
-            if child.start_point[0] < row and child.end_point[0] > row:
-                node = child
-                found = True
-                break
-        if not found:
-            break
-    if node.start_point[0] == row:
-        return node
-    return None
-
-
-def find_body_child(n: Any, body_types: list[str]) -> Any:
-    for i in range(n.child_count):
-        child = n.child(i)
-        if child.type in body_types:
-            return child
-    parent = n.parent
-    if parent is not None:
-        for i in range(parent.child_count):
-            child = parent.child(i)
-            if child.type in body_types:
-                return child
-    return None
-
-
-def _has_static_modifier(node: Any, src: bytes) -> bool:
-    for i in range(node.child_count):
-        child = node.child(i)
-        if child.type == "modifier" and _node_text(child, src).strip() == "static":
-            return True
-    return False
+            if child.type == "modifier":
+                modifiers.append(_node_text(child, src).strip())
+        if "static" in modifiers:
+            tags["is_static"] = "true"
+        vis_mods = [m for m in modifiers if m in _VISIBILITY_KEYWORDS]
+        if vis_mods:
+            tags["visibility"] = " ".join(sorted(vis_mods, key=lambda m: modifiers.index(m)))
+    if lang_key == "go":
+        if name and name[0].isupper():
+            tags["visibility"] = "public"
+        elif name:
+            tags["visibility"] = "private"
+    if lang_key == "py":
+        if name.startswith("__") and not name.endswith("__"):
+            tags["visibility"] = "private"
+        elif name.startswith("_"):
+            tags["visibility"] = "private"
+        else:
+            tags["visibility"] = "public"
+    return tags
 
 
 def is_inside_class(n: Any) -> bool:

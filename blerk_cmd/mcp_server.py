@@ -76,7 +76,7 @@ def browse(directory: str = "", file_extensions: list[str] = []) -> str:
     """
     conn = db.open_db(_cfg.db.path, init_schema=False)
     try:
-        result = _browse(conn, directory, file_extensions)
+        result = _browse(conn, directory, file_extensions, symbols=True)
     finally:
         conn.close()
     lines = result.splitlines()

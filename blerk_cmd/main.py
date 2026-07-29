@@ -76,6 +76,11 @@ def _stop() -> int:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         _usage()
         return 0

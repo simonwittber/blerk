@@ -32,12 +32,20 @@ CREATE TABLE IF NOT EXISTS symbols (
     end_line       INTEGER,
     snippet        TEXT,
     params         TEXT,
-    is_static      INTEGER NOT NULL DEFAULT 0,
     nesting_depth  INTEGER NOT NULL DEFAULT 0,
     param_count    INTEGER NOT NULL DEFAULT 0,
     description    TEXT,
     described_at   INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS symbol_tags (
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    key       TEXT    NOT NULL,
+    value     TEXT    NOT NULL,
+    PRIMARY KEY (symbol_id, key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_symbol_tags_key_value ON symbol_tags(key, value);
 
 CREATE INDEX IF NOT EXISTS idx_symbols_file_line ON symbols(file_id, line);
 
@@ -137,7 +145,7 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS symbols_description_insert
 AFTER INSERT ON symbols
-WHEN NEW.kind IN ('function', 'method')
+WHEN NEW.kind IN ('function', 'method') AND NEW.description IS NULL
 BEGIN
     INSERT INTO description_queue(symbol_id) VALUES (NEW.id);
 END;
@@ -218,12 +226,19 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(symbols)")}
     for col, defn in [
-        ("is_static",     "INTEGER NOT NULL DEFAULT 0"),
         ("nesting_depth", "INTEGER NOT NULL DEFAULT 0"),
         ("param_count",   "INTEGER NOT NULL DEFAULT 0"),
     ]:
         if col not in existing:
             conn.execute(f"ALTER TABLE symbols ADD COLUMN {col} {defn}")
+    # Recreate description trigger to add the description IS NULL condition.
+    conn.execute("DROP TRIGGER IF EXISTS symbols_description_insert")
+    conn.executescript(
+        "CREATE TRIGGER IF NOT EXISTS symbols_description_insert "
+        "AFTER INSERT ON symbols "
+        "WHEN NEW.kind IN ('function', 'method') AND NEW.description IS NULL "
+        "BEGIN INSERT INTO description_queue(symbol_id) VALUES (NEW.id); END;"
+    )
 
 
 def claim_batch(conn: sqlite3.Connection, queue: str, target_col: str, n: int) -> list[QueueRow]:

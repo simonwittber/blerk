@@ -5,16 +5,19 @@ import os
 import sys
 
 from blerk import config, db
-from blerk_cmd.query import _ext_clause
+from blerk_cmd.query import _ext_clause, _tag_clause
 
 
 def browse(
     conn,
     directory: str = "",
     exts: list[str] | None = None,
+    symbols: bool = False,
+    tags: dict[str, str] | None = None,
 ) -> str:
     exts = exts or []
     ext_sql, ext_params = _ext_clause(exts)
+    tag_sql, tag_params = _tag_clause(tags or {})
 
     dir_sql = ""
     dir_params: list[str] = []
@@ -23,16 +26,34 @@ def browse(
         dir_sql = "AND (f.path LIKE ? OR f.path LIKE ?)"
         dir_params = [f"%{norm}/%", f"%{norm}"]
 
+    if not symbols:
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT f.path
+            FROM symbols s
+            JOIN files f ON f.id = s.file_id
+            {tag_sql}
+            WHERE s.kind != 'heading'
+              {ext_sql} {dir_sql}
+            ORDER BY f.path
+            """,
+            (*tag_params, *ext_params, *dir_params),
+        ).fetchall()
+        if not rows:
+            return "No indexed files found."
+        return "\n".join(r[0] for r in rows)
+
     rows = conn.execute(
         f"""
         SELECT f.path, s.kind, s.name, s.line, s.end_line, COALESCE(s.params, '')
         FROM symbols s
         JOIN files f ON f.id = s.file_id
+        {tag_sql}
         WHERE s.kind != 'heading'
           {ext_sql} {dir_sql}
         ORDER BY f.path, s.line
         """,
-        (*ext_params, *dir_params),
+        (*tag_params, *ext_params, *dir_params),
     ).fetchall()
 
     if not rows:
@@ -77,12 +98,22 @@ def main(argv: list[str] | None = None) -> int:
                         metavar="EXT", help="restrict to file extension, e.g. .py (repeatable)")
     parser.add_argument("--dir", default="", dest="directory",
                         metavar="DIR", help="restrict to directory (default: cwd)")
+    parser.add_argument("--symbols", action="store_true",
+                        help="show the full indented symbol tree instead of filenames only")
+    parser.add_argument("--tag", action="append", default=[], dest="tags",
+                        metavar="KEY=VALUE", help="filter by symbol tag, e.g. visibility=public (repeatable)")
     args = parser.parse_args(argv)
+
+    tag_filter: dict[str, str] = {}
+    for t in args.tags:
+        if "=" in t:
+            k, v = t.split("=", 1)
+            tag_filter[k.strip()] = v.strip()
 
     directory = args.directory or os.getcwd()
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
-    print(browse(conn, directory, args.exts))
+    print(browse(conn, directory, args.exts, symbols=args.symbols, tags=tag_filter or None))
     return 0
 
 
