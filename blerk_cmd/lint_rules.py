@@ -5,6 +5,8 @@ from typing import Callable
 
 Violation = tuple[str, int, str, str]  # path, line, rule, display
 
+RULES: list[Rule] = []
+
 
 @dataclass
 class Rule:
@@ -15,6 +17,13 @@ class Rule:
     help: str
 
 
+def rule(default: int, flag: str, help: str):
+    def decorator(fn: Callable) -> Callable:
+        RULES.append(Rule(name=fn.__name__, fn=fn, default=default, flag=flag, help=help))
+        return fn
+    return decorator
+
+
 def _dir_clause(directory: str) -> tuple[str, list[str]]:
     if not directory:
         return "", []
@@ -22,6 +31,7 @@ def _dir_clause(directory: str) -> tuple[str, list[str]]:
     return "AND (f.path LIKE ? OR f.path LIKE ?)", [f"%{norm}/%", f"%{norm}"]
 
 
+@rule(default=40, flag="max-lines", help="max lines per function/method (default: 40)")
 def long_function(conn, directory: str, threshold: int) -> list[Violation]:
     clause, params = _dir_clause(directory)
     rows = conn.execute(
@@ -40,6 +50,7 @@ def long_function(conn, directory: str, threshold: int) -> list[Violation]:
             for path, name, line, end in rows]
 
 
+@rule(default=20, flag="max-symbols", help="max symbols per file (default: 20)")
 def god_file(conn, directory: str, threshold: int) -> list[Violation]:
     clause, params = _dir_clause(directory)
     rows = conn.execute(
@@ -57,6 +68,7 @@ def god_file(conn, directory: str, threshold: int) -> list[Violation]:
     return [(path, 1, "god_file", f"{count} symbols") for path, count in rows]
 
 
+@rule(default=8, flag="max-callees", help="max callees per function/method (default: 8)")
 def high_fan_out(conn, directory: str, threshold: int) -> list[Violation]:
     clause, params = _dir_clause(directory)
     rows = conn.execute(
@@ -78,6 +90,7 @@ def high_fan_out(conn, directory: str, threshold: int) -> list[Violation]:
             for path, name, line, count in rows]
 
 
+@rule(default=4, flag="max-params", help="max parameters per function/method (default: 4)")
 def too_many_params(conn, directory: str, threshold: int) -> list[Violation]:
     clause, params = _dir_clause(directory)
     rows = conn.execute(
@@ -95,6 +108,7 @@ def too_many_params(conn, directory: str, threshold: int) -> list[Violation]:
             for path, name, line, count in rows]
 
 
+@rule(default=3, flag="max-nesting", help="max nesting depth (default: 3)")
 def deep_nesting(conn, directory: str, threshold: int) -> list[Violation]:
     clause, params = _dir_clause(directory)
     rows = conn.execute(
@@ -112,6 +126,7 @@ def deep_nesting(conn, directory: str, threshold: int) -> list[Violation]:
             for path, name, line, depth in rows]
 
 
+@rule(default=-1, flag="unused", help="flag functions/methods with no callers (opt-in)")
 def unused_symbol(conn, directory: str, threshold: int) -> list[Violation]:
     clause, params = _dir_clause(directory)
     rows = conn.execute(
@@ -129,6 +144,7 @@ def unused_symbol(conn, directory: str, threshold: int) -> list[Violation]:
     return [(path, line, "unused_symbol", name) for path, name, line in rows]
 
 
+@rule(default=-1, flag="statics", help="flag static symbols (opt-in)")
 def static_symbol(conn, directory: str, threshold: int) -> list[Violation]:
     clause, params = _dir_clause(directory)
     rows = conn.execute(
@@ -143,14 +159,3 @@ def static_symbol(conn, directory: str, threshold: int) -> list[Violation]:
     ).fetchall()
     return [(path, line, "static_symbol", f"{name} ({kind})")
             for path, name, line, kind in rows]
-
-
-RULES: list[Rule] = [
-    Rule("long_function",   long_function,   40, "max-lines",   "max lines per function/method (default: 40)"),
-    Rule("god_file",        god_file,        20, "max-symbols", "max symbols per file (default: 20)"),
-    Rule("high_fan_out",    high_fan_out,     8, "max-callees", "max callees per function/method (default: 8)"),
-    Rule("too_many_params", too_many_params,  4, "max-params",  "max parameters per function/method (default: 4)"),
-    Rule("deep_nesting",    deep_nesting,     3, "max-nesting", "max nesting depth (default: 3)"),
-    Rule("unused_symbol",   unused_symbol,   -1, "unused",      "flag functions/methods with no callers (opt-in)"),
-    Rule("static_symbol",   static_symbol,   -1, "statics",     "flag static symbols (opt-in)"),
-]
