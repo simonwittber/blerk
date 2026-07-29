@@ -16,11 +16,12 @@ Add or modify tasks in build_tasks() below.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -32,6 +33,7 @@ class Run:
     ms: int
     output: str
     error: bool = False
+    correct: bool | None = None
 
 
 def run_blerk(cmd: str, timeout: int = 30, head: int = 0) -> Run:
@@ -174,6 +176,12 @@ def trad_using_namespaces(target: str, ext: str) -> str:
 # Task definition
 # ---------------------------------------------------------------------------
 
+def check_correct(output: str, expected: list[str] | None) -> bool | None:
+    if expected is None:
+        return None
+    return any(e.lower() in output.lower() for e in expected)
+
+
 @dataclass
 class Task:
     name: str
@@ -181,6 +189,7 @@ class Task:
     blerk_cmd: str
     trad_fn: Callable[[], str]
     blerk_head: int = 0
+    expected: list[str] | None = None
 
 
 def build_tasks(target: str, pkg_dir: str, ext: str) -> list[Task]:
@@ -242,6 +251,46 @@ def build_tasks(target: str, pkg_dir: str, ext: str) -> list[Task]:
             trad_fn=lambda: trad_file_sizes(pkg_path, ext),
             blerk_head=40,
         ),
+        Task(
+            name="T7: Semantic (physics)",
+            description="Find physics simulation loop without knowing class names",
+            blerk_cmd=(
+                f'blerk query --dir "{target}" --ext {ext}'
+                ' "physics simulation step integrate bodies" -n 10'
+            ),
+            trad_fn=lambda: trad_grep_files(
+                target,
+                [r"Simulate\b", r"PhysicsBody", r"FixedUpdate", r"Integrate"],
+                ext,
+            ),
+        ),
+        Task(
+            name="T8: Semantic (audio)",
+            description="Find audio synthesis system without knowing package name",
+            blerk_cmd=(
+                f'blerk query --dir "{target}" --ext {ext}'
+                ' "audio synthesis sound generation waveform" -n 10'
+            ),
+            trad_fn=lambda: trad_grep_files(
+                target,
+                [r"AudioClip", r"AudioSource", r"Waveform", r"BlipPreset", r"synthesiz"],
+                ext,
+            ),
+        ),
+        Task(
+            name="T9: Public API",
+            description="List public API of the BT package",
+            blerk_cmd=(
+                f'blerk browse --dir "{pkg_path}/com.dffrnt.bt"'
+                ' --tag visibility=public --symbols'
+            ),
+            trad_fn=lambda: trad_grep_lines(
+                f"{pkg_path}/com.dffrnt.bt",
+                r"^\s*public\s+(class|interface|struct|enum|\w[\w<>]*\s+\w+\s*\()",
+                ext,
+            ),
+            blerk_head=40,
+        ),
     ]
 
 
@@ -279,6 +328,13 @@ def main() -> int:
     target = args.target.rstrip("/\\")
     tasks = build_tasks(target, args.package_dir, args.ext)
 
+    truth_path = Path(__file__).parent / "compare_truth.json"
+    truth: dict[str, list[str] | None] = {}
+    if truth_path.exists():
+        truth = json.loads(truth_path.read_text(encoding="utf-8"))
+    for task in tasks:
+        task.expected = truth.get(task.name)
+
     print(f"Target : {target}")
     print(f"Ext    : {args.ext}")
     print(f"Tasks  : {len(tasks)}")
@@ -289,15 +345,23 @@ def main() -> int:
         print(f"Running {task.name} ...", flush=True)
         br = run_blerk(task.blerk_cmd, args.timeout, head=task.blerk_head)
         tr = run_trad(task.trad_fn, args.timeout)
+        br.correct = check_correct(br.output, task.expected)
+        tr.correct = check_correct(tr.output, task.expected)
         results.append((task, br, tr))
+
+    def _ok(r: Run) -> str:
+        if r.correct is None:
+            return " "
+        return "Y" if r.correct else "N"
 
     W = 30
     print()
-    print("=" * 88)
+    print("=" * 100)
     print(
-        f"{'Task':<{W}} {'Blerk lines':>12} {'ms':>6}   {'Trad lines':>12} {'ms':>6}   {'ratio':>6}"
+        f"{'Task':<{W}} {'Blerk lines':>12} {'ms':>6} {'OK':>3}"
+        f"   {'Trad lines':>12} {'ms':>6} {'OK':>3}   {'ratio':>6}"
     )
-    print("=" * 88)
+    print("=" * 100)
     for task, br, tr in results:
         ratio = br.lines / max(tr.lines, 1)
         arrow = (
@@ -311,12 +375,12 @@ def main() -> int:
         terr = "*" if tr.error else ""
         print(
             f"{task.name:<{W}}"
-            f" {br.lines:>11}{berr:<1} {br.ms:>6}"
-            f"   {tr.lines:>11}{terr:<1} {tr.ms:>6}"
+            f" {br.lines:>11}{berr:<1} {br.ms:>6} {_ok(br):>3}"
+            f"   {tr.lines:>11}{terr:<1} {tr.ms:>6} {_ok(tr):>3}"
             f"   {ratio:>5.1f}x {arrow}"
         )
-    print("=" * 88)
-    print("ratio < 1 = blerk used less context | >> = blerk used much more | * = error")
+    print("=" * 100)
+    print("ratio < 1 = blerk used less context | >> = blerk used much more | * = error | OK = correctness check")
     print()
 
     for task, br, tr in results:

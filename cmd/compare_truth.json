@@ -1,0 +1,11 @@
+{
+  "T1: Orientation": ["com.dffrnt.bt", "com.dffrnt.core", "com.dffrnt.auto-tables"],
+  "T2: Concept search (events)": ["GameEvent"],
+  "T3: Concept search (BT)": ["BT.cs", "Selector", "Sequence"],
+  "T4: Caller lookup": ["EnemySpawner", "Update"],
+  "T5: Dependency graph": null,
+  "T6: Lint": null,
+  "T7: Semantic (physics)": ["Simulate", "PhysicsBody", "FixedUpdate"],
+  "T8: Semantic (audio)": ["Blip", "AudioClip", "AudioSource", "Waveform"],
+  "T9: Public API": ["Selector", "Sequence", "BT"]
+}
