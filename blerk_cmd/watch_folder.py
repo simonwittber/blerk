@@ -16,6 +16,8 @@ from watchdog.observers import Observer
 from blerk import config, db
 from blerk.ignore_match import IgnoreSet, is_ignored, load_ignore_file
 
+_conn_lock = db._write_lock
+
 
 log = logging.getLogger("watch-folder")
 
@@ -58,9 +60,14 @@ def upsert_file(conn: sqlite3.Connection, path: str) -> None:
     size = int(st.st_size)
 
     stored = _to_slash(path)
-    row = conn.execute(
-        "SELECT mtime, size FROM files WHERE path=?", (stored,)
-    ).fetchone()
+    try:
+        with _conn_lock:
+            row = conn.execute(
+                "SELECT mtime, size FROM files WHERE path=?", (stored,)
+            ).fetchone()
+    except sqlite3.Error as e:
+        log.warning("upsert file select %s: %s", stored, e)
+        return
     if row and int(row[0]) == mtime and int(row[1]) == size:
         return
 
@@ -70,12 +77,13 @@ def upsert_file(conn: sqlite3.Connection, path: str) -> None:
         return
 
     try:
-        conn.execute(
-            "INSERT INTO files(path, mtime, size, hash) VALUES(?,?,?,?) "
-            "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, size=excluded.size, hash=excluded.hash "
-            "WHERE excluded.hash != files.hash OR excluded.mtime != files.mtime OR excluded.size != files.size",
-            (stored, mtime, size, h),
-        )
+        with _conn_lock:
+            conn.execute(
+                "INSERT INTO files(path, mtime, size, hash) VALUES(?,?,?,?) "
+                "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, size=excluded.size, hash=excluded.hash "
+                "WHERE excluded.hash != files.hash OR excluded.mtime != files.mtime OR excluded.size != files.size",
+                (stored, mtime, size, h),
+            )
     except sqlite3.Error as e:
         log.warning("upsert file %s: %s", stored, e)
         return
@@ -85,7 +93,8 @@ def upsert_file(conn: sqlite3.Connection, path: str) -> None:
 def delete_file(conn: sqlite3.Connection, path: str) -> None:
     stored = _to_slash(path)
     try:
-        conn.execute("DELETE FROM files WHERE path=?", (stored,))
+        with _conn_lock:
+            conn.execute("DELETE FROM files WHERE path=?", (stored,))
     except sqlite3.Error as e:
         log.warning("delete file %s: %s", stored, e)
 
