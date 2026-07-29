@@ -63,9 +63,9 @@ def process_symbols(
                 carry_desc, carry_at = old[1], old[2]
 
             cur = conn.execute(
-                "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, params, description, described_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?) RETURNING id",
-                (row.target_id, sym.name, sym.kind, sym.line, sym.end_line, sym.snippet, sym.params or None, carry_desc, carry_at),
+                "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, params, is_static, nesting_depth, param_count, description, described_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                (row.target_id, sym.name, sym.kind, sym.line, sym.end_line, sym.snippet, sym.params or None, int(sym.is_static), sym.nesting_depth, sym.param_count, carry_desc, carry_at),
             )
             r = cur.fetchone()
             if r is None:

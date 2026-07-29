@@ -13,7 +13,7 @@ import tree_sitter_python
 from tree_sitter import Language, Parser, Query
 
 from blerk.symbols import queries, regexp_extractor
-from blerk.symbols.types import SNIPPET_MAX_LINES, CallRef, Symbol
+from blerk.symbols.types import SNIPPET_MAX_LINES, CallRef, Symbol, count_params
 
 
 try:
@@ -70,6 +70,32 @@ for _d in LANG_DEFS:
         _EXT_TO_LANG[".hpp"] = _d
     elif _d.key == "cs":
         _EXT_TO_LANG[".cs"] = _d
+
+
+_CONTAINER_TYPES = frozenset({
+    "function_definition",
+    "class_definition",
+    "function_declaration",
+    "method_declaration",
+    "class_declaration",
+    "method_definition",
+    "class_specifier",
+    "struct_specifier",
+    "struct_declaration",
+    "interface_declaration",
+    "namespace_declaration",
+    "constructor_declaration",
+})
+
+
+def _nesting_depth(node: Any) -> int:
+    depth = 0
+    parent = node.parent
+    while parent is not None:
+        if parent.type in _CONTAINER_TYPES:
+            depth += 1
+        parent = parent.parent
+    return depth
 
 
 def _run_matches(query: Query, node: Any) -> list[tuple[int, dict[str, list[Any]]]]:
@@ -145,6 +171,12 @@ def extract_decls(root: Any, src: bytes, ld: LangDef) -> list[Symbol]:
             elif cap_name == "type":
                 def_node = node
                 kind = "type"
+            elif cap_name == "field":
+                def_node = node
+                kind = "field"
+            elif cap_name == "variable":
+                def_node = node
+                kind = "variable"
         if name_node is None or def_node is None:
             continue
         name = _node_text(name_node, src)
@@ -162,6 +194,9 @@ def extract_decls(root: Any, src: bytes, ld: LangDef) -> list[Symbol]:
             end_line=def_node.end_point[0] + 1,
             snippet=snippet_content(def_node, src),
             params=params,
+            is_static=_has_static_modifier(def_node, src),
+            nesting_depth=_nesting_depth(def_node),
+            param_count=count_params(params),
         ))
     return out
 
@@ -225,6 +260,14 @@ def find_body_child(n: Any, body_types: list[str]) -> Any:
             if child.type in body_types:
                 return child
     return None
+
+
+def _has_static_modifier(node: Any, src: bytes) -> bool:
+    for i in range(node.child_count):
+        child = node.child(i)
+        if child.type == "modifier" and _node_text(child, src).strip() == "static":
+            return True
+    return False
 
 
 def is_inside_class(n: Any) -> bool:

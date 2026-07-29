@@ -20,6 +20,25 @@ class Symbol:
     end_line: int
     snippet: str
     params: str = ""
+    is_static: bool = False
+    nesting_depth: int = 0
+    param_count: int = 0
+
+
+def count_params(params_str: str) -> int:
+    s = params_str.strip()
+    if not s:
+        return 0
+    depth = 0
+    count = 1
+    for ch in s:
+        if ch in "(<[{":
+            depth += 1
+        elif ch in ")>]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            count += 1
+    return count
 
 
 @dataclass

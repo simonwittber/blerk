@@ -10,12 +10,6 @@ logger = logging.getLogger(__name__)
 
 _write_lock = threading.Lock()
 
-PRAGMAS = """
-PRAGMA journal_mode=WAL;
-PRAGMA foreign_keys=ON;
-PRAGMA busy_timeout=5000;
-"""
-
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
     id              INTEGER PRIMARY KEY,
@@ -30,16 +24,19 @@ CREATE TABLE IF NOT EXISTS files (
 );
 
 CREATE TABLE IF NOT EXISTS symbols (
-    id           INTEGER PRIMARY KEY,
-    file_id      INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-    name         TEXT    NOT NULL,
-    kind         TEXT    NOT NULL,
-    line         INTEGER NOT NULL,
-    end_line     INTEGER,
-    snippet      TEXT,
-    params       TEXT,
-    description  TEXT,
-    described_at INTEGER
+    id             INTEGER PRIMARY KEY,
+    file_id        INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    name           TEXT    NOT NULL,
+    kind           TEXT    NOT NULL,
+    line           INTEGER NOT NULL,
+    end_line       INTEGER,
+    snippet        TEXT,
+    params         TEXT,
+    is_static      INTEGER NOT NULL DEFAULT 0,
+    nesting_depth  INTEGER NOT NULL DEFAULT 0,
+    param_count    INTEGER NOT NULL DEFAULT 0,
+    description    TEXT,
+    described_at   INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbols_file_line ON symbols(file_id, line);
@@ -192,7 +189,7 @@ class QueueRow(NamedTuple):
     target_id: int
 
 
-def open_db(path: str) -> sqlite3.Connection:
+def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -209,13 +206,24 @@ def open_db(path: str) -> sqlite3.Connection:
     except Exception as e:
         logger.warning("failed to load sqlite-vec: %s", e)
 
-    conn.executescript(PRAGMAS)
-    _init_schema(conn)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
+    if init_schema:
+        _init_schema(conn)
     return conn
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(symbols)")}
+    for col, defn in [
+        ("is_static",     "INTEGER NOT NULL DEFAULT 0"),
+        ("nesting_depth", "INTEGER NOT NULL DEFAULT 0"),
+        ("param_count",   "INTEGER NOT NULL DEFAULT 0"),
+    ]:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE symbols ADD COLUMN {col} {defn}")
 
 
 def claim_batch(conn: sqlite3.Connection, queue: str, target_col: str, n: int) -> list[QueueRow]:

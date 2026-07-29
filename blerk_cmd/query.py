@@ -42,6 +42,13 @@ def _ext_clause(exts: list[str]) -> tuple[str, list[str]]:
     return f"AND ({parts})", [f"%{e}" for e in exts]
 
 
+def _dir_clause(directory: str) -> tuple[str, list[str]]:
+    if not directory:
+        return "", []
+    norm = directory.replace("\\", "/")
+    return "AND f.path LIKE ?", [f"%{norm}%"]
+
+
 def _heading_clause(exts: list[str]) -> str:
     return "" if ".md" in exts else "AND s.kind != 'heading'"
 
@@ -72,8 +79,9 @@ def print_refs(conn, symbol_id: int) -> None:
         print(f"calledby: {name} ({path})")
 
 
-def _vector_ranks(conn, blob: bytes, k: int, exts: list[str]) -> dict[int, int]:
+def _vector_ranks(conn, blob: bytes, k: int, exts: list[str], directory: str = "") -> dict[int, int]:
     ext_sql, ext_params = _ext_clause(exts)
+    dir_sql, dir_params = _dir_clause(directory)
     heading_sql = _heading_clause(exts)
     rows = conn.execute(
         f"""
@@ -81,19 +89,20 @@ def _vector_ranks(conn, blob: bytes, k: int, exts: list[str]) -> dict[int, int]:
         FROM embeddings e
         JOIN symbols s ON s.id = e.symbol_id
         JOIN files f ON f.id = s.file_id
-        WHERE 1=1 {heading_sql} {ext_sql}
+        WHERE 1=1 {heading_sql} {ext_sql} {dir_sql}
         ORDER BY vec_distance_cosine(e.vector, ?) ASC
         LIMIT ?
         """,
-        (*ext_params, blob, k),
+        (*ext_params, *dir_params, blob, k),
     ).fetchall()
     return {row[0]: rank for rank, row in enumerate(rows)}
 
 
-def _bm25_ranks(conn, query_text: str, k: int, exts: list[str]) -> dict[int, int]:
+def _bm25_ranks(conn, query_text: str, k: int, exts: list[str], directory: str = "") -> dict[int, int]:
     if not query_text.strip():
         return {}
     ext_sql, ext_params = _ext_clause(exts)
+    dir_sql, dir_params = _dir_clause(directory)
     heading_sql = _heading_clause(exts)
     try:
         rows = conn.execute(
@@ -103,11 +112,11 @@ def _bm25_ranks(conn, query_text: str, k: int, exts: list[str]) -> dict[int, int
             JOIN symbols s ON s.id = symbols_fts.rowid
             JOIN files f ON f.id = s.file_id
             WHERE symbols_fts MATCH ?
-              {heading_sql} {ext_sql}
+              {heading_sql} {ext_sql} {dir_sql}
             ORDER BY symbols_fts.rank
             LIMIT ?
             """,
-            (query_text, *ext_params, k),
+            (query_text, *ext_params, *dir_params, k),
         ).fetchall()
     except sqlite3.OperationalError:
         return {}
@@ -164,12 +173,13 @@ def query_symbols(
     min_score: float = 0.0,
     reranker_endpoint: str = "",
     reranker_model: str = "",
+    directory: str = "",
 ) -> list[QueryResult]:
     k = n * _OVERFETCH
     exts = exts or []
 
-    vector = _vector_ranks(conn, blob, k, exts)
-    bm25 = _bm25_ranks(conn, query_text, k, exts)
+    vector = _vector_ranks(conn, blob, k, exts, directory)
+    bm25 = _bm25_ranks(conn, query_text, k, exts, directory)
 
     all_ids = set(vector) | set(bm25)
     scores: dict[int, float] = {}
@@ -263,9 +273,10 @@ def run_query(
     min_score: float = 0.0,
     reranker_endpoint: str = "",
     reranker_model: str = "",
+    directory: str = "",
 ) -> None:
     results = query_symbols(conn, blob, query_text, n, exts, min_score,
-                            reranker_endpoint, reranker_model)
+                            reranker_endpoint, reranker_model, directory)
     if results:
         print(format_verbose(conn, results, refs))
 
@@ -277,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--refs", action="store_true", help="show callers and callees for each result")
     parser.add_argument("--ext", action="append", default=[], dest="exts",
                         metavar="EXT", help="restrict to file extension, e.g. .py (repeatable)")
+    parser.add_argument("--dir", default="", dest="directory",
+                        metavar="PATH", help="restrict to a directory path substring")
     parser.add_argument("query", help="query text")
     args = parser.parse_args(argv)
 
@@ -289,7 +302,8 @@ def main(argv: list[str] | None = None) -> int:
     reranker_endpoint = cfg.reranker.endpoint if cfg.reranker.enabled else ""
     reranker_model = cfg.reranker.model if cfg.reranker.enabled else ""
     run_query(conn, blob, args.query, args.n, args.refs, args.exts,
-              reranker_endpoint=reranker_endpoint, reranker_model=reranker_model)
+              reranker_endpoint=reranker_endpoint, reranker_model=reranker_model,
+              directory=args.directory)
     return 0
 
 

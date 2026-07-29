@@ -4,7 +4,7 @@ import os
 import re
 from dataclasses import dataclass
 
-from blerk.symbols.types import EXT_TO_LANG, SNIPPET_MAX_LINES, Symbol
+from blerk.symbols.types import EXT_TO_LANG, SNIPPET_MAX_LINES, Symbol, count_params
 
 
 @dataclass
@@ -158,7 +158,7 @@ def extract_from_lines(lang: str, lines: list[str]) -> list[Symbol]:
             end_line = _find_end(lang, lines, i)
             snippet = "\n".join(lines[i:end_line])
             params = _extract_params(line) if p.kind in ("function", "method") else ""
-            syms.append(Symbol(name=name, kind=p.kind, line=i + 1, end_line=end_line, snippet=snippet, params=params))
+            syms.append(Symbol(name=name, kind=p.kind, line=i + 1, end_line=end_line, snippet=snippet, params=params, param_count=count_params(params)))
             break
     return syms
 

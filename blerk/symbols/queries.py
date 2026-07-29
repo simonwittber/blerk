@@ -2,6 +2,8 @@ GO_DECL = """
 (function_declaration name: (identifier) @name parameters: (parameter_list) @params) @func
 (method_declaration name: (field_identifier) @name parameters: (parameter_list) @params) @method
 (type_declaration (type_spec name: (type_identifier) @name)) @type
+(source_file (var_declaration (var_spec name: (identifier) @name) @variable))
+(source_file (const_declaration (const_spec name: (identifier) @name) @variable))
 """
 
 GO_CALL = """
@@ -12,6 +14,8 @@ GO_CALL = """
 PY_DECL = """
 (function_definition name: (identifier) @name parameters: (parameters) @params) @func
 (class_definition name: (identifier) @name) @class
+(module (expression_statement (assignment left: (identifier) @name) @variable))
+(class_definition body: (block (expression_statement (assignment left: (identifier) @name) @variable)))
 """
 
 PY_CALL = """
@@ -23,6 +27,8 @@ JS_DECL = """
 (function_declaration name: (identifier) @name parameters: (formal_parameters) @params) @func
 (class_declaration name: (identifier) @name) @class
 (method_definition name: (property_identifier) @name parameters: (formal_parameters) @params) @method
+(program (lexical_declaration (variable_declarator name: (identifier) @name) @variable))
+(program (variable_declaration (variable_declarator name: (identifier) @name) @variable))
 """
 
 JS_CALL = """
@@ -33,6 +39,7 @@ JS_CALL = """
 C_DECL = """
 (function_definition declarator: (function_declarator declarator: (identifier) @name parameters: (parameter_list) @params)) @func
 (struct_specifier name: (type_identifier) @name body: (_)) @struct
+(translation_unit (declaration declarator: (init_declarator declarator: (identifier) @name) @variable))
 """
 
 C_CALL = """
@@ -44,6 +51,7 @@ CPP_DECL = """
 (function_definition declarator: (function_declarator declarator: (qualified_identifier name: (identifier) @name) parameters: (parameter_list) @params)) @func
 (class_specifier name: (type_identifier) @name body: (_)) @class
 (struct_specifier name: (type_identifier) @name body: (_)) @struct
+(translation_unit (declaration declarator: (init_declarator declarator: (identifier) @name) @variable))
 """
 
 CPP_CALL = """
@@ -59,6 +67,8 @@ CS_DECL = """
 (struct_declaration name: (identifier) @name) @struct
 (enum_declaration name: (identifier) @name) @enum
 (constructor_declaration name: (identifier) @name parameters: (parameter_list) @params) @method
+(field_declaration (variable_declaration (variable_declarator name: (identifier) @name))) @field
+(property_declaration name: (identifier) @name) @field
 """
 
 CS_CALL = """

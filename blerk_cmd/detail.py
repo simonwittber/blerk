@@ -20,7 +20,8 @@ def detail(conn, name: str, path_filter: str = "") -> str:
                s.line, COALESCE(s.end_line, s.line),
                COALESCE(s.description, ''),
                COALESCE(s.snippet, ''),
-               COALESCE(s.params, '')
+               COALESCE(s.params, ''),
+               s.is_static, s.nesting_depth, s.param_count
         FROM symbols s
         JOIN files f ON f.id = s.file_id
         WHERE s.name = ? {path_sql}
@@ -35,10 +36,19 @@ def detail(conn, name: str, path_filter: str = "") -> str:
     lines: list[str] = []
     if len(rows) > 1:
         lines.append(f"({len(rows)} symbols named '{name}', showing all)\n")
-    for id_, sym_name, kind, path, line, end_line, desc, snippet, sig_params in rows:
+    for id_, sym_name, kind, path, line, end_line, desc, snippet, sig_params, is_static, nesting_depth, param_count in rows:
         sig = f"({sig_params})" if sig_params else ""
         lines.append(f"{kind} {sym_name}{sig}")
         lines.append(f"file: {path}  lines: {line}-{end_line}")
+        attrs: list[str] = []
+        if is_static:
+            attrs.append("static")
+        if nesting_depth:
+            attrs.append(f"depth {nesting_depth}")
+        if param_count:
+            attrs.append(f"{param_count} params")
+        if attrs:
+            lines.append("attrs: " + ", ".join(attrs))
         if desc:
             lines.append(f"description: {desc}")
 

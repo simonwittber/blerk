@@ -32,6 +32,7 @@ async def _embed(endpoint: str, model: str, text: str) -> list[float]:
 async def search(
     query: str,
     file_extensions: list[str] = [],
+    directory: str = "",
 ) -> str:
     """Search indexed source code symbols using natural language.
 
@@ -40,6 +41,8 @@ async def search(
         file_extensions: Restrict results to specific languages by extension,
             e.g. [".py"] for Python, [".cs"] for C#, [".go"] for Go.
             Leave empty to search across all indexed languages.
+        directory: Restrict results to a directory path substring, e.g. "src/rendering".
+            Leave empty to search across all indexed files.
     """
     try:
         vec = await _embed(_cfg.embedder.endpoint, _cfg.embedder.model, query)
@@ -48,10 +51,11 @@ async def search(
     blob = to_blob(vec)
     reranker_endpoint = _cfg.reranker.endpoint if _cfg.reranker.enabled else ""
     reranker_model = _cfg.reranker.model if _cfg.reranker.enabled else ""
-    conn = db.open_db(_cfg.db.path)
+    conn = db.open_db(_cfg.db.path, init_schema=False)
     try:
         results = query_symbols(conn, blob, query, _N, file_extensions, _MIN_SCORE,
-                                reranker_endpoint=reranker_endpoint, reranker_model=reranker_model)
+                                reranker_endpoint=reranker_endpoint, reranker_model=reranker_model,
+                                directory=directory)
         return format_compact(results) or "No results found."
     finally:
         conn.close()
@@ -70,7 +74,7 @@ def browse(directory: str = "", file_extensions: list[str] = []) -> str:
         file_extensions: Restrict to specific file types, e.g. [".py"], [".cs"].
             Leave empty to list all indexed files.
     """
-    conn = db.open_db(_cfg.db.path)
+    conn = db.open_db(_cfg.db.path, init_schema=False)
     try:
         result = _browse(conn, directory, file_extensions)
     finally:
@@ -92,7 +96,7 @@ def deps(directory: str = "") -> str:
     Args:
         directory: Directory to scope the graph to. Leave empty to show the full graph.
     """
-    conn = db.open_db(_cfg.db.path)
+    conn = db.open_db(_cfg.db.path, init_schema=False)
     try:
         result = _deps(conn, directory)
     finally:
@@ -115,7 +119,7 @@ def detail(name: str, file_path: str = "") -> str:
         file_path: Optional path substring to disambiguate when the same name
             appears in multiple files, e.g. "watcher.py".
     """
-    conn = db.open_db(_cfg.db.path)
+    conn = db.open_db(_cfg.db.path, init_schema=False)
     try:
         return _detail(conn, name, file_path)
     finally:
