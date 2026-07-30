@@ -40,9 +40,6 @@ def status(conn) -> str:
     }
 
     total_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-    symbolized = conn.execute(
-        "SELECT COUNT(DISTINCT file_id) FROM symbols"
-    ).fetchone()[0]
     total_syms = conn.execute(
         "SELECT COUNT(*) FROM symbols WHERE kind != 'heading'"
     ).fetchone()[0]
@@ -70,20 +67,38 @@ def status(conn) -> str:
             result += f"\n  error: {error}"
         return result
 
-    for label, db_name, pct_str in [
-        ("watch-folder", "watch-folder", f"{total_files} files"),
-        ("symbolizer",   "symbolizer",   _pct(symbolized, total_files)),
-        ("describer",    "llm-describer", _pct(described, describable)),
-        ("embedder",     "embedder",      _pct(embedded, total_syms)),
+    for label, db_name in [
+        ("watch-folder", "watch-folder"),
+        ("symbolizer",   "symbolizer"),
+        ("describer",    "llm-describer"),
+        ("embedder",     "embedder"),
     ]:
         hb = heartbeats.get(db_name)
+        eta = None
+        ts = None
+        err = ""
+        queue = 0
+        stat = "unknown"
         if hb:
-            _, stat, _, _, eta, ts, err = hb
+            _, stat, queue, _, eta, ts, err = hb
+            err = err or ""
+
+        if label == "watch-folder":
+            detail = f"{total_files} files"
+        elif label == "symbolizer":
+            detail = f"{queue} pending" if queue else "idle"
+            if not queue:
+                eta = None
+        elif label == "describer":
+            detail = _pct(described, describable)
             if stat == "idle":
                 eta = None
-            lines.append(_row(label, pct_str, eta, ts, err or ""))
         else:
-            lines.append(_row(label, pct_str, None, None, ""))
+            detail = _pct(embedded, total_syms)
+            if stat == "idle":
+                eta = None
+
+        lines.append(_row(label, detail, eta, ts, err))
 
     return "\n".join(lines) if lines else "No daemon status found."
 

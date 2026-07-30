@@ -29,6 +29,10 @@ class _RegexpAdapter:
         if os.path.basename(path) == "package.json":
             from blerk.symbols import package_json_extractor
             return package_json_extractor.extract(path), []
+        ext = os.path.splitext(path)[1].lower()
+        if ext in (".yaml", ".yml"):
+            from blerk.symbols import yaml_extractor
+            return yaml_extractor.extract(path), []
         return regexp_extractor.extract_symbols(path), []
 
 
