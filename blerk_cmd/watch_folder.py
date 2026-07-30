@@ -342,6 +342,7 @@ def main() -> None:
     parser.add_argument("--config", default=config.default_path())
     parser.add_argument("--ignore", default="", help="override ignore file path (default: watch.ignore_file from config)")
     parser.add_argument("--scan", action="store_true", help="exit after initial scan without watching for changes")
+    parser.add_argument("--folder", default="", help="watch a single folder (overrides config folder list)")
     args = parser.parse_args()
 
     cfg = config.load(args.config)
@@ -364,7 +365,8 @@ def main() -> None:
 
     observers = []
     ignore_path = args.ignore or cfg.watch.ignore_file
-    for folder in cfg.watch.folders:
+    folders = [args.folder] if args.folder else cfg.watch.folders
+    for folder in folders:
         obs = watch_folder(folder, conn, ignore_path, debounce_s, args.scan, shutdown)
         if obs is not None:
             observers.append(obs)

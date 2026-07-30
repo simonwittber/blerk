@@ -18,9 +18,9 @@ PID_FILE = Path.home() / ".blerk" / "blerk.pid"
 MIN_BACKOFF = 1.0
 MAX_BACKOFF = 60.0
 STABLE_RUN = 30.0
+CONFIG_POLL_S = 5.0
 
 DAEMONS = [
-    ("watch-folder", "blerk_cmd.watch_folder"),
     ("symbolizer", "blerk_cmd.symbolizer"),
     ("git-enricher", "blerk_cmd.git_enricher"),
     ("embedder", "blerk_cmd.embedder"),
@@ -134,14 +134,78 @@ def main() -> None:
         t.start()
         threads.append(t)
 
+    # Per-folder watcher threads: {folder: (thread, folder_shutdown_event)}
+    folder_threads: dict[str, tuple[threading.Thread, threading.Event]] = {}
+
+    def _spawn_watcher(folder: str) -> tuple[threading.Thread, threading.Event]:
+        folder_shutdown = threading.Event()
+        argv = build_argv("blerk_cmd.watch_folder", args.config) + ["--folder", folder]
+        t = threading.Thread(
+            target=managed,
+            args=(f"watch-folder:{folder}", argv, folder_shutdown),
+            name=f"watch-folder:{folder}",
+            daemon=False,
+        )
+        t.start()
+        log.info("[hub] started watcher for %s", folder)
+        return t, folder_shutdown
+
+    def _stop_watcher(folder: str) -> None:
+        entry = folder_threads.pop(folder, None)
+        if entry:
+            t, ev = entry
+            ev.set()
+            t.join(timeout=10)
+            log.info("[hub] stopped watcher for %s", folder)
+
+    current_folders: set[str] = set(cfg.watch.folders)
+    for folder in current_folders:
+        folder_threads[folder] = _spawn_watcher(folder)
+
+    cfg_path = args.config
+    try:
+        cfg_mtime = os.path.getmtime(cfg_path)
+    except OSError:
+        cfg_mtime = 0.0
+
     PID_FILE.write_text(str(os.getpid()))
     try:
         while not shutdown.is_set():
-            shutdown.wait(timeout=1.0)
+            shutdown.wait(timeout=CONFIG_POLL_S)
+            if shutdown.is_set():
+                break
+
+            try:
+                new_mtime = os.path.getmtime(cfg_path)
+            except OSError:
+                continue
+            if new_mtime == cfg_mtime:
+                continue
+            cfg_mtime = new_mtime
+
+            try:
+                new_cfg = config.load(cfg_path)
+            except Exception as e:
+                log.warning("[hub] config reload failed: %s", e)
+                continue
+
+            new_folders: set[str] = set(new_cfg.watch.folders)
+
+            for folder in current_folders - new_folders:
+                _stop_watcher(folder)
+
+            for folder in new_folders - current_folders:
+                folder_threads[folder] = _spawn_watcher(folder)
+
+            current_folders = new_folders
+
     except KeyboardInterrupt:
         shutdown.set()
     finally:
         PID_FILE.unlink(missing_ok=True)
+
+    for folder in list(folder_threads):
+        _stop_watcher(folder)
 
     for t in threads:
         t.join(timeout=10)
