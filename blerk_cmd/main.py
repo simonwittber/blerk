@@ -15,6 +15,8 @@ _DISPATCH = {
     "deps":   "blerk_cmd.deps",
     "lint":   "blerk_cmd.lint",
     "rescan": "blerk_cmd.rescan",
+    "purge":  "blerk_cmd.purge",
+    "tags":   "blerk_cmd.tags",
 }
 
 _HELP = {
@@ -28,6 +30,8 @@ _HELP = {
     "deps":   "Show file-level dependency graph",
     "lint":   "Lint code using the blerk index",
     "rescan": "Re-queue files for symbolization",
+    "purge":  "Remove indexed files that match ignore patterns",
+    "tags":   "List all tag keys and values in the index",
     "add":    "Add a folder to the watch list",
     "remove": "Remove a folder from the watch list",
 }

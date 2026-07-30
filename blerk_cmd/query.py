@@ -269,8 +269,6 @@ def format_verbose(conn, results: list[QueryResult], refs: bool = False) -> str:
         lines.append(f"path: {r.path}")
         lines.append(f"lines: {r.line}-{r.end_line}")
         lines.append(f"score: {r.score:.3f}")
-        if r.description:
-            lines.append(f"desc: {r.description}")
         if r.snippet:
             indented = "\n".join("  " + l for l in r.snippet.splitlines())
             lines.append(f"snippet:\n{indented}")
@@ -289,8 +287,6 @@ def format_compact(results: list[QueryResult]) -> str:
     for r in results:
         sig = f"({r.params})" if r.params else ""
         lines.append(f"{r.kind} {r.name}{sig}  {r.path}:{r.line}-{r.end_line}")
-        if r.description:
-            lines.append(f"  {r.description}")
         lines.append("")
     return "\n".join(lines).rstrip()
 

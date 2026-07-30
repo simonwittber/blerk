@@ -172,7 +172,6 @@ Options:
 path: /home/user/git/myproject/watcher.py
 lines: 45-58
 score: 0.941
-description: Adds an event to the pending map and resets the flush timer using a generation counter to cancel any in-flight timer.
 snippet:
 def add(self, path, event):
     with self._lock:
@@ -215,7 +214,9 @@ Each daemon writes a heartbeat row to the `daemon_status` table every poll cycle
 | `blerk detail <name>` | Show full detail for a symbol by exact name |
 | `blerk deps [--dir PATH]` | Show the file-level dependency graph |
 | `blerk lint` | Check call-pattern rules against the index |
+| `blerk tags [--dir PATH]` | List all tag keys and values in the index |
 | `blerk rescan [PATH]` | Re-queue files for symbolization |
+| `blerk purge [--dry-run]` | Remove DB records for files that match ignore patterns |
 | `blerk status` | Show daemon status and queue depths |
 | `blerk add <path>` | Add a folder to the watch list |
 | `blerk remove <path>` | Remove a folder from the watch list |

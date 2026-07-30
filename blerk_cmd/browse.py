@@ -3,9 +3,29 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from blerk import config, db
 from blerk_cmd.query import _ext_clause, _tag_clause
+
+
+def _unindexed_subdirs(conn, directory: str) -> list[str]:
+    root = Path(directory.replace("\\", "/"))
+    if not root.is_dir():
+        return []
+    norm = str(root).replace("\\", "/").rstrip("/")
+    unindexed: list[str] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        child_norm = str(child).replace("\\", "/")
+        row = conn.execute(
+            "SELECT 1 FROM files WHERE path LIKE ? LIMIT 1",
+            (f"{child_norm}/%",),
+        ).fetchone()
+        if row is None:
+            unindexed.append(child_norm)
+    return unindexed
 
 
 def browse(
@@ -41,7 +61,11 @@ def browse(
         ).fetchall()
         if not rows:
             return "No indexed files found."
-        return "\n".join(r[0] for r in rows)
+        result = "\n".join(r[0] for r in rows)
+        unindexed = _unindexed_subdirs(conn, directory)
+        if unindexed:
+            result += "\n" + "\n".join(f"[not indexed] {d}" for d in unindexed)
+        return result
 
     rows = conn.execute(
         f"""
@@ -88,7 +112,11 @@ def browse(
         if kind in ("class", "struct", "interface", "enum", "type") and end > line:
             containers.append((end, depth + 1))
 
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    unindexed = _unindexed_subdirs(conn, directory)
+    if unindexed:
+        result += "\n" + "\n".join(f"[not indexed] {d}" for d in unindexed)
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:

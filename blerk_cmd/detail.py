@@ -49,9 +49,6 @@ def detail(conn, name: str, path_filter: str = "") -> str:
             attrs.append(f"{param_count} params")
         if attrs:
             lines.append("attrs: " + ", ".join(attrs))
-        if desc:
-            lines.append(f"description: {desc}")
-
         callers = conn.execute(
             "SELECT s.name FROM symbol_refs r JOIN symbols s ON s.id = r.caller_id"
             " WHERE r.callee_id=? LIMIT 10",
