@@ -32,12 +32,17 @@ def _pct(num: int, den: int) -> str:
 
 
 def status(conn) -> str:
-    heartbeats: dict[str, tuple] = {
-        row[0]: row for row in conn.execute(
-            "SELECT daemon, status, queue_depth, rate_per_minute, eta_seconds, last_heartbeat, last_error "
-            "FROM daemon_status ORDER BY daemon"
-        ).fetchall()
-    }
+    raw_heartbeats: list[tuple] = conn.execute(
+        "SELECT daemon, status, queue_depth, rate_per_minute, eta_seconds, last_heartbeat, last_error "
+        "FROM daemon_status ORDER BY daemon"
+    ).fetchall()
+
+    def _latest(prefix: str) -> tuple | None:
+        matches = [r for r in raw_heartbeats if r[0] == prefix or r[0].startswith(prefix + "-")]
+        if not matches:
+            return None
+        return max(matches, key=lambda r: r[5] or 0)
+
 
     total_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
     total_syms = conn.execute(
@@ -73,7 +78,7 @@ def status(conn) -> str:
         ("describer",    "llm-describer"),
         ("embedder",     "embedder"),
     ]:
-        hb = heartbeats.get(db_name)
+        hb = _latest(db_name)
         eta = None
         ts = None
         err = ""
