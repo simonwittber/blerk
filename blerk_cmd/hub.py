@@ -29,6 +29,12 @@ DAEMONS = [
 log = logging.getLogger("hub")
 
 
+_POPEN_FLAGS: dict = (
+    {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    if sys.platform == "win32" else {}
+)
+
+
 def build_argv(module: str, cfg_path: str) -> list[str]:
     return [sys.executable, "-m", module, "--config", cfg_path]
 
@@ -37,7 +43,7 @@ def managed(name: str, argv: list[str], shutdown_event: threading.Event) -> None
     backoff = MIN_BACKOFF
     while not shutdown_event.is_set():
         try:
-            proc = subprocess.Popen(argv, stdout=None, stderr=None)
+            proc = subprocess.Popen(argv, stdout=None, stderr=None, **_POPEN_FLAGS)
         except OSError as e:
             log.warning("[hub] failed to start %s: %s (retry in %.0fs)", name, e, backoff)
             if shutdown_event.wait(timeout=backoff):
