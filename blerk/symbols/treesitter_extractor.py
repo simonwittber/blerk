@@ -127,7 +127,7 @@ class Extractor:
         if tree is None:
             return [], []
         root = tree.root_node
-        syms = extract_decls(root, src, ld)
+        syms = extract_decls(root, src, ld, path)
         refs = extract_calls(root, src, ld, syms)
         return syms, refs
 
@@ -136,7 +136,7 @@ def _node_text(node: Any, src: bytes) -> str:
     return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 
 
-def extract_decls(root: Any, src: bytes, ld: LangDef) -> list[Symbol]:
+def extract_decls(root: Any, src: bytes, ld: LangDef, path: str = "") -> list[Symbol]:
     try:
         q = Query(ld.language, ld.decl_query)
     except Exception:
@@ -193,7 +193,7 @@ def extract_decls(root: Any, src: bytes, ld: LangDef) -> list[Symbol]:
             raw = _node_text(params_node, src).strip()
             inner = raw[1:-1] if raw.startswith("(") else raw
             params = " ".join(inner.split())
-        tags = _symbol_tags(def_node, src, ld.key, name)
+        tags = _symbol_tags(def_node, src, ld.key, name, root=root, path=path)
         out.append(Symbol(
             name=name,
             kind=kind,
@@ -239,7 +239,66 @@ def extract_calls(root: Any, src: bytes, ld: LangDef, syms: list[Symbol]) -> lis
 _VISIBILITY_KEYWORDS = frozenset({"public", "private", "protected", "internal"})
 
 
-def _symbol_tags(node: Any, src: bytes, lang_key: str, name: str) -> dict[str, str]:
+def _cs_namespace(node: Any, src: bytes) -> str:
+    parts: list[str] = []
+    parent = node.parent
+    while parent is not None:
+        if parent.type in ("namespace_declaration", "file_scoped_namespace_declaration"):
+            name_node = parent.child_by_field_name("name")
+            if name_node:
+                parts.append(_node_text(name_node, src))
+        parent = parent.parent
+    parts.reverse()
+    return ".".join(parts)
+
+
+def _go_package(root: Any, src: bytes) -> str:
+    for child in root.children:
+        if child.type == "package_clause":
+            for c in child.children:
+                if c.type == "package_identifier":
+                    return _node_text(c, src)
+    return ""
+
+
+def _py_module_name(path: str) -> str:
+    from pathlib import Path as _Path
+    p = _Path(path)
+    parts = [p.stem]
+    current = p.parent
+    while (current / "__init__.py").exists():
+        parts.append(current.name)
+        current = current.parent
+    parts.reverse()
+    return ".".join(parts)
+
+
+def _cpp_namespace(node: Any, src: bytes) -> str:
+    parts: list[str] = []
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "namespace_definition":
+            name_node = parent.child_by_field_name("name")
+            if name_node:
+                parts.append(_node_text(name_node, src))
+        parent = parent.parent
+    parts.reverse()
+    return ".".join(parts)
+
+
+def _extract_namespace(node: Any, src: bytes, lang_key: str, root: Any, path: str) -> str:
+    if lang_key == "cs":
+        return _cs_namespace(node, src)
+    if lang_key == "go":
+        return _go_package(root, src) if root is not None else ""
+    if lang_key == "py":
+        return _py_module_name(path) if path else ""
+    if lang_key == "cpp":
+        return _cpp_namespace(node, src)
+    return ""
+
+
+def _symbol_tags(node: Any, src: bytes, lang_key: str, name: str, root: Any = None, path: str = "") -> dict[str, str]:
     tags: dict[str, str] = {}
     if lang_key in ("cs", "go", "c", "cpp", "js"):
         modifiers: list[str] = []
@@ -264,6 +323,9 @@ def _symbol_tags(node: Any, src: bytes, lang_key: str, name: str) -> dict[str, s
             tags["visibility"] = "private"
         else:
             tags["visibility"] = "public"
+    ns = _extract_namespace(node, src, lang_key, root, path)
+    if ns:
+        tags["namespace"] = ns
     return tags
 
 

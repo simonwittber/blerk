@@ -21,7 +21,6 @@ STABLE_RUN = 30.0
 CONFIG_POLL_S = 5.0
 
 DAEMONS = [
-    ("symbolizer", "blerk_cmd.symbolizer"),
     ("git-enricher", "blerk_cmd.git_enricher"),
     ("embedder", "blerk_cmd.embedder"),
 ]
@@ -125,6 +124,14 @@ def main() -> None:
     for name, module in DAEMONS:
         argv = build_argv(module, args.config)
         t = threading.Thread(target=managed, args=(name, argv, shutdown), name=name, daemon=False)
+        t.start()
+        threads.append(t)
+
+    n_sym = max(1, cfg.symbolizer.workers)
+    for i in range(n_sym):
+        daemon_name = "symbolizer" if n_sym == 1 else f"symbolizer-{i}"
+        argv = build_argv("blerk_cmd.symbolizer", args.config)
+        t = threading.Thread(target=managed, args=(daemon_name, argv, shutdown), name=daemon_name, daemon=False)
         t.start()
         threads.append(t)
 

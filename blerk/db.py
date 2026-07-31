@@ -216,7 +216,7 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
 
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA busy_timeout=30000")
     if init_schema:
         _init_schema(conn)
     return conn

@@ -24,6 +24,7 @@ class Symbolizer:
     max_retries: int = 0
     min_describe_lines: int = 0
     engine: str = ""
+    workers: int = 1
 
 
 @dataclass
@@ -60,6 +61,7 @@ class Embedder:
 class Reranker:
     endpoint: str = ""
     model: str = ""
+    api_key: str = ""
     enabled: bool = False
 
 
@@ -172,6 +174,8 @@ def load(path: str) -> Config:
             for llm in cfg.llm:
                 if not llm.api_key:
                     llm.api_key = api_key
+            if not cfg.reranker.api_key:
+                cfg.reranker.api_key = api_key
     except (FileNotFoundError, tomllib.TOMLDecodeError):
         pass
 

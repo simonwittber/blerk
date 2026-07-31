@@ -21,7 +21,7 @@ DAEMON = "embedder"
 
 log = logging.getLogger("embedder")
 
-_client = httpx.Client(timeout=30.0)
+_client = httpx.Client(timeout=120.0)
 
 
 def embed(endpoint: str, model: str, text: str) -> list[float]:
@@ -43,6 +43,8 @@ def embed_with_truncation(endpoint: str, model: str, text: str) -> list[float]:
         iters += 1
         try:
             return embed(endpoint, model, text)
+        except httpx.TimeoutException as e:
+            raise RuntimeError(f"embed timed out: {e}") from e
         except RuntimeError as e:
             if "context length" not in str(e).lower():
                 raise
@@ -89,7 +91,8 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
             status = "running"
             for row in rows:
                 sym_row = conn.execute(
-                    "SELECT s.name, COALESCE(s.description, ''), COALESCE(s.snippet, ''), f.path, COALESCE(s.params, ''), s.kind "
+                    "SELECT s.name, COALESCE(s.description, ''), COALESCE(s.snippet, ''), f.path, COALESCE(s.params, ''), s.kind, "
+                    "s.file_id, s.line, s.nesting_depth "
                     "FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id=?",
                     (row.target_id,),
                 ).fetchone()
@@ -100,7 +103,25 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
                         log.warning("mark done %s %d: %s", QUEUE, row.id, e)
                     continue
 
-                name, description, snippet, path, params, kind = sym_row
+                name, description, snippet, path, params, kind, file_id, line, nesting_depth = sym_row
+
+                parent_row = None
+                if nesting_depth and nesting_depth > 0:
+                    parent_row = conn.execute(
+                        "SELECT name FROM symbols "
+                        "WHERE file_id=? AND kind IN ('class','struct','interface','enum','type') "
+                        "AND line<=? AND (end_line IS NULL OR end_line>=?) "
+                        "AND nesting_depth=? "
+                        "ORDER BY line DESC LIMIT 1",
+                        (file_id, line, line, nesting_depth - 1),
+                    ).fetchone()
+                parent_class = parent_row[0] if parent_row else ""
+
+                ns_row = conn.execute(
+                    "SELECT value FROM symbol_tags WHERE symbol_id=? AND key='namespace'",
+                    (row.target_id,),
+                ).fetchone()
+                namespace = ns_row[0] if ns_row else ""
 
                 callers = conn.execute(
                     "SELECT s.name FROM symbol_refs r JOIN symbols s ON s.id = r.caller_id "
@@ -114,7 +135,9 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
                 ).fetchall()
 
                 sig = f"({params})" if params else ""
-                parts = [f"{name}{sig}"]
+                ns_prefix = f"{namespace}." if namespace else ""
+                cls_prefix = f"{parent_class}." if parent_class else ""
+                parts = [f"{ns_prefix}{cls_prefix}{name}{sig}"]
                 if description:
                     parts.append(": ")
                     parts.append(description)

@@ -11,7 +11,7 @@ import httpx
 from blerk import config, db
 
 _RRF_K = 60
-_OVERFETCH = 5
+_OVERFETCH = 20
 
 
 def embed(endpoint: str, model: str, text: str) -> list[float]:
@@ -145,23 +145,48 @@ def _rrf_score(rank: int) -> float:
 def _rerank(
     endpoint: str,
     model: str,
+    api_key: str,
     query_text: str,
     rows: list,
 ) -> list:
-    docs = [
-        f"{kind} {name}({params})\n{path}\n{desc}\n{snippet}"
-        for _, name, kind, path, _, _, desc, snippet, params in rows
-    ]
+    numbered = "\n".join(
+        f"{i+1}. {kind} {name}({params}) in {path}" + (f"\n   {desc}" if desc else "")
+        for i, (_, name, kind, path, _, _, desc, snippet, params) in enumerate(rows)
+    )
+    prompt = (
+        f'Rank these code symbols by relevance to: "{query_text}"\n'
+        f"Reply with only comma-separated indices, most relevant first.\n\n"
+        f"{numbered}"
+    )
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     try:
         r = httpx.post(
-            endpoint + "/api/rerank",
-            json={"model": model, "query": query_text, "documents": docs},
+            endpoint + "/v1/chat/completions",
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 64,
+                "temperature": 0,
+            },
+            headers=headers,
             timeout=30.0,
         )
         if r.status_code != 200:
             return rows
-        results = sorted(r.json()["results"], key=lambda x: x["relevance_score"], reverse=True)
-        return [rows[x["index"]] for x in results]
+        text = r.json()["choices"][0]["message"]["content"].strip()
+        indices = [int(t.strip()) - 1 for t in text.split(",") if t.strip().isdigit()]
+        seen: set[int] = set()
+        reordered = []
+        for i in indices:
+            if 0 <= i < len(rows) and i not in seen:
+                reordered.append(rows[i])
+                seen.add(i)
+        for i, row in enumerate(rows):
+            if i not in seen:
+                reordered.append(row)
+        return reordered
     except Exception:
         return rows
 
@@ -188,6 +213,7 @@ def query_symbols(
     min_score: float = 0.0,
     reranker_endpoint: str = "",
     reranker_model: str = "",
+    reranker_api_key: str = "",
     directory: str = "",
     tags: dict[str, str] | None = None,
 ) -> list[QueryResult]:
@@ -247,13 +273,13 @@ def query_symbols(
         if any(m in p for m in _TEST_MARKERS):
             mult *= 0.5
         if desc:
-            mult *= 1.5
+            mult *= 2.5
         scores[id_] *= mult
 
     rows.sort(key=lambda r: scores[r[0]], reverse=True)
 
     if reranker_endpoint and reranker_model:
-        rows = _rerank(reranker_endpoint, reranker_model, query_text, rows)
+        rows = _rerank(reranker_endpoint, reranker_model, reranker_api_key, query_text, rows)
 
     return [
         QueryResult(id_, name, kind, path, line, end_line, desc, snippet, params, scores[id_])
@@ -301,12 +327,13 @@ def run_query(
     min_score: float = 0.0,
     reranker_endpoint: str = "",
     reranker_model: str = "",
+    reranker_api_key: str = "",
     directory: str = "",
     verbose: bool = False,
     tags: dict[str, str] | None = None,
 ) -> None:
     results = query_symbols(conn, blob, query_text, n, exts, min_score,
-                            reranker_endpoint, reranker_model, directory, tags)
+                            reranker_endpoint, reranker_model, reranker_api_key, directory, tags)
     if results:
         if verbose or refs:
             print(format_verbose(conn, results, refs))
@@ -337,6 +364,7 @@ def main(argv: list[str] | None = None) -> int:
 
     reranker_endpoint = cfg.reranker.endpoint if cfg.reranker.enabled else ""
     reranker_model = cfg.reranker.model if cfg.reranker.enabled else ""
+    reranker_api_key = cfg.reranker.api_key if cfg.reranker.enabled else ""
     tag_filter: dict[str, str] = {}
     for t in args.tags:
         if "=" in t:
@@ -344,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             tag_filter[k.strip()] = v.strip()
     run_query(conn, blob, args.query, args.n, args.refs, args.exts,
               reranker_endpoint=reranker_endpoint, reranker_model=reranker_model,
+              reranker_api_key=reranker_api_key,
               directory=args.directory,
               verbose=args.verbose or args.refs,
               tags=tag_filter or None)

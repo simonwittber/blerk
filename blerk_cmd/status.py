@@ -37,11 +37,17 @@ def status(conn) -> str:
         "FROM daemon_status ORDER BY daemon"
     ).fetchall()
 
-    def _latest(prefix: str) -> tuple | None:
+    def _aggregate(prefix: str) -> tuple | None:
         matches = [r for r in raw_heartbeats if r[0] == prefix or r[0].startswith(prefix + "-")]
         if not matches:
             return None
-        return max(matches, key=lambda r: r[5] or 0)
+        best = max(matches, key=lambda r: r[5] or 0)
+        total_rate = sum(r[3] or 0.0 for r in matches)
+        queue = best[2] or 0
+        eta = int(queue / total_rate * 60) if total_rate > 0 and queue > 0 else None
+        err = next((r[6] for r in sorted(matches, key=lambda r: r[5] or 0, reverse=True) if r[6]), "")
+        stat = "running" if any(r[1] == "running" for r in matches) else best[1]
+        return (best[0], stat, queue, total_rate, eta, best[5], err)
 
 
     total_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
@@ -78,7 +84,7 @@ def status(conn) -> str:
         ("describer",    "llm-describer"),
         ("embedder",     "embedder"),
     ]:
-        hb = _latest(db_name)
+        hb = _aggregate(db_name)
         eta = None
         ts = None
         err = ""
