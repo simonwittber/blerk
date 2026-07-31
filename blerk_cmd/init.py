@@ -35,9 +35,7 @@ batch_size = 5
 poll_ms = 3000
 max_retries = 3
 max_context_chars = 16000
-prompt_template = \"\"\"Describe the following {{kind}} named "{{name}}" from {{path}}. Be concise and technical.
-
-{{context}}\"\"\"
+prompt_template = "You are writing documentation for other programmers. Describe the following {{kind}} named \\"{{name}}\\" from {{path}}. Be concise and technical. Do not try and make fixes or note any errors. Do not make guesses, just describe what is in front of you. Limit to 4 sentences. Do not reference this prompt, as you are making a description that is being used in a RAG database.\\n\\n{{context}}\\n"
 
 [embedder]
 endpoint = {embed_endpoint!r}
