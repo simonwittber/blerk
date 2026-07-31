@@ -87,6 +87,15 @@ _CONTAINER_TYPES = frozenset({
     "constructor_declaration",
 })
 
+_CLASS_NODE_TYPES: dict[str, frozenset[str]] = {
+    "cs":  frozenset({"class_declaration", "struct_declaration", "interface_declaration"}),
+    "py":  frozenset({"class_definition"}),
+    "js":  frozenset({"class_declaration"}),
+    "cpp": frozenset({"class_specifier", "struct_specifier"}),
+    "c":   frozenset({"struct_specifier"}),
+    "go":  frozenset(),
+}
+
 
 def _nesting_depth(node: Any) -> int:
     depth = 0
@@ -96,6 +105,54 @@ def _nesting_depth(node: Any) -> int:
             depth += 1
         parent = parent.parent
     return depth
+
+
+def _enclosing_class_names(node: Any, src: bytes, lang_key: str) -> list[str]:
+    container = _CLASS_NODE_TYPES.get(lang_key, frozenset())
+    parts: list[str] = []
+    parent = node.parent
+    while parent is not None:
+        if parent.type in container:
+            name_node = parent.child_by_field_name("name")
+            if name_node:
+                parts.append(_node_text(name_node, src))
+        parent = parent.parent
+    parts.reverse()
+    return parts
+
+
+def _go_receiver_type(def_node: Any, src: bytes) -> str:
+    if def_node.type != "method_declaration":
+        return ""
+    receiver = def_node.child_by_field_name("receiver")
+    if receiver is None:
+        return ""
+    for i in range(receiver.child_count):
+        child = receiver.child(i)
+        if child.type == "parameter_declaration":
+            for j in range(child.child_count):
+                gc = child.child(j)
+                if gc.type == "type_identifier":
+                    return _node_text(gc, src)
+                if gc.type == "pointer_type":
+                    for k in range(gc.child_count):
+                        if gc.child(k).type == "type_identifier":
+                            return _node_text(gc.child(k), src)
+    return ""
+
+
+def _build_qualified_name(short_name: str, def_node: Any, src: bytes, lang_key: str, namespace: str) -> str:
+    parts: list[str] = []
+    if namespace:
+        parts.append(namespace)
+    if lang_key == "go":
+        receiver = _go_receiver_type(def_node, src)
+        if receiver:
+            parts.append(receiver)
+    else:
+        parts.extend(_enclosing_class_names(def_node, src, lang_key))
+    parts.append(short_name)
+    return ".".join(parts)
 
 
 def _run_matches(query: Query, node: Any) -> list[tuple[int, dict[str, list[Any]]]]:
@@ -185,7 +242,7 @@ def extract_decls(root: Any, src: bytes, ld: LangDef, path: str = "") -> list[Sy
                 kind = "variable"
         if name_node is None or def_node is None:
             continue
-        name = _node_text(name_node, src)
+        short_name = _node_text(name_node, src)
         if ld.key == "py" and kind == "function" and is_inside_class(def_node):
             kind = "method"
         params = ""
@@ -193,9 +250,12 @@ def extract_decls(root: Any, src: bytes, ld: LangDef, path: str = "") -> list[Sy
             raw = _node_text(params_node, src).strip()
             inner = raw[1:-1] if raw.startswith("(") else raw
             params = " ".join(inner.split())
-        tags = _symbol_tags(def_node, src, ld.key, name, root=root, path=path)
+        tags = _symbol_tags(def_node, src, ld.key, short_name, root=root, path=path)
+        namespace = tags.get("namespace", "")
+        qualified = _build_qualified_name(short_name, def_node, src, ld.key, namespace)
         out.append(Symbol(
-            name=name,
+            name=qualified,
+            short_name=short_name,
             kind=kind,
             line=def_node.start_point[0] + 1,
             end_line=def_node.end_point[0] + 1,
@@ -220,12 +280,18 @@ def extract_calls(root: Any, src: bytes, ld: LangDef, syms: list[Symbol]) -> lis
     )
     if not ranges:
         return []
+    short_to_qualified = {
+        (sym.short_name or sym.name.split(".")[-1]): sym.name
+        for sym in syms
+        if sym.kind in ("function", "method")
+    }
     seen: set[tuple[str, str]] = set()
     refs: list[CallRef] = []
     for _pattern_idx, captures in _run_matches(q, root):
         for callee_node in (captures.get("callee") or []):
             callee_line = callee_node.start_point[0] + 1
-            callee = _node_text(callee_node, src)
+            callee_short = _node_text(callee_node, src)
+            callee = short_to_qualified.get(callee_short, callee_short)
             for start, end, name in ranges:
                 if start <= callee_line <= end:
                     key = (name, callee)

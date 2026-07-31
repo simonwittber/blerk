@@ -295,6 +295,8 @@ def format_verbose(conn, results: list[QueryResult], refs: bool = False) -> str:
         lines.append(f"path: {r.path}")
         lines.append(f"lines: {r.line}-{r.end_line}")
         lines.append(f"score: {r.score:.3f}")
+        if r.description:
+            lines.append(f"desc: {r.description}")
         if r.snippet:
             indented = "\n".join("  " + l for l in r.snippet.splitlines())
             lines.append(f"snippet:\n{indented}")

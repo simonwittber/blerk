@@ -44,7 +44,7 @@ def test_open_creates_schema(conn):
 def test_open_pragmas_applied(conn):
     assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
     assert int(conn.execute("PRAGMA foreign_keys").fetchone()[0]) == 1
-    assert int(conn.execute("PRAGMA busy_timeout").fetchone()[0]) == 5000
+    assert int(conn.execute("PRAGMA busy_timeout").fetchone()[0]) == 30000
 
 
 def test_open_idempotent(tmp_path):

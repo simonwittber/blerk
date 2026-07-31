@@ -66,6 +66,13 @@ class Reranker:
 
 
 @dataclass
+class Confusing:
+    endpoint: str = ""
+    model: str = ""
+    api_key: str = ""
+
+
+@dataclass
 class Config:
     secrets_file: str = ""
     db: DB = field(default_factory=DB)
@@ -75,6 +82,7 @@ class Config:
     llm: list[LLM] = field(default_factory=list)
     embedder: Embedder = field(default_factory=Embedder)
     reranker: Reranker = field(default_factory=Reranker)
+    confusing: Confusing = field(default_factory=Confusing)
 
 
 def defaults() -> Config:
@@ -176,6 +184,8 @@ def load(path: str) -> Config:
                     llm.api_key = api_key
             if not cfg.reranker.api_key:
                 cfg.reranker.api_key = api_key
+            if not cfg.confusing.api_key:
+                cfg.confusing.api_key = api_key
     except (FileNotFoundError, tomllib.TOMLDecodeError):
         pass
 

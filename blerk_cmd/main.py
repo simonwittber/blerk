@@ -6,17 +6,18 @@ import sys
 from blerk import config
 
 _DISPATCH = {
-    "init":   "blerk_cmd.init",
-    "start":  "blerk_cmd.hub",
-    "status": "blerk_cmd.status",
-    "query":  "blerk_cmd.query",
-    "browse": "blerk_cmd.browse",
-    "detail": "blerk_cmd.detail",
-    "deps":   "blerk_cmd.deps",
-    "lint":   "blerk_cmd.lint",
-    "rescan": "blerk_cmd.rescan",
-    "purge":  "blerk_cmd.purge",
-    "tags":   "blerk_cmd.tags",
+    "init":      "blerk_cmd.init",
+    "start":     "blerk_cmd.hub",
+    "status":    "blerk_cmd.status",
+    "query":     "blerk_cmd.query",
+    "browse":    "blerk_cmd.browse",
+    "detail":    "blerk_cmd.detail",
+    "deps":      "blerk_cmd.deps",
+    "lint":      "blerk_cmd.lint",
+    "rescan":    "blerk_cmd.rescan",
+    "purge":     "blerk_cmd.purge",
+    "tags":      "blerk_cmd.tags",
+    "confusing": "blerk_cmd.confusion_sweeper",
 }
 
 _HELP = {
@@ -31,7 +32,8 @@ _HELP = {
     "lint":   "Lint code using the blerk index",
     "rescan": "Re-queue files for symbolization",
     "purge":  "Remove indexed files that match ignore patterns",
-    "tags":   "List all tag keys and values in the index",
+    "tags":      "List all tag keys and values in the index",
+    "confusing": "Find confusing or pointless code fragments",
     "add":    "Add a folder to the watch list",
     "remove": "Remove a folder from the watch list",
 }

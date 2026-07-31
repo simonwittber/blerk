@@ -64,8 +64,8 @@ public class A {
 """
     path = write_temp(tmp_path, "a.cs", src)
     _, refs = Extractor().extract(path)
-    assert any(r.caller_name == "Caller" and r.callee_name == "Callee" for r in refs), \
-        f"Expected Caller->Callee in refs, got: {refs}"
+    assert any(r.caller_name == "A.Caller" and r.callee_name == "A.Callee" for r in refs), \
+        f"Expected A.Caller->A.Callee in refs, got: {refs}"
 
 
 def test_cs_instance_method_call_extracted(tmp_path):
@@ -90,10 +90,10 @@ public class RenderableSimulation {
     path = write_temp(tmp_path, "spawner.cs", src)
     _, refs = Extractor().extract(path)
     callee_names = {r.callee_name for r in refs}
-    assert "SpawnEnemy" in callee_names, \
-        f"Expected SpawnEnemy in callee names, got: {callee_names}"
-    assert any(r.caller_name == "Update" and r.callee_name == "SpawnEnemy" for r in refs), \
-        f"Expected Update->SpawnEnemy, got: {refs}"
+    assert "RenderableSimulation.SpawnEnemy" in callee_names, \
+        f"Expected RenderableSimulation.SpawnEnemy in callee names, got: {callee_names}"
+    assert any(r.caller_name == "EnemySpawner.Update" and r.callee_name == "RenderableSimulation.SpawnEnemy" for r in refs), \
+        f"Expected EnemySpawner.Update->RenderableSimulation.SpawnEnemy, got: {refs}"
 
 
 def test_cs_chained_method_call_extracted(tmp_path):
@@ -111,8 +111,8 @@ public class Weapon {
 """
     path = write_temp(tmp_path, "ship.cs", src)
     _, refs = Extractor().extract(path)
-    assert any(r.caller_name == "Fire" and r.callee_name == "Shoot" for r in refs), \
-        f"Expected Fire->Shoot, got: {refs}"
+    assert any(r.caller_name == "Ship.Fire" and r.callee_name == "Weapon.Shoot" for r in refs), \
+        f"Expected Ship.Fire->Weapon.Shoot, got: {refs}"
 
 
 # ---------------------------------------------------------------------------

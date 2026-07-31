@@ -24,6 +24,7 @@ class Symbol:
     param_count: int = 0
     description: str = ""
     tags: dict[str, str] = field(default_factory=dict)
+    short_name: str = ""
 
 
 def count_params(params_str: str) -> int:

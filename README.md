@@ -67,6 +67,7 @@ batch_size = 10
 poll_ms = 1000
 max_retries = 3
 min_describe_lines = 5  # skip LLM description for symbols shorter than this
+workers = 4             # number of parallel symbolizer processes
 
 [git_enricher]
 batch_size = 20
@@ -91,6 +92,12 @@ batch_size = 10
 poll_ms = 2000
 max_retries = 3
 max_embed_chars = 8000
+vector_dim = 768
+
+[reranker]
+endpoint = "http://localhost:11434"
+model = ""
+enabled = false
 ```
 
 ### LLM API key
@@ -145,15 +152,17 @@ To use blerk as a context source for Claude or another MCP-compatible assistant,
 
 Once connected, the assistant can call:
 
-- `search(query, file_extensions?)` - find symbols by meaning
-- `browse(directory?, file_extensions?)` - list symbols in a directory
+- `search(query, directory="", file_extensions=[], n=10)` — find symbols by meaning
+- `browse(directory="", file_extensions=[], symbols=False)` — list files or symbols in a directory
+- `detail(name, file_path="")` — show description, snippet, callers, and callees for a named symbol
+- `deps(directory="")` — show the file-level dependency graph
 
 The assistant decides when to call these based on what it needs. No prompting required.
 
 ## Query
 
 ```
-blerk-query "how does the debouncer work"
+blerk query "how does the debouncer work"
 ```
 
 Options:
@@ -161,8 +170,11 @@ Options:
 | Flag | Default | Description |
 |---|---|---|
 | `-n N` | 10 | Number of results to return |
+| `--dir PATH` | (all) | Restrict to a directory path substring |
 | `--ext EXT` | (all) | Restrict to a file extension, e.g. `--ext .py`. Repeatable. |
+| `--tag KEY=VALUE` | (all) | Filter by symbol tag, e.g. `--tag visibility=public`. Repeatable. |
 | `--refs` | off | Show callers and callees for each result |
+| `--verbose` | off | Show full output with snippets and scores |
 | `--config PATH` | `~/.blerk/config.toml` | Path to config file |
 
 ### Example output
@@ -198,7 +210,7 @@ The hub manages five background processes. You can also run them individually:
 | Command | Role |
 |---|---|
 | `blerk-watch` | Watches folders, hashes files, upserts into DB |
-| `blerk-symbolize` | Extracts symbols from changed files |
+| `blerk-symbolize` | Extracts symbols from changed files (runs as N workers, set by `symbolizer.workers`) |
 | `blerk-git` | Enriches files with git commit/author/branch |
 | `blerk-describe` | Calls LLM to generate symbol descriptions |
 | `blerk-embed` | Generates vector embeddings via Ollama |

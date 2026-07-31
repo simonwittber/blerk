@@ -127,8 +127,8 @@ def process_symbols(
                 callee_id = name_to_id.get(ref.callee_name)
                 if callee_id is None:
                     cur = conn.execute(
-                        "SELECT id FROM symbols WHERE name=? AND kind IN ('function','method') LIMIT 1",
-                        (ref.callee_name,),
+                        "SELECT id FROM symbols WHERE (name=? OR name LIKE ?) AND kind IN ('function','method') LIMIT 1",
+                        (ref.callee_name, f"%.{ref.callee_name}"),
                     )
                     r = cur.fetchone()
                     if r is not None:
@@ -152,7 +152,12 @@ def process_symbols(
 
         # Promote external_refs that now resolve to newly inserted symbols.
         name_to_new_id: dict[str, int] = {syms[i].name: inserted_ids[i] for i in range(min(len(syms), len(inserted_ids)))}
-        for sym_name, new_callee_id in name_to_new_id.items():
+        short_to_new_id: dict[str, int] = {
+            (syms[i].short_name or syms[i].name.split(".")[-1]): inserted_ids[i]
+            for i in range(min(len(syms), len(inserted_ids)))
+        }
+        all_callee_ids = {**short_to_new_id, **name_to_new_id}
+        for sym_name, new_callee_id in all_callee_ids.items():
             ext_rows = conn.execute(
                 "SELECT id, caller_id FROM external_refs WHERE callee_name=?",
                 (sym_name,),
