@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 
-from blerk import config
+from blerk import config, db
 
 PID_FILE = Path.home() / ".blerk" / "blerk.pid"
 
@@ -82,6 +82,19 @@ def managed(name: str, argv: list[str], shutdown_event: threading.Event) -> None
         if shutdown_event.wait(timeout=backoff):
             return
         backoff = min(backoff * 2, MAX_BACKOFF)
+
+
+def _purge_folder(db_path: str, folder: str) -> None:
+    prefix = folder.replace("\\", "/").rstrip("/") + "/"
+    try:
+        conn = db.open_db(db_path)
+        with db._write_lock:
+            conn.execute("DELETE FROM files WHERE path LIKE ?", (prefix + "%",))
+            conn.commit()
+        conn.close()
+        log.info("[hub] purged DB records for %s", folder)
+    except Exception as e:
+        log.warning("[hub] purge DB for %s failed: %s", folder, e)
 
 
 def main() -> None:
@@ -206,6 +219,7 @@ def main() -> None:
 
             for folder in current_folders - new_folders:
                 _stop_watcher(folder)
+                _purge_folder(new_cfg.db.path, folder)
 
             for folder in new_folders - current_folders:
                 folder_threads[folder] = _spawn_watcher(folder)
