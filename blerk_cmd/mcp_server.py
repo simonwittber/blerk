@@ -1,152 +1,217 @@
 from __future__ import annotations
 
-import anyio
-from mcp.server.fastmcp import FastMCP
+import json
+import subprocess
+import sys
 
-from blerk import config, db
-from blerk_cmd.browse import browse as _browse
-from blerk_cmd.deps import deps as _deps
-from blerk_cmd.detail import detail as _detail
-from blerk_cmd.query import embed, format_compact, query_symbols, to_blob
+_TOOLS = [
+    {
+        "name": "search",
+        "description": "Search indexed source code symbols using natural language.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "directory": {"type": "string"},
+                "file_extensions": {"type": "array", "items": {"type": "string"}},
+                "n": {"type": "integer"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "browse",
+        "description": "List indexed source files. Set symbols=true for an indented symbol tree.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "directory": {"type": "string"},
+                "file_extensions": {"type": "array", "items": {"type": "string"}},
+                "symbols": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "detail",
+        "description": "Get description, snippet, callers, and callees for a named symbol.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "file_path": {"type": "string"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "deps",
+        "description": "Show the file-level dependency graph as an adjacency list.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "directory": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "lint",
+        "description": "Lint code using the blerk index. Flags large files and complex functions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "directory": {"type": "string"},
+                "exclude": {"type": "array", "items": {"type": "string"}},
+                "max_lines": {"type": "integer"},
+                "max_symbols": {"type": "integer"},
+                "max_callees": {"type": "integer"},
+                "max_params": {"type": "integer"},
+                "max_nesting": {"type": "integer"},
+                "unused": {"type": "boolean"},
+                "statics": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "confusing",
+        "description": "Find confusing or pointless code fragments using the blerk index.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "directory": {"type": "string"},
+                "file_extensions": {"type": "array", "items": {"type": "string"}},
+                "exclude": {"type": "array", "items": {"type": "string"}},
+                "n": {"type": "integer"},
+                "reset": {"type": "boolean", "description": "Clear existing confusing tags before sweeping."},
+            },
+        },
+    },
+]
 
-_MAX_N = 50
-_DEFAULT_N = 10
-_MIN_SCORE = 0.01
 
-_cfg: config.Config | None = None
-_conn = None
-
-mcp = FastMCP("blerk")
-
-
-def _get_cfg() -> config.Config:
-    global _cfg
-    if _cfg is None:
-        _cfg = config.load(config.default_path())
-    return _cfg
-
-
-def _get_conn():
-    global _conn
-    cfg = _get_cfg()
-    if _conn is None:
-        _conn = db.open_db(cfg.db.path, init_schema=False)
-    else:
-        try:
-            _conn.execute("SELECT 1")
-        except Exception:
-            _conn = db.open_db(cfg.db.path, init_schema=False)
-    return _conn
-
-
-@mcp.tool()
-async def search(
-    query: str,
-    directory: str = "",
-    file_extensions: list[str] = [],
-    n: int = _DEFAULT_N,
-) -> str:
-    """Search indexed source code symbols using natural language.
-
-    Args:
-        query: Natural language search query, e.g. "debounce timer reset".
-        directory: Restrict results to a directory path substring, e.g. "src/rendering".
-            Leave empty to search all indexed files.
-        file_extensions: Restrict results by file extension, e.g. [".py"] or [".cs", ".go"].
-            Leave empty to search all languages.
-        n: Number of results to return. Default 10, maximum 50.
-    """
-    n = max(1, min(n, _MAX_N))
-    cfg = _get_cfg()
-    try:
-        vec = await anyio.to_thread.run_sync(
-            lambda: embed(cfg.embedder.endpoint, cfg.embedder.model, query)
-        )
-    except Exception as e:
-        return f"Embedding error: {e}"
-    blob = to_blob(vec)
-    reranker_endpoint = cfg.reranker.endpoint if cfg.reranker.enabled else ""
-    reranker_model = cfg.reranker.model if cfg.reranker.enabled else ""
-    reranker_api_key = cfg.reranker.api_key if cfg.reranker.enabled else ""
-    conn = _get_conn()
-    results = await anyio.to_thread.run_sync(
-        lambda: query_symbols(
-            conn,
-            blob,
-            query,
-            n,
-            exts=list(file_extensions),
-            min_score=_MIN_SCORE,
-            reranker_endpoint=reranker_endpoint,
-            reranker_model=reranker_model,
-            reranker_api_key=reranker_api_key,
-            directory=directory,
-        )
+def _run(*args: str) -> str:
+    result = subprocess.run(
+        ["blerk"] + list(args),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
-    return format_compact(results) or "No results found."
+    output = result.stdout
+    if result.returncode != 0 and not output:
+        return result.stderr.strip() or f"blerk exited with code {result.returncode}"
+    return output
 
 
-@mcp.tool()
-def browse(
-    directory: str = "",
-    file_extensions: list[str] = [],
-    symbols: bool = False,
-) -> str:
-    """List indexed source files in a directory.
+def _call(name: str, args: dict) -> str:
+    if name == "search":
+        n = max(1, min(int(args.get("n", 10)), 50))
+        cmd = ["query", args["query"], "-n", str(n)]
+        if args.get("directory"):
+            cmd += ["--dir", args["directory"]]
+        for ext in args.get("file_extensions", []):
+            cmd += ["--ext", ext]
+        return _run(*cmd) or "No results found."
 
-    When symbols is False (the default), returns one file path per line.
-    When symbols is True, returns an indented symbol tree under each file.
+    if name == "browse":
+        cmd = ["browse"]
+        if args.get("directory"):
+            cmd += ["--dir", args["directory"]]
+        for ext in args.get("file_extensions", []):
+            cmd += ["--ext", ext]
+        if args.get("symbols"):
+            cmd.append("--symbols")
+        return _run(*cmd) or "No indexed files found."
 
-    Args:
-        directory: Directory to scope the listing. Leave empty to list all indexed files.
-        file_extensions: Restrict to specific file types, e.g. [".cs"].
-        symbols: Set to True to show the full indented symbol tree for each file.
-    """
-    conn = _get_conn()
-    result = _browse(conn, directory, list(file_extensions), symbols=symbols)
-    lines = result.splitlines()
-    limit = 1000 if symbols else 2000
-    if len(lines) > limit:
-        lines = lines[:limit]
-        lines.append(f"... (truncated at {limit} lines, narrow with directory or file_extensions)")
-    return "\n".join(lines)
+    if name == "detail":
+        cmd = ["detail", args["name"]]
+        if args.get("file_path"):
+            cmd += ["--file", args["file_path"]]
+        return _run(*cmd)
+
+    if name == "deps":
+        cmd = ["deps"]
+        if args.get("directory"):
+            cmd += ["--dir", args["directory"]]
+        return _run(*cmd) or "No dependencies found."
+
+    if name == "lint":
+        cmd = ["lint"]
+        if args.get("directory"):
+            cmd += ["--dir", args["directory"]]
+        for pattern in args.get("exclude", []):
+            cmd += ["--exclude", pattern]
+        cmd += [
+            "--max-lines", str(args.get("max_lines", 40)),
+            "--max-symbols", str(args.get("max_symbols", 20)),
+            "--max-callees", str(args.get("max_callees", 8)),
+            "--max-params", str(args.get("max_params", 4)),
+            "--max-nesting", str(args.get("max_nesting", 3)),
+        ]
+        if args.get("unused"):
+            cmd.append("--unused")
+        if args.get("statics"):
+            cmd.append("--statics")
+        return _run(*cmd) or "No lint findings."
+
+    if name == "confusing":
+        cmd = ["confusing"]
+        if args.get("directory"):
+            cmd += ["--dir", args["directory"]]
+        for ext in args.get("file_extensions", []):
+            cmd += ["--ext", ext]
+        for pattern in args.get("exclude", []):
+            cmd += ["--exclude", pattern]
+        if args.get("n") is not None:
+            cmd += ["-n", str(args["n"])]
+        if args.get("reset"):
+            cmd.append("--reset")
+        return _run(*cmd) or "No confusing fragments found."
+
+    return f"Unknown tool: {name}"
 
 
-@mcp.tool()
-def detail(name: str, file_path: str = "") -> str:
-    """Get full detail for a named symbol: description, snippet, callers, and callees.
-
-    Use this after search or browse to drill into a specific symbol.
-
-    Args:
-        name: Exact symbol name, e.g. "Debouncer" or "run_query".
-        file_path: Path substring to disambiguate when the same name appears in multiple files,
-            e.g. "watcher.py".
-    """
-    conn = _get_conn()
-    return _detail(conn, name, file_path)
-
-
-@mcp.tool()
-def deps(directory: str = "") -> str:
-    """Show the file-level dependency graph for a directory.
-
-    Returns an adjacency list: each line is a file followed by the files it imports.
-
-    Args:
-        directory: Directory to scope the graph. Leave empty to show the full graph.
-    """
-    conn = _get_conn()
-    result = _deps(conn, directory)
-    lines = result.splitlines()
-    if len(lines) > 500:
-        lines = lines[:500]
-        lines.append("... (truncated, use directory to narrow results)")
-    return "\n".join(lines)
+def _send(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
 
 
 def main() -> None:
-    mcp.run()
+    for raw in sys.stdin:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            req = json.loads(raw)
+        except json.JSONDecodeError:
+            _send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
+            continue
+
+        method = req.get("method", "")
+        req_id = req.get("id")
+        params = req.get("params") or {}
+
+        if method == "initialize":
+            _send({"jsonrpc": "2.0", "id": req_id, "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "blerk", "version": "0.1.0"},
+            }})
+
+        elif method == "tools/list":
+            _send({"jsonrpc": "2.0", "id": req_id, "result": {"tools": _TOOLS}})
+
+        elif method == "tools/call":
+            try:
+                text = _call(params.get("name", ""), params.get("arguments") or {})
+            except Exception as e:
+                _send({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32603, "message": str(e)}})
+                continue
+            _send({"jsonrpc": "2.0", "id": req_id, "result": {
+                "content": [{"type": "text", "text": text}]
+            }})
+
+        elif req_id is not None:
+            _send({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Method not found: {method}"}})
 
 
 if __name__ == "__main__":

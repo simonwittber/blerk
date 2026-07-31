@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.2
+
+### MCP server delegates to CLI
+
+MCP server tools now run the `blerk` CLI as a subprocess instead of calling Python functions directly.
+This removes the `anyio` dependency from the MCP server.
+All MCP tools run synchronously.
+
+### Lint MCP tool
+
+The MCP server now exposes a `lint` tool.
+It accepts `directory`, `exclude`, `max_lines`, `max_symbols`, `max_callees`, `max_params`, `max_nesting`, `unused`, and `statics` parameters.
+
+### Confusing MCP tool
+
+The MCP server now exposes a `confusing` tool.
+It accepts `directory`, `file_extensions`, `exclude`, `n`, and `reset` parameters.
+
+### search alias for query
+
+`search` is now a registered CLI alias for `query`.
+It appears in both the dispatch table and the help text.
+
 ## 0.1.1
 
 ### Interactive init
