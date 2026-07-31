@@ -5,22 +5,19 @@ from pathlib import Path
 
 _BLERK_DIR = Path.home() / ".blerk"
 
-_DEFAULT_CONFIG = """\
-# Path to secrets file. Keep this out of version control.
+_CONFIG_TEMPLATE = """\
 secrets_file = "~/.blerk/secrets.toml"
 
 [db]
 path = "~/.blerk/blerk.db"
 
 [watch]
-# Add the folders you want indexed.
-folders = []
+folders = {folders}
 debounce_ms = 100
 ignore_file = "~/.blerk/ignore"
 
 [symbolizer]
-# "regexp" is fast but no call graph. "treesitter" is accurate and extracts callers/callees.
-engine = "regexp"
+engine = "treesitter"
 batch_size = 10
 poll_ms = 1000
 max_retries = 3
@@ -32,44 +29,35 @@ poll_ms = 2000
 max_retries = 3
 
 [llm]
-# Any OpenAI-compatible endpoint works (Ollama, OpenAI, etc.).
-endpoint = "http://localhost:11434"
-model = "llama3.2"
+endpoint = {llm_endpoint!r}
+model = {llm_model!r}
 batch_size = 5
 poll_ms = 3000
 max_retries = 3
 max_context_chars = 16000
-prompt_template = \"\"\"Describe the following {kind} named "{name}" from {path}. Be concise and technical.
+prompt_template = \"\"\"Describe the following {{kind}} named "{{name}}" from {{path}}. Be concise and technical.
 
-{context}\"\"\"
+{{context}}\"\"\"
 
 [embedder]
-# Must support Ollama's native /api/embeddings format.
-endpoint = "http://localhost:11434"
-model = "nomic-embed-text"
+endpoint = {embed_endpoint!r}
+model = {embed_model!r}
 batch_size = 10
 poll_ms = 2000
 max_retries = 3
-# nomic-embed-text has an 8192-token context; ~2000 chars is a safe ceiling for dense code.
 max_embed_chars = 2000
 """
 
-_DEFAULT_SECRETS = """\
-# LLM API key. Required only if your endpoint enforces authentication.
+_SECRETS_TEMPLATE = """\
 [llm]
-api_key = ""
+api_key = {api_key!r}
 """
 
 _DEFAULT_IGNORE = """\
-# Version control
 .git/
 .svn/
 .hg/
-
-# Claude Code configuration
 .claude/
-
-# Build output
 bin/
 obj/
 out/
@@ -87,8 +75,6 @@ target/
 *.o
 *.a
 *.lib
-
-# Caches
 .cache/
 __pycache__/
 .pytest_cache/
@@ -103,71 +89,149 @@ node_modules/
 packages/
 .gradle/
 .m2/
-
-# IDE and editor
 .vs/
 .vscode/
 .idea/
 *.suo
 *.user
-*.sln.docstates
 .DS_Store
 Thumbs.db
-
-# Logs and temp files
 *.log
 *.tmp
 *.temp
 *.bak
 *.swp
 *.lock
-
-# Unity
 Library/
 Temp/
 Logs/
 UserSettings/
 *.meta
-
-# Python virtualenvs
 .venv/
 venv/
 env/
-
-# Docker
 .docker/
-
-# Coverage
 .coverage
 htmlcov/
 coverage.xml
 """
 
 
-def _write_if_absent(path: Path, content: str, label: str) -> bool:
-    if path.exists():
-        print(f"  skip    {path}  (already exists)")
-        return False
-    path.write_text(content, encoding="utf-8")
-    print(f"  created {path}")
-    return True
+def _check_ollama(endpoint: str) -> list[str]:
+    try:
+        import httpx
+        resp = httpx.get(f"{endpoint}/api/tags", timeout=3.0)
+        resp.raise_for_status()
+        return [m["name"] for m in resp.json().get("models", [])]
+    except Exception:
+        return []
+
+
+def _prompt(message: str, default: str = "") -> str:
+    suffix = f" [{default}]" if default else ""
+    val = input(f"{message}{suffix}: ").strip()
+    return val or default
+
+
+def _prompt_folders() -> list[str]:
+    print("Watch folders (one path per line, blank line to finish):")
+    folders: list[str] = []
+    while True:
+        val = input("  > ").strip()
+        if not val:
+            if folders:
+                break
+            print("  At least one folder is required.")
+            continue
+        p = Path(val).expanduser().resolve()
+        if not p.exists():
+            print(f"  Warning: {p} does not exist.")
+        folders.append(str(p).replace("\\", "/"))
+    return folders
+
+
+def _toml_string_list(items: list[str]) -> str:
+    inner = ", ".join(f'"{v}"' for v in items)
+    return f"[{inner}]"
 
 
 def main(argv: list[str] | None = None) -> int:
     _BLERK_DIR.mkdir(parents=True, exist_ok=True)
+    config_path = _BLERK_DIR / "config.toml"
+    secrets_path = _BLERK_DIR / "secrets.toml"
+    ignore_path = _BLERK_DIR / "ignore"
+
     print(f"blerk init: {_BLERK_DIR}")
     print()
 
-    _write_if_absent(_BLERK_DIR / "config.toml", _DEFAULT_CONFIG, "config")
-    _write_if_absent(_BLERK_DIR / "secrets.toml", _DEFAULT_SECRETS, "secrets")
-    _write_if_absent(_BLERK_DIR / "ignore", _DEFAULT_IGNORE, "ignore")
+    if config_path.exists():
+        ans = input("Config already exists. Reconfigure? [y/N]: ").strip().lower()
+        if ans != "y":
+            print("Skipping config.")
+            return 0
+        print()
+
+    # Ollama check
+    llm_endpoint = _prompt("LLM endpoint", "http://localhost:11434")
+    embed_endpoint = llm_endpoint
+
+    print(f"\nChecking Ollama at {llm_endpoint}...")
+    available_models = _check_ollama(llm_endpoint)
+    if available_models:
+        print(f"  OK — {len(available_models)} model(s) available:")
+        for m in available_models:
+            print(f"    {m}")
+    else:
+        print("  Could not reach Ollama. Check that it is running.")
+        print("  Continuing with defaults — edit config.toml later if needed.")
+    print()
+
+    # LLM model
+    llm_model = _prompt("LLM model", "llama3.2")
+
+    # Embed model
+    embed_model = _prompt("Embedding model", "nomic-embed-text")
+    if available_models and embed_model not in available_models:
+        print(f"  Warning: '{embed_model}' is not in the available model list.")
+        print(f"  Pull it with:  ollama pull {embed_model}")
+    print()
+
+    # API key
+    api_key = ""
+    needs_key = input("Does this endpoint require an API key? [y/N]: ").strip().lower()
+    if needs_key == "y":
+        api_key = input("API key: ").strip()
+    print()
+
+    # Watch folders
+    folders = _prompt_folders()
+    print()
+
+    # Write config
+    config_content = _CONFIG_TEMPLATE.format(
+        folders=_toml_string_list(folders),
+        llm_endpoint=llm_endpoint,
+        llm_model=llm_model,
+        embed_endpoint=embed_endpoint,
+        embed_model=embed_model,
+    )
+    config_path.write_text(config_content, encoding="utf-8")
+    print(f"  wrote  {config_path}")
+
+    # Write secrets
+    secrets_content = _SECRETS_TEMPLATE.format(api_key=api_key)
+    secrets_path.write_text(secrets_content, encoding="utf-8")
+    print(f"  wrote  {secrets_path}")
+
+    # Write ignore (only if absent)
+    if not ignore_path.exists():
+        ignore_path.write_text(_DEFAULT_IGNORE, encoding="utf-8")
+        print(f"  wrote  {ignore_path}")
+    else:
+        print(f"  skip   {ignore_path}  (already exists)")
 
     print()
-    print("Next steps:")
-    print(f"  1. Edit {_BLERK_DIR / 'config.toml'} and add your folders under [watch].")
-    print( "  2. Pull the embedding model:  ollama pull nomic-embed-text")
-    print( "  3. Start the hub:             blerk")
-    print( "  4. Query:                     blerk-query \"how does X work\"")
+    print("Done. Start blerk with:  blerk")
     return 0
 
 

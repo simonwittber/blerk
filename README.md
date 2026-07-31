@@ -38,6 +38,16 @@ pip install .
 
 This puts `blerk`, `blerk-query`, and the daemon entry points on your PATH.
 
+## Setup
+
+Run `blerk init` to configure blerk interactively.
+
+```
+blerk init
+```
+
+It checks whether Ollama is reachable and lists available models. It then asks for one or more watch folders, an LLM model, an embedding model, and an API key if the endpoint requires one. It writes `~/.blerk/config.toml` and `~/.blerk/secrets.toml`. If the embedding model is not available locally, it prints the `ollama pull` command to fetch it.
+
 ## Configure
 
 Create `~/.blerk/config.toml`. At minimum, set the folders to index:
