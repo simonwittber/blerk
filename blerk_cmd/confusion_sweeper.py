@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from blerk import config, db
@@ -19,7 +20,7 @@ CLEAR
 CONFUSING: <one sentence why>"""
 
 
-def _build_path_filters(directory: str, exts: list[str]) -> tuple[list[str], list]:
+def _build_path_filters(directory: str, exts: list[str], excludes: list[str] = []) -> tuple[list[str], list]:
     filters: list[str] = []
     params: list = []
 
@@ -35,11 +36,16 @@ def _build_path_filters(directory: str, exts: list[str]) -> tuple[list[str], lis
         for ext in exts:
             params.append(f"%{ext}")
 
+    for pat in excludes:
+        sql = pat.replace("\\", "/").replace("*", "%").replace("?", "_")
+        filters.append("f.path NOT LIKE ?")
+        params.append(sql)
+
     return filters, params
 
 
-def _fetch_symbols(conn, n: int, directory: str, exts: list[str]) -> list[tuple]:
-    path_filters, params = _build_path_filters(directory, exts)
+def _fetch_symbols(conn, n: int, directory: str, exts: list[str], excludes: list[str] = []) -> list[tuple]:
+    path_filters, params = _build_path_filters(directory, exts, excludes)
     filters = [
         "s.kind IN ('function', 'method')",
         "s.snippet IS NOT NULL",
@@ -63,8 +69,8 @@ def _fetch_symbols(conn, n: int, directory: str, exts: list[str]) -> list[tuple]
             for sid, name, kind, path, params_str, snippet in rows]
 
 
-def _count_already_tagged(conn, directory: str, exts: list[str]) -> int:
-    path_filters, params = _build_path_filters(directory, exts)
+def _count_already_tagged(conn, directory: str, exts: list[str], excludes: list[str] = []) -> int:
+    path_filters, params = _build_path_filters(directory, exts, excludes)
     filters = [
         "s.kind IN ('function', 'method')",
         "EXISTS (SELECT 1 FROM symbol_tags st WHERE st.symbol_id = s.id AND st.key = 'confusing')",
@@ -88,8 +94,8 @@ def _parse_response(text: str) -> tuple[bool | None, str]:
     return None, ""
 
 
-def reset_tags(conn, directory: str, exts: list[str]) -> int:
-    path_filters, params = _build_path_filters(directory, exts)
+def reset_tags(conn, directory: str, exts: list[str], excludes: list[str] = []) -> int:
+    path_filters, params = _build_path_filters(directory, exts, excludes)
     filters = ["s.kind IN ('function', 'method')"] + path_filters
     where = " AND ".join(filters)
     result = conn.execute(
@@ -107,9 +113,9 @@ def reset_tags(conn, directory: str, exts: list[str]) -> int:
     return result.rowcount
 
 
-def sweep(conn, cfg: config.Config, n: int, directory: str, exts: list[str], reset: bool = False) -> None:
+def sweep(conn, cfg: config.Config, n: int, directory: str, exts: list[str], excludes: list[str] = [], reset: bool = False) -> None:
     if reset:
-        removed = reset_tags(conn, directory, exts)
+        removed = reset_tags(conn, directory, exts, excludes)
         print(f"Reset {removed} tag rows.")
 
     c = cfg.confusing
@@ -117,8 +123,8 @@ def sweep(conn, cfg: config.Config, n: int, directory: str, exts: list[str], res
         raise RuntimeError(
             "No [confusing] config found. Add endpoint and model to ~/.blerk/config.toml."
         )
-    already_tagged = _count_already_tagged(conn, directory, exts)
-    candidates = _fetch_symbols(conn, n, directory, exts)
+    already_tagged = _count_already_tagged(conn, directory, exts, excludes)
+    candidates = _fetch_symbols(conn, n, directory, exts, excludes)
 
     assessed = 0
     confusing: list[tuple[str, str, str]] = []
@@ -176,14 +182,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=config.default_path())
     parser.add_argument("--dir", default="", dest="directory", metavar="DIR")
     parser.add_argument("--ext", action="append", dest="exts", default=[], metavar="EXT")
+    parser.add_argument("--exclude", action="append", dest="excludes", default=[], metavar="PATTERN",
+                        help="exclude paths matching glob pattern (repeatable)")
     parser.add_argument("-n", type=int, default=50, metavar="N")
     parser.add_argument("--reset", action="store_true", help="clear existing confusing tags before sweeping")
     args = parser.parse_args(argv)
+    if not args.directory:
+        args.directory = os.getcwd()
 
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
     try:
-        sweep(conn, cfg, args.n, args.directory, args.exts, reset=args.reset)
+        sweep(conn, cfg, args.n, args.directory, args.exts, args.excludes, reset=args.reset)
     finally:
         conn.close()
     return 0

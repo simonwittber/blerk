@@ -24,16 +24,24 @@ def rule(default: int, flag: str, help: str):
     return decorator
 
 
-def _dir_clause(directory: str) -> tuple[str, list[str]]:
-    if not directory:
-        return "", []
-    norm = directory.replace("\\", "/").rstrip("/")
-    return "AND (f.path LIKE ? OR f.path LIKE ?)", [f"%{norm}/%", f"%{norm}"]
+def _path_clauses(directory: str, excludes: list[str]) -> tuple[str, list]:
+    parts: list[str] = []
+    params: list = []
+    if directory:
+        norm = directory.replace("\\", "/").rstrip("/")
+        parts.append("(f.path LIKE ? OR f.path LIKE ?)")
+        params += [f"%{norm}/%", f"%{norm}"]
+    for pat in excludes:
+        sql = pat.replace("\\", "/").replace("*", "%").replace("?", "_")
+        parts.append("f.path NOT LIKE ?")
+        params.append(sql)
+    clause = ("AND " + " AND ".join(parts)) if parts else ""
+    return clause, params
 
 
 @rule(default=40, flag="max-lines", help="max lines per function/method (default: 40)")
-def long_function(conn, directory: str, threshold: int) -> list[Violation]:
-    clause, params = _dir_clause(directory)
+def long_function(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
         f"""
         SELECT f.path, s.name, s.line, s.end_line
@@ -51,8 +59,8 @@ def long_function(conn, directory: str, threshold: int) -> list[Violation]:
 
 
 @rule(default=20, flag="max-symbols", help="max symbols per file (default: 20)")
-def god_file(conn, directory: str, threshold: int) -> list[Violation]:
-    clause, params = _dir_clause(directory)
+def god_file(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
         f"""
         SELECT f.path, COUNT(*) AS sym_count
@@ -69,8 +77,8 @@ def god_file(conn, directory: str, threshold: int) -> list[Violation]:
 
 
 @rule(default=8, flag="max-callees", help="max callees per function/method (default: 8)")
-def high_fan_out(conn, directory: str, threshold: int) -> list[Violation]:
-    clause, params = _dir_clause(directory)
+def high_fan_out(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
         f"""
         SELECT f.path, s.name, s.line,
@@ -91,8 +99,8 @@ def high_fan_out(conn, directory: str, threshold: int) -> list[Violation]:
 
 
 @rule(default=4, flag="max-params", help="max parameters per function/method (default: 4)")
-def too_many_params(conn, directory: str, threshold: int) -> list[Violation]:
-    clause, params = _dir_clause(directory)
+def too_many_params(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
         f"""
         SELECT f.path, s.name, s.line, s.param_count
@@ -109,8 +117,8 @@ def too_many_params(conn, directory: str, threshold: int) -> list[Violation]:
 
 
 @rule(default=3, flag="max-nesting", help="max nesting depth (default: 3)")
-def deep_nesting(conn, directory: str, threshold: int) -> list[Violation]:
-    clause, params = _dir_clause(directory)
+def deep_nesting(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
         f"""
         SELECT f.path, s.name, s.line, s.nesting_depth
@@ -127,8 +135,8 @@ def deep_nesting(conn, directory: str, threshold: int) -> list[Violation]:
 
 
 @rule(default=-1, flag="unused", help="flag functions/methods with no callers (opt-in)")
-def unused_symbol(conn, directory: str, threshold: int) -> list[Violation]:
-    clause, params = _dir_clause(directory)
+def unused_symbol(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
         f"""
         SELECT f.path, s.name, s.line
@@ -145,8 +153,8 @@ def unused_symbol(conn, directory: str, threshold: int) -> list[Violation]:
 
 
 @rule(default=-1, flag="statics", help="flag static symbols (opt-in)")
-def static_symbol(conn, directory: str, threshold: int) -> list[Violation]:
-    clause, params = _dir_clause(directory)
+def static_symbol(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
         f"""
         SELECT f.path, s.name, s.line, s.kind

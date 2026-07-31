@@ -8,27 +8,28 @@ from blerk import config, db
 from blerk_cmd.lint_rules import RULES, Violation
 
 
-def _symbol_count(conn, directory: str) -> int:
-    norm = directory.replace("\\", "/").rstrip("/")
+def _symbol_count(conn, directory: str, excludes: list[str]) -> int:
+    from blerk_cmd.lint_rules import _path_clauses
+    clause, params = _path_clauses(directory, excludes)
     row = conn.execute(
-        """
+        f"""
         SELECT COUNT(*) FROM symbols s
         JOIN files f ON f.id = s.file_id
         WHERE s.kind IN ('function', 'method')
-          AND (f.path LIKE ? OR f.path LIKE ?)
+          {clause}
         """,
-        (f"%{norm}/%", f"%{norm}"),
+        params,
     ).fetchone()
     return row[0] if row else 0
 
 
-def lint(conn, directory: str, thresholds: dict[str, int]) -> list[Violation]:
+def lint(conn, directory: str, thresholds: dict[str, int], excludes: list[str] = []) -> list[Violation]:
     violations: list[Violation] = []
     for rule in RULES:
         t = thresholds.get(rule.name, rule.default)
         if t < 0:
             continue
-        violations += rule.fn(conn, directory, t)
+        violations += rule.fn(conn, directory, t, excludes)
     violations.sort(key=lambda v: (v[0], v[1]))
     return violations
 
@@ -48,6 +49,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=config.default_path())
     parser.add_argument("--dir", default="", dest="directory", metavar="DIR",
                         help="directory to lint (default: cwd)")
+    parser.add_argument("--exclude", action="append", dest="excludes", default=[], metavar="PATTERN",
+                        help="exclude paths matching glob pattern (repeatable)")
 
     for rule in RULES:
         if rule.default < 0:
@@ -68,8 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
 
-    violations = lint(conn, directory, thresholds)
-    symbol_count = _symbol_count(conn, directory)
+    violations = lint(conn, directory, thresholds, args.excludes)
+    symbol_count = _symbol_count(conn, directory, args.excludes)
     conn.close()
 
     print_results(directory, violations, symbol_count)

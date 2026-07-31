@@ -17,7 +17,9 @@ The MCP tools blerk exposes are:
 - `search` - semantic + keyword hybrid search over all indexed symbols. Returns the most relevant functions, methods, and types for a query.
 - `browse` - lists all symbols in a directory with their signatures and line ranges. Useful for orienting in an unfamiliar package before doing targeted searches.
 
-blerk also supports linting. The `blerk lint` command checks call patterns across the indexed codebase. Rules such as "only `db.py` may call `executescript`" or "no file outside `hub.py` may call `os.kill`" query `symbol_refs` and `external_refs` directly.
+blerk also supports linting. The `blerk lint` command checks functions and methods in the indexed codebase against rules such as line count, parameter count, and nesting depth. Use `--exclude PATTERN` (repeatable) to skip paths that match a glob, for example `--exclude "*Generated*"`.
+
+The `blerk confusing` command asks an LLM whether each function looks confusing or pointless without extra context. It tags results in the index so you can query them later. It accepts the same `--exclude PATTERN` flag to skip generated or vendor paths.
 
 You can also use blerk directly from the command line for human-readable search output.
 
@@ -225,13 +227,14 @@ Each daemon writes a heartbeat row to the `daemon_status` table every poll cycle
 | `blerk browse [--dir PATH]` | List symbols in a directory |
 | `blerk detail <name>` | Show full detail for a symbol by exact name |
 | `blerk deps [--dir PATH]` | Show the file-level dependency graph |
-| `blerk lint` | Check call-pattern rules against the index |
+| `blerk lint [--exclude PATTERN]` | Check functions against lint rules (line count, params, nesting) |
+| `blerk confusing [--exclude PATTERN]` | Tag functions that look confusing or pointless using an LLM |
 | `blerk tags [--dir PATH]` | List all tag keys and values in the index |
 | `blerk rescan [PATH]` | Re-queue files for symbolization |
 | `blerk purge [--dry-run]` | Remove DB records for files that match ignore patterns |
 | `blerk status` | Show daemon status and queue depths |
 | `blerk add <path>` | Add a folder to the watch list |
-| `blerk remove <path>` | Remove a folder from the watch list |
+| `blerk remove <path>` | Remove a folder from the watch list and purge its DB records and queue entries |
 
 
 ## Development
