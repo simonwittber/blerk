@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.1
+
+### Interactive init
+
+`blerk init` now runs interactively. It checks Ollama, lists available models, and prompts for watch folders, LLM model, embedding model, and an API key. It writes `config.toml` and `secrets.toml` directly. Pass the hidden `--dry-run` flag to print the generated files without writing them.
+
+### Exclude patterns
+
+`blerk lint` and `blerk confusing` both accept `--exclude PATTERN`. The flag is repeatable and accepts globs such as `*Generated*`. Matching paths are skipped.
+
+### Confusing tags in lint output
+
+`blerk lint` now shows a `confusing=N` count in the summary line. If any symbols carry a `confusing=true` tag, lint lists them with their reasons below the violations.
+
+### blerk remove cleans up the database
+
+`blerk remove <path>` removes the folder from the watch list. The hub detects the config change and deletes all DB records for that folder. Queue entries for those files are removed via cascade delete.
+
+### blerk-confusing entry point
+
+`blerk-confusing` is now a registered entry point in `pyproject.toml`.
+
 ## 0.1.0 - Initial release
 
 ### Commands
