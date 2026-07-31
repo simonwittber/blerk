@@ -191,7 +191,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # Embed model
     embed_model = _prompt("Embedding model", "nomic-embed-text")
-    if available_models and embed_model not in available_models:
+    def _model_available(name: str, models: list[str]) -> bool:
+        name_base = name.split(":")[0]
+        return any(m == name or m.split(":")[0] == name_base for m in models)
+
+    if available_models and not _model_available(embed_model, available_models):
         print(f"  Warning: '{embed_model}' is not in the available model list.")
         print(f"  Pull it with:  ollama pull {embed_model}")
     print()
