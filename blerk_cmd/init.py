@@ -156,6 +156,12 @@ def _toml_string_list(items: list[str]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+    dry_run = args.dry_run
+
     _BLERK_DIR.mkdir(parents=True, exist_ok=True)
     config_path = _BLERK_DIR / "config.toml"
     secrets_path = _BLERK_DIR / "secrets.toml"
@@ -219,20 +225,24 @@ def main(argv: list[str] | None = None) -> int:
         embed_endpoint=embed_endpoint,
         embed_model=embed_model,
     )
-    config_path.write_text(config_content, encoding="utf-8")
-    print(f"  wrote  {config_path}")
-
-    # Write secrets
-    secrets_content = _SECRETS_TEMPLATE.format(api_key=api_key)
-    secrets_path.write_text(secrets_content, encoding="utf-8")
-    print(f"  wrote  {secrets_path}")
-
-    # Write ignore (only if absent)
-    if not ignore_path.exists():
-        ignore_path.write_text(_DEFAULT_IGNORE, encoding="utf-8")
-        print(f"  wrote  {ignore_path}")
+    if dry_run:
+        print("-- config.toml (dry run) --")
+        print(config_content)
+        print("-- secrets.toml (dry run) --")
+        print(_SECRETS_TEMPLATE.format(api_key=api_key))
     else:
-        print(f"  skip   {ignore_path}  (already exists)")
+        config_path.write_text(config_content, encoding="utf-8")
+        print(f"  wrote  {config_path}")
+
+        secrets_content = _SECRETS_TEMPLATE.format(api_key=api_key)
+        secrets_path.write_text(secrets_content, encoding="utf-8")
+        print(f"  wrote  {secrets_path}")
+
+        if not ignore_path.exists():
+            ignore_path.write_text(_DEFAULT_IGNORE, encoding="utf-8")
+            print(f"  wrote  {ignore_path}")
+        else:
+            print(f"  skip   {ignore_path}  (already exists)")
 
     print()
     print("Done. Start blerk with:  blerk")
