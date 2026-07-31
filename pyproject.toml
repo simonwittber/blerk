@@ -35,6 +35,7 @@ blerk-embed      = "blerk_cmd.embedder:main"
 blerk-mcp        = "blerk_cmd.mcp_server:main"
 blerk-rescan     = "blerk_cmd.rescan:main"
 blerk-lint       = "blerk_cmd.lint:main"
+blerk-confusing  = "blerk_cmd.confusion_sweeper:main"
 
 [tool.setuptools.packages.find]
 include = ["blerk*", "blerk_cmd*"]

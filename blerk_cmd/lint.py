@@ -34,14 +34,44 @@ def lint(conn, directory: str, thresholds: dict[str, int], excludes: list[str] =
     return violations
 
 
-def print_results(directory: str, violations: list[Violation], symbol_count: int) -> None:
+ConfusingSymbol = tuple[str, int, str, str]  # path, line, name, reason
+
+
+def fetch_confusing(conn, directory: str, excludes: list[str]) -> list[ConfusingSymbol]:
+    from blerk_cmd.lint_rules import _path_clauses
+    clause, params = _path_clauses(directory, excludes)
+    rows = conn.execute(
+        f"""
+        SELECT f.path, s.line, s.name, COALESCE(sr.value, '')
+        FROM symbols s
+        JOIN files f ON f.id = s.file_id
+        JOIN symbol_tags st ON st.symbol_id = s.id AND st.key = 'confusing' AND st.value = 'true'
+        LEFT JOIN symbol_tags sr ON sr.symbol_id = s.id AND sr.key = 'confusing_reason'
+        WHERE s.kind IN ('function', 'method')
+          {clause}
+        ORDER BY f.path, s.line
+        """,
+        params,
+    ).fetchall()
+    return [(path, line, name, reason) for path, line, name, reason in rows]
+
+
+def print_results(directory: str, violations: list[Violation], symbol_count: int,
+                  confusing: list[ConfusingSymbol] | None = None) -> None:
     for path, line, rule, display in violations:
         loc = f"{path}:{line}"
         print(f"  {loc:<60} {rule:<22} {display}")
     total = len(violations)
     per100 = round(total * 100.0 / symbol_count, 2) if symbol_count else 0.0
     label = directory or "(all)"
-    print(f"\n  {label}  symbols={symbol_count} violations={total} per100s={per100}\n")
+    confusing_count = len(confusing) if confusing else 0
+    print(f"\n  {label}  symbols={symbol_count} violations={total} per100s={per100} confusing={confusing_count}\n")
+    if confusing:
+        print("  confusing:")
+        for path, line, name, reason in confusing:
+            loc = f"{path}:{line}"
+            suffix = f"  {reason}" if reason else ""
+            print(f"    {loc:<60} {name}{suffix}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -73,9 +103,10 @@ def main(argv: list[str] | None = None) -> int:
 
     violations = lint(conn, directory, thresholds, args.excludes)
     symbol_count = _symbol_count(conn, directory, args.excludes)
+    confusing = fetch_confusing(conn, directory, args.excludes)
     conn.close()
 
-    print_results(directory, violations, symbol_count)
+    print_results(directory, violations, symbol_count, confusing)
     return 0
 
 
