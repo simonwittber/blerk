@@ -188,6 +188,10 @@ BEGIN
     INSERT INTO fingerprint_queue(symbol_id) VALUES (NEW.id);
 END;
 
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     name,
     description,
@@ -248,8 +252,23 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
-def _init_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(SCHEMA)
+_CURRENT_VERSION = 2
+
+
+def _get_version(conn: sqlite3.Connection) -> int:
+    try:
+        row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        return row[0] if row else 0
+    except sqlite3.OperationalError:
+        return 0
+
+
+def _set_version(conn: sqlite3.Connection, version: int) -> None:
+    conn.execute("DELETE FROM schema_version")
+    conn.execute("INSERT INTO schema_version(version) VALUES(?)", (version,))
+
+
+def _migrate_1(conn: sqlite3.Connection) -> None:
     existing = {row[1] for row in conn.execute("PRAGMA table_info(symbols)")}
     for col, defn in [
         ("nesting_depth", "INTEGER NOT NULL DEFAULT 0"),
@@ -257,7 +276,16 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     ]:
         if col not in existing:
             conn.execute(f"ALTER TABLE symbols ADD COLUMN {col} {defn}")
-    # Backfill fingerprint_queue for existing symbols that have no fingerprints yet.
+    conn.execute("DROP TRIGGER IF EXISTS symbols_description_insert")
+    conn.executescript(
+        "CREATE TRIGGER IF NOT EXISTS symbols_description_insert "
+        "AFTER INSERT ON symbols "
+        "WHEN NEW.kind IN ('function', 'method') AND NEW.description IS NULL "
+        "BEGIN INSERT INTO description_queue(symbol_id) VALUES (NEW.id); END;"
+    )
+
+
+def _migrate_2(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         INSERT OR IGNORE INTO fingerprint_queue(symbol_id)
@@ -267,14 +295,23 @@ def _init_schema(conn: sqlite3.Connection) -> None:
           AND NOT EXISTS (SELECT 1 FROM fingerprints f WHERE f.symbol_id = s.id)
         """
     )
-    # Recreate description trigger to add the description IS NULL condition.
-    conn.execute("DROP TRIGGER IF EXISTS symbols_description_insert")
-    conn.executescript(
-        "CREATE TRIGGER IF NOT EXISTS symbols_description_insert "
-        "AFTER INSERT ON symbols "
-        "WHEN NEW.kind IN ('function', 'method') AND NEW.description IS NULL "
-        "BEGIN INSERT INTO description_queue(symbol_id) VALUES (NEW.id); END;"
-    )
+
+
+_MIGRATIONS: dict[int, object] = {
+    1: _migrate_1,
+    2: _migrate_2,
+}
+
+
+def _init_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA)
+    version = _get_version(conn)
+    if version < _CURRENT_VERSION:
+        for v in range(version + 1, _CURRENT_VERSION + 1):
+            fn = _MIGRATIONS.get(v)
+            if fn:
+                fn(conn)  # type: ignore[call-arg]
+        _set_version(conn, _CURRENT_VERSION)
 
 
 def claim_batch(conn: sqlite3.Connection, queue: str, target_col: str, n: int) -> list[QueueRow]:
