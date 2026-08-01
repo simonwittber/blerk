@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         val = getattr(args, attr)
         thresholds[rule.name] = 0 if (rule.default < 0 and val) else (-1 if rule.default < 0 else val)
 
-    directory = args.directory or os.getcwd()
+    directory = os.path.abspath(args.directory) if args.directory else os.getcwd()
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
 
