@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.2.0
+
 ### Daemon activity logging
 
 All daemons now log one line per processed item showing the daemon name, elapsed time, and what was processed.
