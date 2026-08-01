@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3
+
+### DIP hints in lint
+
+`blerk lint` now reports `dip_hint` violations.
+It flags modules that may depend on lower-level modules based on inbound dependency counts.
+The rule uses module-level grouping: namespace for C#, package directory for Go, file path for Python and JavaScript.
+Use `--dip-threshold N` to set the minimum inbound count for a module to be considered low-level (default: 3, set -1 to disable).
+
 ## 0.1.2
 
 ### MCP server delegates to CLI

@@ -68,6 +68,7 @@ _TOOLS = [
                 "max_nesting": {"type": "integer"},
                 "unused": {"type": "boolean"},
                 "statics": {"type": "boolean"},
+                "dip_threshold": {"type": "integer"},
             },
         },
     },
@@ -146,6 +147,7 @@ def _call(name: str, args: dict) -> str:
             "--max-callees", str(args.get("max_callees", 8)),
             "--max-params", str(args.get("max_params", 4)),
             "--max-nesting", str(args.get("max_nesting", 3)),
+            "--dip-threshold", str(args.get("dip_threshold", 3)),
         ]
         if args.get("unused"):
             cmd.append("--unused")

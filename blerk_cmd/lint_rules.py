@@ -152,6 +152,78 @@ def unused_symbol(conn, directory: str, threshold: int, excludes: list[str] = []
     return [(path, line, "unused_symbol", name) for path, name, line in rows]
 
 
+@rule(default=3, flag="dip-threshold", help="min dependents for a module to count as low-level in DIP hints (default: 3, set -1 to disable)")
+def dip_violation(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    parts: list[str] = []
+    params: list = []
+    if directory:
+        norm = directory.replace("\\", "/").rstrip("/")
+        parts.append("(f1.path LIKE ? OR f1.path LIKE ?)")
+        params += [f"%{norm}/%", f"%{norm}"]
+    for pat in excludes:
+        parts.append("f1.path NOT LIKE ?")
+        params.append(pat.replace("\\", "/").replace("*", "%").replace("?", "_"))
+    clause = ("AND " + " AND ".join(parts)) if parts else ""
+
+    edges = conn.execute(
+        f"""
+        SELECT DISTINCT f1.path, f2.path
+        FROM symbol_refs sr
+        JOIN symbols s1 ON s1.id = sr.caller_id
+        JOIN symbols s2 ON s2.id = sr.callee_id
+        JOIN files f1 ON f1.id = s1.file_id
+        JOIN files f2 ON f2.id = s2.file_id
+        WHERE f1.path != f2.path
+          {clause}
+        """,
+        params,
+    ).fetchall()
+    if not edges:
+        return []
+
+    ns_map: dict[str, str] = {}
+    for path, ns in conn.execute(
+        """
+        SELECT DISTINCT f.path, st.value
+        FROM files f
+        JOIN symbols s ON s.file_id = f.id
+        JOIN symbol_tags st ON st.symbol_id = s.id AND st.key = 'namespace'
+        WHERE f.path LIKE '%.cs'
+        """
+    ).fetchall():
+        ns_map.setdefault(path, ns)
+
+    def _module(path: str) -> str:
+        p = path.replace("\\", "/")
+        if p.endswith(".cs"):
+            return ns_map.get(path, p)
+        if p.endswith(".go"):
+            idx = p.rfind("/")
+            return p[:idx] if idx >= 0 else p
+        return p
+
+    module_edges: set[tuple[str, str]] = set()
+    module_file: dict[str, str] = {}
+    for importer_path, importee_path in edges:
+        im, ie = _module(importer_path), _module(importee_path)
+        if im == ie:
+            continue
+        module_edges.add((im, ie))
+        module_file.setdefault(im, importer_path)
+
+    inbound: dict[str, int] = {}
+    for _, ie in module_edges:
+        inbound[ie] = inbound.get(ie, 0) + 1
+
+    violations: list[Violation] = []
+    for im, ie in sorted(module_edges):
+        ie_inbound = inbound.get(ie, 0)
+        if ie_inbound >= threshold and inbound.get(im, 0) < ie_inbound:
+            display = f"may depend on lower-level module {ie} ({ie_inbound} dependents)"
+            violations.append((module_file[im], 1, "dip_hint", display))
+    return violations
+
+
 @rule(default=-1, flag="statics", help="flag static symbols (opt-in)")
 def static_symbol(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
     clause, params = _path_clauses(directory, excludes)
