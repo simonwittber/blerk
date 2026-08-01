@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     nesting_depth  INTEGER NOT NULL DEFAULT 0,
     param_count    INTEGER NOT NULL DEFAULT 0,
     description    TEXT,
-    described_at   INTEGER
+    described_at   INTEGER,
+    ext            TEXT
 );
 
 CREATE TABLE IF NOT EXISTS symbol_tags (
@@ -48,6 +49,10 @@ CREATE TABLE IF NOT EXISTS symbol_tags (
 CREATE INDEX IF NOT EXISTS idx_symbol_tags_key_value ON symbol_tags(key, value);
 
 CREATE INDEX IF NOT EXISTS idx_symbols_file_line ON symbols(file_id, line);
+CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
+CREATE INDEX IF NOT EXISTS idx_symbols_kind_param_count ON symbols(kind, param_count);
+CREATE INDEX IF NOT EXISTS idx_symbols_kind_nesting ON symbols(kind, nesting_depth);
+CREATE INDEX IF NOT EXISTS idx_symbols_kind_file ON symbols(kind, file_id);
 
 CREATE TABLE IF NOT EXISTS embeddings (
     id          INTEGER PRIMARY KEY,
@@ -107,6 +112,7 @@ CREATE TABLE IF NOT EXISTS fingerprints (
 );
 
 CREATE INDEX IF NOT EXISTS idx_fingerprints_kind_value ON fingerprints(kind, value);
+CREATE INDEX IF NOT EXISTS idx_fingerprints_kind_symbol ON fingerprints(kind, symbol_id);
 
 CREATE TABLE IF NOT EXISTS fingerprint_queue (
     id        INTEGER PRIMARY KEY,
@@ -252,7 +258,7 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
-_CURRENT_VERSION = 2
+_CURRENT_VERSION = 4
 
 
 def _get_version(conn: sqlite3.Connection) -> int:
@@ -297,9 +303,33 @@ def _migrate_2(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_3(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(symbols)")}
+    if "ext" not in existing:
+        conn.execute("ALTER TABLE symbols ADD COLUMN ext TEXT")
+    rows = conn.execute(
+        "SELECT s.id, f.path FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.ext IS NULL"
+    ).fetchall()
+    updates = [(os.path.splitext(path)[1].lower(), sym_id) for sym_id, path in rows]
+    if updates:
+        conn.executemany("UPDATE symbols SET ext = ? WHERE id = ?", updates)
+
+
+def _migrate_4(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+        CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
+        CREATE INDEX IF NOT EXISTS idx_symbols_kind_param_count ON symbols(kind, param_count);
+        CREATE INDEX IF NOT EXISTS idx_symbols_kind_nesting ON symbols(kind, nesting_depth);
+        CREATE INDEX IF NOT EXISTS idx_symbols_kind_file ON symbols(kind, file_id);
+        CREATE INDEX IF NOT EXISTS idx_fingerprints_kind_symbol ON fingerprints(kind, symbol_id);
+    """)
+
+
 _MIGRATIONS: dict[int, object] = {
     1: _migrate_1,
     2: _migrate_2,
+    3: _migrate_3,
+    4: _migrate_4,
 }
 
 

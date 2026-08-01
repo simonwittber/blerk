@@ -12,9 +12,10 @@ Shared helpers `fmt_duration` and `setup_logging` live in `blerk/daemon_util.py`
 
 ### Lint rule suppression
 
-Add a `[[lint.suppress]]` section to config to silence specific lint rules for specific path patterns.
-Each entry takes a `path` glob and a `rules` list (or `["*"]` to suppress all rules for that path).
-Suppressed violations are filtered out before the report is printed.
+Place a `.blerk` file in any directory to suppress lint rules for that directory and all subdirectories.
+The file uses TOML format with a `suppress` key listing the rule names to silence.
+Use `suppress = ["*"]` to suppress all rules under that path.
+This replaces the `[[lint.suppress]]` config mechanism.
 
 ### Near-clone detection uses LSH banding
 

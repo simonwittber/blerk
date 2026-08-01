@@ -24,7 +24,8 @@ def rule(default: int, flag: str, help: str):
     return decorator
 
 
-def _path_clauses(directory: str, excludes: list[str]) -> tuple[str, list]:
+def build_scope(conn, directory: str, excludes: list[str]) -> None:
+    conn.execute("DROP TABLE IF EXISTS _lint_files")
     parts: list[str] = []
     params: list = []
     if directory:
@@ -35,24 +36,26 @@ def _path_clauses(directory: str, excludes: list[str]) -> tuple[str, list]:
         sql = pat.replace("\\", "/").replace("*", "%").replace("?", "_")
         parts.append("f.path NOT LIKE ?")
         params.append(sql)
-    clause = ("AND " + " AND ".join(parts)) if parts else ""
-    return clause, params
+    where = ("WHERE " + " AND ".join(parts)) if parts else ""
+    conn.execute(
+        f"CREATE TEMP TABLE _lint_files AS SELECT f.id AS file_id, f.path FROM files f {where}",
+        params,
+    )
+    conn.execute("CREATE INDEX _lint_files_fid ON _lint_files(file_id)")
 
 
 @rule(default=40, flag="max-lines", help="max lines per function/method (default: 40)")
 def long_function(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
-    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
-        f"""
+        """
         SELECT f.path, s.name, s.line, s.end_line
-        FROM symbols s JOIN files f ON f.id = s.file_id
+        FROM symbols s JOIN _lint_files f ON f.file_id = s.file_id
         WHERE s.kind IN ('function', 'method')
           AND s.end_line IS NOT NULL
           AND (s.end_line - s.line) > ?
-          {clause}
         ORDER BY f.path, s.line
         """,
-        (threshold, *params),
+        (threshold,),
     ).fetchall()
     return [(path, line, "long_function", f"{name} ({end - line} lines)")
             for path, name, line, end in rows]
@@ -60,39 +63,35 @@ def long_function(conn, directory: str, threshold: int, excludes: list[str] = []
 
 @rule(default=20, flag="max-symbols", help="max symbols per file (default: 20)")
 def god_file(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
-    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
-        f"""
+        """
         SELECT f.path, COUNT(*) AS sym_count
-        FROM symbols s JOIN files f ON f.id = s.file_id
+        FROM symbols s JOIN _lint_files f ON f.file_id = s.file_id
         WHERE s.kind != 'heading'
-          {clause}
-        GROUP BY f.path
+        GROUP BY f.file_id
         HAVING sym_count > ?
         ORDER BY sym_count DESC
         """,
-        (*params, threshold),
+        (threshold,),
     ).fetchall()
     return [(path, 1, "god_file", f"{count} symbols") for path, count in rows]
 
 
 @rule(default=8, flag="max-callees", help="max callees per function/method (default: 8)")
 def high_fan_out(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
-    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
-        f"""
+        """
         SELECT f.path, s.name, s.line,
                COUNT(DISTINCT r.callee_id) + COUNT(DISTINCT e.id) AS total_callees
-        FROM symbols s JOIN files f ON f.id = s.file_id
+        FROM symbols s JOIN _lint_files f ON f.file_id = s.file_id
         LEFT JOIN symbol_refs r ON r.caller_id = s.id
         LEFT JOIN external_refs e ON e.caller_id = s.id
         WHERE s.kind IN ('function', 'method')
-          {clause}
         GROUP BY s.id
         HAVING total_callees > ?
         ORDER BY f.path, s.line
         """,
-        (*params, threshold),
+        (threshold,),
     ).fetchall()
     return [(path, line, "high_fan_out", f"{name} ({count} callees)")
             for path, name, line, count in rows]
@@ -100,17 +99,15 @@ def high_fan_out(conn, directory: str, threshold: int, excludes: list[str] = [])
 
 @rule(default=4, flag="max-params", help="max parameters per function/method (default: 4)")
 def too_many_params(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
-    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
-        f"""
+        """
         SELECT f.path, s.name, s.line, s.param_count
-        FROM symbols s JOIN files f ON f.id = s.file_id
+        FROM symbols s JOIN _lint_files f ON f.file_id = s.file_id
         WHERE s.kind IN ('function', 'method')
           AND s.param_count > ?
-          {clause}
         ORDER BY f.path, s.line
         """,
-        (threshold, *params),
+        (threshold,),
     ).fetchall()
     return [(path, line, "too_many_params", f"{name} ({count} params)")
             for path, name, line, count in rows]
@@ -118,17 +115,15 @@ def too_many_params(conn, directory: str, threshold: int, excludes: list[str] = 
 
 @rule(default=3, flag="max-nesting", help="max nesting depth (default: 3)")
 def deep_nesting(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
-    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
-        f"""
+        """
         SELECT f.path, s.name, s.line, s.nesting_depth
-        FROM symbols s JOIN files f ON f.id = s.file_id
+        FROM symbols s JOIN _lint_files f ON f.file_id = s.file_id
         WHERE s.kind IN ('function', 'method')
           AND s.nesting_depth > ?
-          {clause}
         ORDER BY f.path, s.line
         """,
-        (threshold, *params),
+        (threshold,),
     ).fetchall()
     return [(path, line, "deep_nesting", f"{name} (depth {depth})")
             for path, name, line, depth in rows]
@@ -136,49 +131,43 @@ def deep_nesting(conn, directory: str, threshold: int, excludes: list[str] = [])
 
 @rule(default=-1, flag="unused", help="flag functions/methods with no callers (opt-in)")
 def unused_symbol(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
-    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
-        f"""
+        """
         SELECT f.path, s.name, s.line
-        FROM symbols s JOIN files f ON f.id = s.file_id
+        FROM symbols s JOIN _lint_files f ON f.file_id = s.file_id
         LEFT JOIN symbol_refs r ON r.callee_id = s.id
         WHERE s.kind IN ('function', 'method')
           AND r.callee_id IS NULL
-          {clause}
         ORDER BY f.path, s.line
         """,
-        params,
     ).fetchall()
     return [(path, line, "unused_symbol", name) for path, name, line in rows]
 
 
 @rule(default=3, flag="max-clone-distance", help="max SimHash Hamming distance for near-duplicate functions (default: 3, set -1 to disable)")
 def duplicate_symbol(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
-    clause, params = _path_clauses(directory, excludes)
-
-    # Exact clones: same normhash in 2+ files.
     exact_rows = conn.execute(
-        f"""
+        """
+        WITH dup_hashes AS (
+            SELECT fp.value
+            FROM fingerprints fp
+            JOIN symbols s ON s.id = fp.symbol_id
+            JOIN _lint_files f ON f.file_id = s.file_id
+            WHERE fp.kind = 'normhash'
+            GROUP BY fp.value
+            HAVING COUNT(DISTINCT s.file_id) > 1
+        )
         SELECT f.path, s.line, s.name, fp.value
         FROM fingerprints fp
         JOIN symbols s ON s.id = fp.symbol_id
-        JOIN files f ON f.id = s.file_id
+        JOIN _lint_files f ON f.file_id = s.file_id
+        JOIN dup_hashes dh ON dh.value = fp.value
         WHERE fp.kind = 'normhash'
-          AND fp.value IN (
-              SELECT fp2.value FROM fingerprints fp2
-              JOIN symbols s2 ON s2.id = fp2.symbol_id
-              JOIN files f2 ON f2.id = s2.file_id
-              WHERE fp2.kind = 'normhash'
-                AND f2.id != f.id
-          )
-          {clause}
         ORDER BY fp.value, f.path, s.line
         """,
-        params,
     ).fetchall()
 
     violations: list[Violation] = []
-    seen_hashes: set[str] = set()
     for path, line, name, h in exact_rows:
         display = f"exact clone: {name} (normhash {h[:8]})"
         violations.append((path, line, "exact_clone", display))
@@ -188,16 +177,14 @@ def duplicate_symbol(conn, directory: str, threshold: int, excludes: list[str] =
     # with distance <= threshold must share at least one band, so no near-clones are missed.
     if threshold >= 0:
         sim_rows = conn.execute(
-            f"""
+            """
             SELECT s.id, f.path, s.line, s.name, fp.value
             FROM fingerprints fp
             JOIN symbols s ON s.id = fp.symbol_id
-            JOIN files f ON f.id = s.file_id
+            JOIN _lint_files f ON f.file_id = s.file_id
             WHERE fp.kind = 'simhash'
-              {clause}
             ORDER BY fp.value
             """,
-            params,
         ).fetchall()
 
         if sim_rows:
@@ -239,29 +226,17 @@ def duplicate_symbol(conn, directory: str, threshold: int, excludes: list[str] =
 
 @rule(default=3, flag="dip-threshold", help="min dependents for a module to count as low-level in DIP hints (default: 3, set -1 to disable)")
 def dip_violation(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
-    parts: list[str] = []
-    params: list = []
-    if directory:
-        norm = directory.replace("\\", "/").rstrip("/")
-        parts.append("(f1.path LIKE ? OR f1.path LIKE ?)")
-        params += [f"%{norm}/%", f"%{norm}"]
-    for pat in excludes:
-        parts.append("f1.path NOT LIKE ?")
-        params.append(pat.replace("\\", "/").replace("*", "%").replace("?", "_"))
-    clause = ("AND " + " AND ".join(parts)) if parts else ""
-
     edges = conn.execute(
-        f"""
+        """
         SELECT DISTINCT f1.path, f2.path
         FROM symbol_refs sr
         JOIN symbols s1 ON s1.id = sr.caller_id
+        JOIN _lint_files f1 ON f1.file_id = s1.file_id
         JOIN symbols s2 ON s2.id = sr.callee_id
-        JOIN files f1 ON f1.id = s1.file_id
-        JOIN files f2 ON f2.id = s2.file_id
+        JOIN _lint_files f2 ON f2.file_id = s2.file_id
         WHERE f1.path != f2.path
-          {clause}
-        """,
-        params,
+          AND s1.ext IS NOT NULL AND s1.ext = s2.ext
+        """
     ).fetchall()
     if not edges:
         return []
@@ -270,8 +245,8 @@ def dip_violation(conn, directory: str, threshold: int, excludes: list[str] = []
     for path, ns in conn.execute(
         """
         SELECT DISTINCT f.path, st.value
-        FROM files f
-        JOIN symbols s ON s.file_id = f.id
+        FROM _lint_files f
+        JOIN symbols s ON s.file_id = f.file_id
         JOIN symbol_tags st ON st.symbol_id = s.id AND st.key = 'namespace'
         WHERE f.path LIKE '%.cs'
         """
@@ -311,22 +286,19 @@ def dip_violation(conn, directory: str, threshold: int, excludes: list[str] = []
 
 @rule(default=10, flag="max-deps", help="flag files that call into many other files (SRP hint, default: 10)")
 def wide_module(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
-    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
-        f"""
+        """
         SELECT f.path, COUNT(DISTINCT f2.id) AS dep_count
-        FROM files f
-        JOIN symbols s ON s.file_id = f.id
+        FROM _lint_files f
+        JOIN symbols s ON s.file_id = f.file_id
         JOIN symbol_refs sr ON sr.caller_id = s.id
         JOIN symbols callee ON callee.id = sr.callee_id
-        JOIN files f2 ON f2.id = callee.file_id AND f2.id != f.id
-        WHERE 1=1
-          {clause}
-        GROUP BY f.id
+        JOIN files f2 ON f2.id = callee.file_id AND f2.id != f.file_id
+        GROUP BY f.file_id
         HAVING dep_count > ?
         ORDER BY dep_count DESC
         """,
-        (*params, threshold),
+        (threshold,),
     ).fetchall()
     return [(path, 1, "wide_module", f"{dep_count} file dependencies")
             for path, dep_count in rows]
@@ -334,24 +306,22 @@ def wide_module(conn, directory: str, threshold: int, excludes: list[str] = []) 
 
 @rule(default=10, flag="max-methods", help="flag classes/structs/interfaces with more than N methods (ISP hint)")
 def fat_class(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
-    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
-        f"""
+        """
         SELECT f.path, c.name, c.line, COUNT(m.id) AS mc
         FROM symbols c
-        JOIN files f ON f.id = c.file_id
+        JOIN _lint_files f ON f.file_id = c.file_id
         LEFT JOIN symbols m ON m.file_id = c.file_id
           AND m.kind = 'method'
           AND m.line > c.line
           AND (c.end_line IS NULL OR m.end_line <= c.end_line)
         WHERE c.kind IN ('class', 'struct', 'interface')
           AND c.end_line IS NOT NULL
-          {clause}
         GROUP BY c.id
         HAVING mc > ?
         ORDER BY mc DESC
         """,
-        params + [threshold],
+        (threshold,),
     ).fetchall()
     return [(path, line, "fat_class", f"{name} ({mc} methods)")
             for path, name, line, mc in rows]
@@ -359,16 +329,13 @@ def fat_class(conn, directory: str, threshold: int, excludes: list[str] = []) ->
 
 @rule(default=-1, flag="statics", help="flag static symbols (opt-in)")
 def static_symbol(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
-    clause, params = _path_clauses(directory, excludes)
     rows = conn.execute(
-        f"""
+        """
         SELECT f.path, s.name, s.line, s.kind
-        FROM symbols s JOIN files f ON f.id = s.file_id
+        FROM symbols s JOIN _lint_files f ON f.file_id = s.file_id
         WHERE s.is_static = 1
-          {clause}
         ORDER BY f.path, s.line
         """,
-        params,
     ).fetchall()
     return [(path, line, "static_symbol", f"{name} ({kind})")
             for path, name, line, kind in rows]

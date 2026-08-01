@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-import signal
+import os
 import sqlite3
 import sys
 import threading
@@ -35,9 +35,6 @@ class _RegexpAdapter:
             return yaml_extractor.extract(path), []
         return regexp_extractor.extract_symbols(path), []
 
-
-def beginning_of_day(t: datetime) -> datetime:
-    return datetime(t.year, t.month, t.day, 0, 0, 0, 0, tzinfo=t.tzinfo)
 
 
 def process_symbols(
@@ -86,9 +83,9 @@ def process_symbols(
                 desc_at = carry_at
 
             cur = conn.execute(
-                "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, params, nesting_depth, param_count, description, described_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
-                (row.target_id, sym.name, sym.kind, sym.line, sym.end_line, sym.snippet, sym.params or None, sym.nesting_depth, sym.param_count, desc, desc_at),
+                "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, params, nesting_depth, param_count, description, described_at, ext) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                (row.target_id, sym.name, sym.kind, sym.line, sym.end_line, sym.snippet, sym.params or None, sym.nesting_depth, sym.param_count, desc, desc_at, os.path.splitext(path)[1].lower()),
             )
             r = cur.fetchone()
             if r is None:
@@ -234,7 +231,7 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
     retries_today = 0
     failures_today = 0
     rate_window: list[float] = []
-    day_start = beginning_of_day(datetime.now())
+    day_start = daemon_util.beginning_of_day(datetime.now())
 
     while not shutdown.is_set():
         status = "idle"
@@ -287,7 +284,7 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
 
                 now = datetime.now()
                 if (now - day_start).total_seconds() >= 24 * 3600:
-                    day_start = beginning_of_day(now)
+                    day_start = daemon_util.beginning_of_day(now)
                     processed_today = 0
                     retries_today = 0
                     failures_today = 0
@@ -362,17 +359,7 @@ def main() -> None:
 
     daemon_util.setup_logging(args.silent or cfg.silent)
 
-    shutdown = threading.Event()
-
-    def _sig(_signum, _frame):
-        shutdown.set()
-
-    signal.signal(signal.SIGINT, _sig)
-    try:
-        signal.signal(signal.SIGTERM, _sig)
-    except (ValueError, AttributeError):
-        pass
-
+    shutdown = daemon_util.make_shutdown()
     run(cfg, shutdown, silent=args.silent or cfg.silent)
 
 

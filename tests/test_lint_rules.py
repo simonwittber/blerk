@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from blerk import db
-from blerk_cmd.lint_rules import fat_class, wide_module
+from blerk_cmd.lint_rules import build_scope, fat_class, wide_module
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +47,7 @@ class TestFatClass:
         for i in range(12):
             _insert_symbol(conn, fid, f"method_{i}", "method", 2 + i * 10, 8 + i * 10)
 
+        build_scope(conn, "", [])
         violations = fat_class(conn, "", 10, [])
         assert len(violations) == 1
         assert violations[0][2] == "fat_class"
@@ -60,6 +61,7 @@ class TestFatClass:
         for i in range(10):
             _insert_symbol(conn, fid, f"method_{i}", "method", 2 + i * 10, 8 + i * 10)
 
+        build_scope(conn, "", [])
         violations = fat_class(conn, "", 10, [])
         assert not violations
 
@@ -70,6 +72,7 @@ class TestFatClass:
         for i in range(15):
             _insert_symbol(conn, fid, f"method_{i}", "method", 2 + i * 10, 8 + i * 10)
 
+        build_scope(conn, "", [])
         violations = fat_class(conn, "", 10, [])
         assert not violations
 
@@ -83,6 +86,7 @@ class TestFatClass:
         for i in range(15):
             _insert_symbol(conn, fid, f"other_{i}", "method", 100 + i * 5, 103 + i * 5)
 
+        build_scope(conn, "", [])
         violations = fat_class(conn, "", 10, [])
         assert not violations
 
@@ -93,6 +97,7 @@ class TestFatClass:
         for i in range(12):
             _insert_symbol(conn, fid, f"method_{i}", "method", 2 + i * 10, 8 + i * 10)
 
+        build_scope(conn, "", [])
         violations = fat_class(conn, "", 10, [])
         assert any(v[2] == "fat_class" for v in violations)
 
@@ -103,6 +108,7 @@ class TestFatClass:
         for i in range(12):
             _insert_symbol(conn, fid, f"method_{i}", "method", 2 + i * 10, 8 + i * 10)
 
+        build_scope(conn, "", [])
         violations = fat_class(conn, "", 10, [])
         assert any(v[2] == "fat_class" for v in violations)
 
@@ -115,6 +121,7 @@ class TestFatClass:
             for i in range(12):
                 _insert_symbol(conn, fid, f"method_{i}", "method", 2 + i * 10, 8 + i * 10)
 
+        build_scope(conn, str(tmp_path / "pkg_a"), [])
         violations = fat_class(conn, str(tmp_path / "pkg_a"), 10, [])
         paths = {v[0] for v in violations}
         assert all("pkg_a" in p for p in paths)
@@ -139,6 +146,7 @@ class TestWideModule:
         conn = _make_db(tmp_path)
         self._setup_wide_file(conn, "src/hub.py", 12)
 
+        build_scope(conn, "", [])
         violations = wide_module(conn, "", 10, [])
         assert len(violations) == 1
         assert violations[0][2] == "wide_module"
@@ -148,6 +156,7 @@ class TestWideModule:
         conn = _make_db(tmp_path)
         self._setup_wide_file(conn, "src/small.py", 5)
 
+        build_scope(conn, "", [])
         violations = wide_module(conn, "", 10, [])
         assert not violations
 
@@ -155,6 +164,7 @@ class TestWideModule:
         conn = _make_db(tmp_path)
         self._setup_wide_file(conn, "src/mid.py", 10)
 
+        build_scope(conn, "", [])
         violations = wide_module(conn, "", 10, [])
         assert not violations
 
@@ -165,6 +175,7 @@ class TestWideModule:
         for i in range(1, len(sids)):
             _insert_ref(conn, sids[0], sids[i])
 
+        build_scope(conn, "", [])
         violations = wide_module(conn, "", 10, [])
         assert not violations
 
@@ -177,6 +188,7 @@ class TestWideModule:
             t = _insert_symbol(conn, callee_fid, f"dep_{i}", "function", i + 1)
             _insert_ref(conn, s, t)
 
+        build_scope(conn, "", [])
         violations = wide_module(conn, "", 10, [])
         assert not violations
 
@@ -196,6 +208,7 @@ class TestWideModule:
             _insert_ref(conn, caller_a_sid, dep_sid)
             _insert_ref(conn, caller_b_sid, dep_sid)
 
+        build_scope(conn, pkg_a, [])
         violations = wide_module(conn, pkg_a, 10, [])
         paths = {v[0] for v in violations}
         assert all(pkg_a in p for p in paths)
@@ -206,5 +219,6 @@ class TestWideModule:
         fid = _insert_file(conn, "src/isolated.py")
         _insert_symbol(conn, fid, "fn", "function", 1)
 
+        build_scope(conn, "", [])
         violations = wide_module(conn, "", 10, [])
         assert not violations

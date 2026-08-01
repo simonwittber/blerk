@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from blerk import db
 from blerk_cmd.fingerprinter import fingerprint, normhash, simhash
-from blerk_cmd.lint_rules import duplicate_symbol
+from blerk_cmd.lint_rules import build_scope, duplicate_symbol
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _make_db(tmp_path):
-    return db.open_db(str(tmp_path / "test.db"))
 
 
 def _insert_symbol(conn, path: str, name: str, snippet: str, kind: str = "function") -> int:
@@ -126,31 +122,30 @@ SNIPPET_A = "def foo(x):\n    return x + 1\n" * 5
 SNIPPET_B = "def bar(y):\n    result = y * 2\n    return result\n" * 5
 
 
-def test_exact_clone_detected(tmp_path):
-    conn = _make_db(tmp_path)
+def test_exact_clone_detected(conn, tmp_path):
     sid_a = _insert_symbol(conn, str(tmp_path / "a.py"), "foo", SNIPPET_A)
     sid_b = _insert_symbol(conn, str(tmp_path / "b.py"), "foo_copy", SNIPPET_A)
     _fingerprint_symbol(conn, sid_a, SNIPPET_A)
     _fingerprint_symbol(conn, sid_b, SNIPPET_A)
 
+    build_scope(conn, "", [])
     violations = duplicate_symbol(conn, "", 3, [])
     rules = [v[2] for v in violations]
     assert "exact_clone" in rules
 
 
-def test_no_clone_when_snippets_differ(tmp_path):
-    conn = _make_db(tmp_path)
+def test_no_clone_when_snippets_differ(conn, tmp_path):
     sid_a = _insert_symbol(conn, str(tmp_path / "a.py"), "foo", SNIPPET_A)
     sid_b = _insert_symbol(conn, str(tmp_path / "b.py"), "bar", SNIPPET_B)
     _fingerprint_symbol(conn, sid_a, SNIPPET_A)
     _fingerprint_symbol(conn, sid_b, SNIPPET_B)
 
+    build_scope(conn, "", [])
     violations = duplicate_symbol(conn, "", 3, [])
     assert not violations
 
 
-def test_exact_clone_not_flagged_within_same_file(tmp_path):
-    conn = _make_db(tmp_path)
+def test_exact_clone_not_flagged_within_same_file(conn, tmp_path):
     path = str(tmp_path / "a.py")
     sid_a = _insert_symbol(conn, path, "foo", SNIPPET_A)
     # Same file, same snippet - should not flag.
@@ -163,13 +158,13 @@ def test_exact_clone_not_flagged_within_same_file(tmp_path):
     _fingerprint_symbol(conn, sid_a, SNIPPET_A)
     _fingerprint_symbol(conn, sid_b, SNIPPET_A)
 
+    build_scope(conn, "", [])
     violations = duplicate_symbol(conn, "", 3, [])
     exact = [v for v in violations if v[2] == "exact_clone"]
     assert not exact
 
 
-def test_near_clone_detected(tmp_path):
-    conn = _make_db(tmp_path)
+def test_near_clone_detected(conn, tmp_path):
     # Build two long snippets that differ by one character.
     base = "def process_items(items):\n    result = []\n    for item in items:\n        result.append(item)\n    return result\n" * 6
     near = base[:-2] + "x\n"
@@ -178,13 +173,13 @@ def test_near_clone_detected(tmp_path):
     _fingerprint_symbol(conn, sid_a, base)
     _fingerprint_symbol(conn, sid_b, near)
 
+    build_scope(conn, "", [])
     violations = duplicate_symbol(conn, "", 3, [])
     rules = [v[2] for v in violations]
     assert "near_clone" in rules or "exact_clone" in rules
 
 
-def test_near_clone_disabled_when_threshold_negative(tmp_path):
-    conn = _make_db(tmp_path)
+def test_near_clone_disabled_when_threshold_negative(conn, tmp_path):
     base = "def foo(x):\n    return x\n" * 8
     near = base[:-1] + "y\n"
     sid_a = _insert_symbol(conn, str(tmp_path / "a.py"), "foo", base)
@@ -192,22 +187,23 @@ def test_near_clone_disabled_when_threshold_negative(tmp_path):
     _fingerprint_symbol(conn, sid_a, base)
     _fingerprint_symbol(conn, sid_b, near)
 
+    build_scope(conn, "", [])
     violations = duplicate_symbol(conn, "", -1, [])
     near_clones = [v for v in violations if v[2] == "near_clone"]
     assert not near_clones
 
 
-def test_directory_filter_scopes_results(tmp_path):
+def test_directory_filter_scopes_results(conn, tmp_path):
     sub_a = tmp_path / "pkg_a"
     sub_b = tmp_path / "pkg_b"
     sub_a.mkdir()
     sub_b.mkdir()
-    conn = _make_db(tmp_path)
     sid_a = _insert_symbol(conn, str(sub_a / "a.py"), "foo", SNIPPET_A)
     sid_b = _insert_symbol(conn, str(sub_b / "b.py"), "foo_copy", SNIPPET_A)
     _fingerprint_symbol(conn, sid_a, SNIPPET_A)
     _fingerprint_symbol(conn, sid_b, SNIPPET_A)
 
+    build_scope(conn, str(sub_a), [])
     violations = duplicate_symbol(conn, str(sub_a), 3, [])
     # Only a.py is in the scoped directory; no pair exists within it.
     assert not violations

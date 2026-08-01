@@ -1,71 +1,95 @@
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import os
 import sys
+import time
+import tomllib
+from dataclasses import dataclass
 
 from blerk import config, db
-from blerk_cmd.lint_rules import RULES, Violation
+from blerk_cmd.lint_rules import RULES, Violation, build_scope
 
 
-def _symbol_count(conn, directory: str, excludes: list[str]) -> int:
-    from blerk_cmd.lint_rules import _path_clauses
-    clause, params = _path_clauses(directory, excludes)
-    row = conn.execute(
-        f"""
-        SELECT COUNT(*) FROM symbols s
-        JOIN files f ON f.id = s.file_id
-        WHERE s.kind IN ('function', 'method')
-          {clause}
-        """,
-        params,
-    ).fetchone()
-    return row[0] if row else 0
+@dataclass
+class _Suppression:
+    dir: str
+    rules: list[str]
 
 
-def _is_suppressed(path: str, rule: str, suppress: list) -> bool:
+def load_suppressions(directory: str) -> list[_Suppression]:
+    result: list[_Suppression] = []
+    for root, _dirs, files in os.walk(directory):
+        if ".blerk" in files:
+            try:
+                with open(os.path.join(root, ".blerk"), "rb") as f:
+                    data = tomllib.load(f)
+                rules = data.get("suppress", [])
+                if rules:
+                    result.append(_Suppression(
+                        dir=root.replace("\\", "/"),
+                        rules=rules,
+                    ))
+            except Exception:
+                pass
+    return result
+
+
+def _is_suppressed(path: str, rule: str, suppressions: list[_Suppression]) -> bool:
     p = path.replace("\\", "/")
-    for s in suppress:
-        pat = s.path.replace("\\", "/")
-        if fnmatch.fnmatch(p, pat):
+    for s in suppressions:
+        if p == s.dir or p.startswith(s.dir + "/"):
             if "*" in s.rules or rule in s.rules:
                 return True
     return False
 
 
+def _symbol_count(conn) -> int:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) FROM symbols s
+        JOIN _lint_files f ON f.file_id = s.file_id
+        WHERE s.kind IN ('function', 'method')
+        """
+    ).fetchone()
+    return row[0] if row else 0
+
+
 def lint(conn, directory: str, thresholds: dict[str, int], excludes: list[str] = [],
-         suppress: list | None = None) -> list[Violation]:
+         timing: bool = False) -> list[Violation]:
+    build_scope(conn, directory, excludes)
+    suppressions = load_suppressions(directory)
     violations: list[Violation] = []
     for rule in RULES:
         t = thresholds.get(rule.name, rule.default)
         if t < 0:
             continue
-        violations += rule.fn(conn, directory, t, excludes)
+        t0 = time.perf_counter()
+        result = rule.fn(conn, directory, t, excludes)
+        if timing:
+            ms = (time.perf_counter() - t0) * 1000
+            print(f"  {rule.name:<28} {ms:6.1f}ms  {len(result)} findings", file=sys.stderr)
+        violations += result
     violations.sort(key=lambda v: (v[0], v[1]))
-    if suppress:
-        violations = [v for v in violations if not _is_suppressed(v[0], v[2], suppress)]
+    if suppressions:
+        violations = [v for v in violations if not _is_suppressed(v[0], v[2], suppressions)]
     return violations
 
 
 ConfusingSymbol = tuple[str, int, str, str]  # path, line, name, reason
 
 
-def fetch_confusing(conn, directory: str, excludes: list[str]) -> list[ConfusingSymbol]:
-    from blerk_cmd.lint_rules import _path_clauses
-    clause, params = _path_clauses(directory, excludes)
+def fetch_confusing(conn) -> list[ConfusingSymbol]:
     rows = conn.execute(
-        f"""
+        """
         SELECT f.path, s.line, s.name, COALESCE(sr.value, '')
         FROM symbols s
-        JOIN files f ON f.id = s.file_id
+        JOIN _lint_files f ON f.file_id = s.file_id
         JOIN symbol_tags st ON st.symbol_id = s.id AND st.key = 'confusing' AND st.value = 'true'
         LEFT JOIN symbol_tags sr ON sr.symbol_id = s.id AND sr.key = 'confusing_reason'
         WHERE s.kind IN ('function', 'method')
-          {clause}
         ORDER BY f.path, s.line
-        """,
-        params,
+        """
     ).fetchall()
     return [(path, line, name, reason) for path, line, name, reason in rows]
 
@@ -95,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="directory to lint (default: cwd)")
     parser.add_argument("--exclude", action="append", dest="excludes", default=[], metavar="PATTERN",
                         help="exclude paths matching glob pattern (repeatable)")
+    parser.add_argument("--timing", action="store_true", help="print per-rule timing to stderr")
 
     for rule in RULES:
         if rule.default < 0:
@@ -115,9 +140,10 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
 
-    violations = lint(conn, directory, thresholds, args.excludes, suppress=cfg.lint.suppress)
-    symbol_count = _symbol_count(conn, directory, args.excludes)
-    confusing = fetch_confusing(conn, directory, args.excludes)
+    violations = lint(conn, directory, thresholds, args.excludes, timing=args.timing)
+    symbol_count = _symbol_count(conn)
+    confusing = fetch_confusing(conn)
+    conn.execute("DROP TABLE IF EXISTS _lint_files")
     conn.close()
 
     print_results(directory, violations, symbol_count, confusing)
