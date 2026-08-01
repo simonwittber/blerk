@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.5
+## [Unreleased]
 
 ### Coordinator
 
@@ -16,8 +16,6 @@ Configure the hub port with `coordinator.port` in config.
 The MCP server tests are rewritten for the raw JSON-RPC server.
 A new test module covers `CoordinatorServer` and `CoordinatorClient`.
 
-## 0.1.4
-
 ### Duplicate function detection
 
 A new `fingerprinter` daemon computes two fingerprints per function and method: `normhash` (SHA256 of the whitespace-normalised snippet) and `simhash` (64-bit SimHash over character 4-grams).
@@ -25,16 +23,12 @@ Both are stored in a new `fingerprints` table.
 `blerk lint` now reports `exact_clone` (same normhash in two or more files) and `near_clone` (SimHash Hamming distance within `--max-clone-distance`, default 3).
 The hub starts the fingerprinter daemon alongside the other daemons.
 
-## 0.1.3
-
 ### DIP hints in lint
 
 `blerk lint` now reports `dip_hint` violations.
 It flags modules that may depend on lower-level modules based on inbound dependency counts.
 The rule uses module-level grouping: namespace for C#, package directory for Go, file path for Python and JavaScript.
 Use `--dip-threshold N` to set the minimum inbound count for a module to be considered low-level (default: 3, set -1 to disable).
-
-## 0.1.2
 
 ### MCP server delegates to CLI
 
