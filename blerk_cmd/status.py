@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime, timezone
 
 from blerk import config, db
+from blerk.coordinator import _port_file, _workers_dir
 
 
 def _fmt_eta(seconds: int | None) -> str:
@@ -31,7 +32,7 @@ def _pct(num: int, den: int) -> str:
     return f"{num * 100 // den}%"
 
 
-def status(conn) -> str:
+def status(conn, db_path: str = "") -> str:
     raw_heartbeats: list[tuple] = conn.execute(
         "SELECT daemon, status, queue_depth, rate_per_minute, eta_seconds, last_heartbeat, last_error "
         "FROM daemon_status ORDER BY daemon"
@@ -65,6 +66,15 @@ def status(conn) -> str:
     ).fetchone()[0]
 
     lines: list[str] = []
+
+    if db_path:
+        try:
+            port = int(_port_file(db_path).read_text().strip())
+            wd = _workers_dir(db_path)
+            workers = len(list(wd.glob("*.worker"))) if wd.exists() else 0
+            lines.append(f"{'coordinator':<20}  running (port {port}, {workers} workers)")
+        except (OSError, ValueError):
+            lines.append(f"{'coordinator':<20}  not running")
 
     def _row(name: str, detail: str, eta: int | None, heartbeat: int | None, error: str) -> str:
         parts = [f"{name:<20}", detail]
@@ -123,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
-    print(status(conn))
+    print(status(conn, cfg.db.path))
     conn.close()
     return 0
 

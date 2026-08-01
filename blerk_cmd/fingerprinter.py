@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime
 
-from blerk import config, db
+from blerk import config, coordinator, daemon_util, db
 
 QUEUE = "fingerprint_queue"
 TARGET_COL = "symbol_id"
@@ -51,13 +51,14 @@ def fingerprint(snippet: str) -> dict[str, str]:
     return {"normhash": normhash(snippet), "simhash": simhash(snippet)}
 
 
-def run(cfg: config.Config, shutdown: threading.Event) -> None:
+def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> None:
     conn = db.open_db(cfg.db.path)
     try:
         db.recover_orphans(conn, QUEUE)
     except sqlite3.Error as e:
         log.warning("recover orphans: %s", e)
 
+    client = coordinator.CoordinatorClient(QUEUE, cfg.db.path)
     processed_today = 0
     retries_today = 0
     failures_today = 0
@@ -79,26 +80,30 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
         if rows:
             status = "running"
             for row in rows:
-                snippet_row = conn.execute(
-                    "SELECT snippet FROM symbols WHERE id=?",
+                sym_row = conn.execute(
+                    "SELECT name, snippet FROM symbols WHERE id=?",
                     (row.target_id,),
                 ).fetchone()
 
-                if not snippet_row or not snippet_row[0]:
+                if not sym_row or not sym_row[1]:
                     try:
                         db.mark_done(conn, QUEUE, row.id)
                     except sqlite3.Error as e:
                         log.warning("mark done %d: %s", row.id, e)
                     continue
 
+                sym_name, snippet = sym_row[0], sym_row[1]
+                t0 = time.monotonic()
                 try:
-                    fps = fingerprint(snippet_row[0])
+                    fps = fingerprint(snippet)
                     for kind, value in fps.items():
                         conn.execute(
                             "INSERT OR REPLACE INTO fingerprints(symbol_id, kind, value) VALUES (?,?,?)",
                             (row.target_id, kind, value),
                         )
                     db.mark_done(conn, QUEUE, row.id)
+                    if not silent:
+                        log.info("%s: %s, %s", DAEMON, daemon_util.fmt_duration(time.monotonic() - t0), sym_name)
                 except sqlite3.Error as e:
                     log.warning("write fingerprint %d: %s", row.target_id, e)
                     try:
@@ -145,9 +150,10 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
         except sqlite3.Error as e:
             log.warning("heartbeat: %s", e)
 
-        if shutdown.wait(timeout=POLL_S):
+        if client.wait(shutdown, POLL_S):
             break
 
+    client.close()
     try:
         conn.close()
     except sqlite3.Error:
@@ -163,6 +169,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Compute normhash and simhash fingerprints for indexed symbols.")
     parser.add_argument("--config", default=config.default_path())
+    parser.add_argument("--silent", action="store_true")
     args = parser.parse_args()
 
     try:
@@ -170,6 +177,8 @@ def main() -> None:
     except (FileNotFoundError, OSError) as e:
         log.error("load config: %s", e)
         sys.exit(1)
+
+    daemon_util.setup_logging(args.silent or cfg.silent)
 
     shutdown = threading.Event()
 
@@ -182,7 +191,7 @@ def main() -> None:
     except (ValueError, AttributeError):
         pass
 
-    run(cfg, shutdown)
+    run(cfg, shutdown, silent=args.silent or cfg.silent)
 
 
 if __name__ == "__main__":

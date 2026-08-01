@@ -290,6 +290,31 @@ def dip_violation(conn, directory: str, threshold: int, excludes: list[str] = []
     return violations
 
 
+@rule(default=10, flag="max-methods", help="flag classes/structs/interfaces with more than N methods (ISP hint)")
+def fat_class(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    clause, params = _path_clauses(directory, excludes)
+    rows = conn.execute(
+        f"""
+        SELECT f.path, c.name, c.line, COUNT(m.id) AS mc
+        FROM symbols c
+        JOIN files f ON f.id = c.file_id
+        LEFT JOIN symbols m ON m.file_id = c.file_id
+          AND m.kind = 'method'
+          AND m.line > c.line
+          AND (c.end_line IS NULL OR m.end_line <= c.end_line)
+        WHERE c.kind IN ('class', 'struct', 'interface')
+          AND c.end_line IS NOT NULL
+          {clause}
+        GROUP BY c.id
+        HAVING mc > ?
+        ORDER BY mc DESC
+        """,
+        params + [threshold],
+    ).fetchall()
+    return [(path, line, "fat_class", f"{name} ({mc} methods)")
+            for path, name, line, mc in rows]
+
+
 @rule(default=-1, flag="statics", help="flag static symbols (opt-in)")
 def static_symbol(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
     clause, params = _path_clauses(directory, excludes)
