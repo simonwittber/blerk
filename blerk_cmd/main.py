@@ -18,8 +18,8 @@ _DISPATCH = {
     "rescan":    "blerk_cmd.rescan",
     "purge":     "blerk_cmd.purge",
     "tags":      "blerk_cmd.tags",
-    "antislop":  "blerk_cmd.confusion_sweeper",
-    "confusing": "blerk_cmd.confusion_sweeper",
+    "antislop":  "blerk_cmd.antislop",
+    "confusing": "blerk_cmd.antislop",
 }
 
 _HELP = {

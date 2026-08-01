@@ -6,8 +6,8 @@ import sys
 import pytest
 
 from blerk import config, db
-from blerk_cmd import confusion_sweeper
-from blerk_cmd.confusion_sweeper import _parse_response, reset_tags, sweep
+from blerk_cmd import antislop
+from blerk_cmd.antislop import _parse_response, reset_tags, sweep
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ def test_clear_response_stores_false_no_reason(tmp_path, monkeypatch):
     cfg = _make_cfg()
     sid = _insert_symbol(conn, tmp_path, "foo")
 
-    monkeypatch.setattr(confusion_sweeper, "describe", lambda *a, **kw: "CLEAR")
+    monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "CLEAR")
 
     sweep(conn, cfg, n=10, directory="", exts=[])
 
@@ -109,7 +109,7 @@ def test_confusing_response_stores_true_and_reason(tmp_path, monkeypatch):
     sid = _insert_symbol(conn, tmp_path, "bar")
 
     monkeypatch.setattr(
-        confusion_sweeper, "describe",
+        antislop, "describe",
         lambda *a, **kw: "CONFUSING: This looks pointless.",
     )
 
@@ -127,7 +127,7 @@ def test_already_tagged_symbols_are_skipped(tmp_path, monkeypatch):
     _tag(conn, sid, "confusing", "false")
 
     calls = []
-    monkeypatch.setattr(confusion_sweeper, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
+    monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
 
     sweep(conn, cfg, n=10, directory="", exts=[])
 
@@ -146,7 +146,7 @@ def test_symbols_without_snippet_are_skipped(tmp_path, monkeypatch):
     )
 
     calls = []
-    monkeypatch.setattr(confusion_sweeper, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
+    monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
 
     sweep(conn, cfg, n=10, directory="", exts=[])
 
@@ -160,7 +160,7 @@ def test_n_limit_is_respected(tmp_path, monkeypatch):
         _insert_symbol(conn, tmp_path, f"sym{i}")
 
     calls = []
-    monkeypatch.setattr(confusion_sweeper, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
+    monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
 
     sweep(conn, cfg, n=3, directory="", exts=[])
 
@@ -199,7 +199,7 @@ def test_dir_filter_works(tmp_path, monkeypatch):
             seen_names.append("outside_fn")
         return "CLEAR"
 
-    monkeypatch.setattr(confusion_sweeper, "describe", fake_describe)
+    monkeypatch.setattr(antislop, "describe", fake_describe)
 
     sweep(conn, cfg, n=10, directory=str(sub), exts=[])
 
@@ -212,7 +212,7 @@ def test_malformed_response_does_not_store_tag(tmp_path, monkeypatch):
     cfg = _make_cfg()
     sid = _insert_symbol(conn, tmp_path, "mystery")
 
-    monkeypatch.setattr(confusion_sweeper, "describe", lambda *a, **kw: "DUNNO")
+    monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "DUNNO")
 
     sweep(conn, cfg, n=10, directory="", exts=[])
 
@@ -226,7 +226,7 @@ def test_output_contains_name_and_reason(tmp_path, monkeypatch, capsys):
     _insert_symbol(conn, tmp_path, "weirdFunc")
 
     monkeypatch.setattr(
-        confusion_sweeper, "describe",
+        antislop, "describe",
         lambda *a, **kw: "CONFUSING: This writes to a field that is never read.",
     )
 
@@ -247,7 +247,7 @@ def test_output_reports_assessed_and_skipped(tmp_path, monkeypatch, capsys):
 
     _insert_symbol(conn, tmp_path, "new_sym")
 
-    monkeypatch.setattr(confusion_sweeper, "describe", lambda *a, **kw: "CLEAR")
+    monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "CLEAR")
 
     sweep(conn, cfg, n=10, directory="", exts=[])
 
@@ -261,7 +261,7 @@ def test_no_confusing_message_when_all_clear(tmp_path, monkeypatch, capsys):
     cfg = _make_cfg()
     _insert_symbol(conn, tmp_path, "cleanFunc")
 
-    monkeypatch.setattr(confusion_sweeper, "describe", lambda *a, **kw: "CLEAR")
+    monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "CLEAR")
 
     sweep(conn, cfg, n=10, directory="", exts=[])
 
@@ -276,7 +276,7 @@ def test_reset_clears_existing_tags(tmp_path, monkeypatch):
     _tag(conn, sid, "confusing", "true")
     _tag(conn, sid, "confusing_reason", "old reason")
 
-    monkeypatch.setattr(confusion_sweeper, "describe", lambda *a, **kw: "CLEAR")
+    monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "CLEAR")
 
     sweep(conn, cfg, n=10, directory="", exts=[], reset=True)
 
@@ -293,7 +293,7 @@ def test_reset_false_skips_already_tagged(tmp_path, monkeypatch):
     _tag(conn, sid, "confusing_reason", "old reason")
 
     calls = []
-    monkeypatch.setattr(confusion_sweeper, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
+    monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
 
     sweep(conn, cfg, n=10, directory="", exts=[], reset=False)
 
@@ -307,7 +307,7 @@ def test_short_snippet_is_assessed(tmp_path, monkeypatch):
     _insert_symbol(conn, tmp_path, "tiny", snippet="def tiny():\n    pass\n")
 
     calls = []
-    monkeypatch.setattr(confusion_sweeper, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
+    monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
 
     sweep(conn, cfg, n=10, directory="", exts=[])
 
