@@ -184,6 +184,8 @@ def duplicate_symbol(conn, directory: str, threshold: int, excludes: list[str] =
         violations.append((path, line, "exact_clone", display))
 
     # Near-duplicates: SimHash pairs within Hamming distance threshold.
+    # Uses banding to prune candidates: with n_bands = threshold+1 bands, any pair
+    # with distance <= threshold must share at least one band, so no near-clones are missed.
     if threshold >= 0:
         sim_rows = conn.execute(
             f"""
@@ -198,15 +200,32 @@ def duplicate_symbol(conn, directory: str, threshold: int, excludes: list[str] =
             params,
         ).fetchall()
 
-        reported: set[tuple[int, int]] = set()
-        for i in range(len(sim_rows)):
-            sid_a, path_a, line_a, name_a, val_a = sim_rows[i]
-            h_a = int(val_a, 16)
-            for j in range(i + 1, len(sim_rows)):
-                sid_b, path_b, line_b, name_b, val_b = sim_rows[j]
-                if path_a == path_b:
-                    continue
-                h_b = int(val_b, 16)
+        if sim_rows:
+            hashes = [(sid, path, line, name, int(val, 16))
+                      for sid, path, line, name, val in sim_rows]
+            n_bands = threshold + 1
+            bits_per_band = 64 // n_bands
+            band_mask = (1 << bits_per_band) - 1
+
+            candidates: set[tuple[int, int]] = set()
+            for b in range(n_bands):
+                shift = b * bits_per_band
+                mask = band_mask if b < n_bands - 1 else (1 << (64 - shift)) - 1
+                buckets: dict[int, list[int]] = {}
+                for i, (_, _, _, _, h) in enumerate(hashes):
+                    key = (h >> shift) & mask
+                    buckets.setdefault(key, []).append(i)
+                for group in buckets.values():
+                    for x in range(len(group)):
+                        for y in range(x + 1, len(group)):
+                            a, b_ = group[x], group[y]
+                            if hashes[a][1] != hashes[b_][1]:
+                                candidates.add((min(a, b_), max(a, b_)))
+
+            reported: set[tuple[int, int]] = set()
+            for a_idx, b_idx in candidates:
+                sid_a, path_a, line_a, name_a, h_a = hashes[a_idx]
+                sid_b, path_b, line_b, name_b, h_b = hashes[b_idx]
                 dist = bin(h_a ^ h_b).count("1")
                 if dist <= threshold:
                     pair = (min(sid_a, sid_b), max(sid_a, sid_b))

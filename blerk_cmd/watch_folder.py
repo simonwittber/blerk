@@ -13,7 +13,7 @@ from datetime import datetime
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from blerk import config, coordinator, db
+from blerk import config, coordinator, daemon_util, db
 from blerk.ignore_match import IgnoreSet, is_ignored, load_ignore_file
 
 _conn_lock = db._write_lock
@@ -248,6 +248,7 @@ def watch_folder(
     scan_only: bool,
     shutdown: threading.Event,
     db_path: str = "",
+    silent: bool = False,
 ):
     ignore_path = ignore_flag
 
@@ -286,13 +287,18 @@ def watch_folder(
             return list(live_sets)
 
     def flush(events: dict[str, str]) -> None:
+        upserted = 0
         for path, ev in events.items():
             if ev == "remove":
                 delete_file(conn, path)
             else:
                 upsert_file(conn, path)
-        if client and any(ev != "remove" for ev in events.values()):
-            client.notify("symbol_queue")
+                upserted += 1
+        if upserted:
+            if not silent:
+                log.info("watch-folder: %d file(s)", upserted)
+            if client:
+                client.notify("symbol_queue")
 
     debouncer = Debouncer(debounce_s, flush)
     handler = _Handler(conn, debouncer, get_sets)
@@ -352,9 +358,11 @@ def main() -> None:
     parser.add_argument("--ignore", default="", help="override ignore file path (default: watch.ignore_file from config)")
     parser.add_argument("--scan", action="store_true", help="exit after initial scan without watching for changes")
     parser.add_argument("--folder", default="", help="watch a single folder (overrides config folder list)")
+    parser.add_argument("--silent", action="store_true")
     args = parser.parse_args()
 
     cfg = config.load(args.config)
+    daemon_util.setup_logging(args.silent or cfg.silent)
     conn = db.open_db(cfg.db.path)
 
     debounce_s = cfg.watch.debounce_ms / 1000.0
@@ -369,6 +377,7 @@ def main() -> None:
     except (ValueError, AttributeError):
         pass
 
+    silent = args.silent or cfg.silent
     if not args.scan:
         start_heartbeat_thread(conn, shutdown)
 
@@ -376,7 +385,7 @@ def main() -> None:
     ignore_path = args.ignore or cfg.watch.ignore_file
     folders = [args.folder] if args.folder else cfg.watch.folders
     for folder in folders:
-        obs = watch_folder(folder, conn, ignore_path, debounce_s, args.scan, shutdown, cfg.db.path)
+        obs = watch_folder(folder, conn, ignore_path, debounce_s, args.scan, shutdown, cfg.db.path, silent)
         if obs is not None:
             observers.append(obs)
 

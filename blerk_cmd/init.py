@@ -52,10 +52,15 @@ api_key = {api_key!r}
 """
 
 _DEFAULT_IGNORE = """\
+# Version control
 .git/
 .svn/
 .hg/
+
+# Claude Code configuration
 .claude/
+
+# Build output
 bin/
 obj/
 out/
@@ -73,6 +78,8 @@ target/
 *.o
 *.a
 *.lib
+
+# Caches
 .cache/
 __pycache__/
 .pytest_cache/
@@ -84,31 +91,45 @@ node_modules/
 .npm/
 .yarn/
 .nuget/
-packages/
 .gradle/
 .m2/
+
+# IDE and editor
 .vs/
 .vscode/
 .idea/
 *.suo
 *.user
+*.sln.docstates
 .DS_Store
 Thumbs.db
+
+# Logs and temp files
 *.log
 *.tmp
 *.temp
 *.bak
 *.swp
 *.lock
+
+# Unity
 Library/
+PackageCache/
 Temp/
 Logs/
 UserSettings/
 *.meta
+~UnityDirMonSyncFile~*
+
+# Python virtualenvs
 .venv/
 venv/
 env/
+
+# Docker
 .docker/
+
+# Coverage
 .coverage
 htmlcov/
 coverage.xml

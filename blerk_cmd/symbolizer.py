@@ -262,6 +262,7 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
                     continue
                 path = path_row[0]
 
+                t0 = time.monotonic()
                 try:
                     syms, refs = extractor.extract(path)
                     process_symbols(conn, cfg, row, path, syms, refs)
@@ -280,6 +281,9 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
                     db.mark_done(conn, QUEUE, row.id)
                 except sqlite3.Error as e:
                     log.warning("mark done symbol_queue %d: %s", row.id, e)
+
+                if not silent:
+                    log.info("%s: %s, %d symbol(s), %s", DAEMON, daemon_util.fmt_duration(time.monotonic() - t0), len(syms), path)
 
                 now = datetime.now()
                 if (now - day_start).total_seconds() >= 24 * 3600:
@@ -347,6 +351,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=config.default_path())
+    parser.add_argument("--silent", action="store_true")
     args = parser.parse_args()
 
     try:
@@ -354,6 +359,8 @@ def main() -> None:
     except (FileNotFoundError, OSError) as e:
         log.error("load config: %s", e)
         sys.exit(1)
+
+    daemon_util.setup_logging(args.silent or cfg.silent)
 
     shutdown = threading.Event()
 
@@ -366,7 +373,7 @@ def main() -> None:
     except (ValueError, AttributeError):
         pass
 
-    run(cfg, shutdown)
+    run(cfg, shutdown, silent=args.silent or cfg.silent)
 
 
 if __name__ == "__main__":

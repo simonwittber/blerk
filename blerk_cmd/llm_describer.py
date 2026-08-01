@@ -12,7 +12,7 @@ from datetime import datetime
 
 import httpx
 
-from blerk import config, coordinator, db
+from blerk import config, coordinator, daemon_util, db
 from blerk.symbols import types as symbols_types
 
 
@@ -81,7 +81,7 @@ def beginning_of_day(t: datetime) -> datetime:
     return datetime(t.year, t.month, t.day, 0, 0, 0, 0, tzinfo=t.tzinfo)
 
 
-def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_name: str = DAEMON) -> None:
+def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_name: str = DAEMON, silent: bool = False) -> None:
     conn = db.open_db(cfg.db.path)
     try:
         db.recover_orphans(conn, QUEUE)
@@ -136,6 +136,7 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
 
                 prompt = build_prompt(sym, llm.prompt_template, llm.max_context_chars)
 
+                t0 = time.monotonic()
                 try:
                     desc = describe(llm.endpoint, llm.model, llm.api_key, prompt)
                 except Exception as e:
@@ -170,6 +171,9 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
                     db.mark_done(conn, QUEUE, row.id)
                 except sqlite3.Error as e:
                     log.warning("mark done %s %d: %s", QUEUE, row.id, e)
+
+                if not silent:
+                    log.info("%s: %s, %s in %s", daemon_name, daemon_util.fmt_duration(time.monotonic() - t0), sym.name, sym.path)
 
                 now = datetime.now()
                 if (now - day_start).total_seconds() >= 24 * 3600:
@@ -239,6 +243,7 @@ def main() -> None:
     parser.add_argument("--model", default="", help="override LLM model name")
     parser.add_argument("--daemon-name", default="", dest="daemon_name",
                         help="daemon name for status table (default: llm-describer)")
+    parser.add_argument("--silent", action="store_true")
     args = parser.parse_args()
 
     try:
@@ -246,6 +251,8 @@ def main() -> None:
     except (FileNotFoundError, OSError) as e:
         log.error("load config: %s", e)
         sys.exit(1)
+
+    daemon_util.setup_logging(args.silent or cfg.silent)
 
     llm = cfg.llm[0] if cfg.llm else config.defaults().llm[0]
     if args.endpoint:
@@ -265,7 +272,7 @@ def main() -> None:
     except (ValueError, AttributeError):
         pass
 
-    run(cfg, llm, shutdown, daemon_name)
+    run(cfg, llm, shutdown, daemon_name, silent=args.silent or cfg.silent)
 
 
 if __name__ == "__main__":

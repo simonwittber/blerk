@@ -78,6 +78,17 @@ class Coordinator:
 
 
 @dataclass
+class Suppress:
+    path: str = ""
+    rules: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Lint:
+    suppress: list[Suppress] = field(default_factory=list)
+
+
+@dataclass
 class Config:
     secrets_file: str = ""
     db: DB = field(default_factory=DB)
@@ -89,6 +100,7 @@ class Config:
     reranker: Reranker = field(default_factory=Reranker)
     confusing: Confusing = field(default_factory=Confusing)
     coordinator: Coordinator = field(default_factory=Coordinator)
+    lint: Lint = field(default_factory=Lint)
     silent: bool = False
 
 
@@ -162,6 +174,14 @@ def load(path: str) -> Config:
     cfg = defaults()
     with open(path, "rb") as f:
         data = tomllib.load(f)
+
+    if "lint" in data:
+        lint_data = data["lint"]
+        suppress_raw = lint_data.pop("suppress", [])
+        cfg.lint.suppress = [
+            Suppress(path=s.get("path", ""), rules=s.get("rules", []))
+            for s in suppress_raw
+        ]
 
     if "llm" in data:
         llm_data = data.pop("llm")

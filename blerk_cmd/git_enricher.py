@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime
 
-from blerk import config, coordinator, db
+from blerk import config, coordinator, daemon_util, db
 
 
 QUEUE = "git_queue"
@@ -52,6 +52,7 @@ def process_row(
     conn: sqlite3.Connection,
     cfg: config.Config,
     row: db.QueueRow,
+    silent: bool = False,
 ) -> tuple[bool, bool]:
     path_row = conn.execute(
         "SELECT path FROM files WHERE id=?", (row.target_id,)
@@ -63,6 +64,7 @@ def process_row(
             log.warning("mark done git_queue %d: %s", row.id, e)
         return False, False
     path = path_row[0]
+    t0 = time.monotonic()
 
     root = find_git_root(os.path.dirname(path))
     if not root:
@@ -123,10 +125,12 @@ def process_row(
     except sqlite3.Error as e:
         log.warning("mark done git_queue %d: %s", row.id, e)
 
+    if not silent:
+        log.info("%s: %s, %s", DAEMON, daemon_util.fmt_duration(time.monotonic() - t0), path)
     return False, False
 
 
-def run(cfg: config.Config, shutdown: threading.Event) -> None:
+def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> None:
     conn = db.open_db(cfg.db.path)
     try:
         db.recover_orphans(conn, QUEUE)
@@ -157,7 +161,7 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
         if rows:
             status = "running"
             for row in rows:
-                retried, failed = process_row(conn, cfg, row)
+                retried, failed = process_row(conn, cfg, row, silent=silent)
                 if retried:
                     retries_today += 1
                     if failed:
@@ -226,6 +230,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=config.default_path())
+    parser.add_argument("--silent", action="store_true")
     args = parser.parse_args()
 
     try:
@@ -233,6 +238,8 @@ def main() -> None:
     except (FileNotFoundError, OSError) as e:
         log.error("load config: %s", e)
         sys.exit(1)
+
+    daemon_util.setup_logging(args.silent or cfg.silent)
 
     shutdown = threading.Event()
 
@@ -245,7 +252,7 @@ def main() -> None:
     except (ValueError, AttributeError):
         pass
 
-    run(cfg, shutdown)
+    run(cfg, shutdown, silent=args.silent or cfg.silent)
 
 
 if __name__ == "__main__":

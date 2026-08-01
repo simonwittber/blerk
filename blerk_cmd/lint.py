@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import sys
 
@@ -23,7 +24,18 @@ def _symbol_count(conn, directory: str, excludes: list[str]) -> int:
     return row[0] if row else 0
 
 
-def lint(conn, directory: str, thresholds: dict[str, int], excludes: list[str] = []) -> list[Violation]:
+def _is_suppressed(path: str, rule: str, suppress: list) -> bool:
+    p = path.replace("\\", "/")
+    for s in suppress:
+        pat = s.path.replace("\\", "/")
+        if fnmatch.fnmatch(p, pat):
+            if "*" in s.rules or rule in s.rules:
+                return True
+    return False
+
+
+def lint(conn, directory: str, thresholds: dict[str, int], excludes: list[str] = [],
+         suppress: list | None = None) -> list[Violation]:
     violations: list[Violation] = []
     for rule in RULES:
         t = thresholds.get(rule.name, rule.default)
@@ -31,6 +43,8 @@ def lint(conn, directory: str, thresholds: dict[str, int], excludes: list[str] =
             continue
         violations += rule.fn(conn, directory, t, excludes)
     violations.sort(key=lambda v: (v[0], v[1]))
+    if suppress:
+        violations = [v for v in violations if not _is_suppressed(v[0], v[2], suppress)]
     return violations
 
 
@@ -101,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
 
-    violations = lint(conn, directory, thresholds, args.excludes)
+    violations = lint(conn, directory, thresholds, args.excludes, suppress=cfg.lint.suppress)
     symbol_count = _symbol_count(conn, directory, args.excludes)
     confusing = fetch_confusing(conn, directory, args.excludes)
     conn.close()

@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Daemon activity logging
+
+All daemons now log one line per processed item showing the daemon name, elapsed time, and what was processed.
+For example: `symbolizer: 200ms, 12 symbols, src/Foo.py` or `embedder: 80ms, MyClass.DoThing in src/Foo.py`.
+Pass `--silent` on the command line or set `silent = true` in config to suppress these lines while keeping error output.
+httpx request logs are now silenced to WARNING level in all daemons regardless of the silent flag.
+Shared helpers `fmt_duration` and `setup_logging` live in `blerk/daemon_util.py`.
+
+### Lint rule suppression
+
+Add a `[[lint.suppress]]` section to config to silence specific lint rules for specific path patterns.
+Each entry takes a `path` glob and a `rules` list (or `["*"]` to suppress all rules for that path).
+Suppressed violations are filtered out before the report is printed.
+
+### Near-clone detection uses LSH banding
+
+The SimHash near-clone check in `blerk lint` previously compared every pair of fingerprints, which was O(n²).
+It now uses locality-sensitive hashing (LSH) banding to generate only plausible candidate pairs before computing Hamming distance.
+With `n_bands = threshold + 1` bands, any pair within the configured distance is guaranteed to share at least one band, so no near-clones are missed.
+Performance on large codebases improves substantially.
+
+### Ignore file fixes
+
+The default ignore file template and the installed `~/.blerk/ignore` file previously used `**/foo/` patterns.
+These were silently broken: the `**/` prefix triggers full-path matching, and the regex requires a `/` before the directory name, so top-level directories (like `.git`) were never matched.
+All patterns now use plain `foo/` form, which matches by basename at any depth.
+The template also adds missing Unity entries (`PackageCache/`, `~UnityDirMonSyncFile~*`, `*.sln.docstates`) and organises patterns under comments.
+
 ### Coordinator
 
 A new `CoordinatorServer` runs in the hub and listens on a UDP port.

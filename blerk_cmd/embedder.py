@@ -12,7 +12,7 @@ from datetime import datetime
 
 import httpx
 
-from blerk import config, coordinator, db
+from blerk import config, coordinator, daemon_util, db
 
 
 QUEUE = "embedding_queue"
@@ -60,7 +60,7 @@ def beginning_of_day(t: datetime) -> datetime:
     return datetime(t.year, t.month, t.day, 0, 0, 0, 0, tzinfo=t.tzinfo)
 
 
-def run(cfg: config.Config, shutdown: threading.Event) -> None:
+def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> None:
     conn = db.open_db(cfg.db.path)
     try:
         db.recover_orphans(conn, QUEUE)
@@ -154,6 +154,7 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
                 if cfg.embedder.max_embed_chars > 0 and len(text) > cfg.embedder.max_embed_chars:
                     text = text[:cfg.embedder.max_embed_chars]
 
+                t0 = time.monotonic()
                 try:
                     vec = embed_with_truncation(cfg.embedder.endpoint, cfg.embedder.model, text)
                 except Exception as e:
@@ -194,6 +195,9 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
                     db.mark_done(conn, QUEUE, row.id)
                 except sqlite3.Error as e:
                     log.warning("mark done %s %d: %s", QUEUE, row.id, e)
+
+                if not silent:
+                    log.info("%s: %s, %s in %s", DAEMON, daemon_util.fmt_duration(time.monotonic() - t0), name, path)
 
                 now = datetime.now()
                 if (now - day_start).total_seconds() >= 24 * 3600:
@@ -257,6 +261,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=config.default_path())
+    parser.add_argument("--silent", action="store_true")
     args = parser.parse_args()
 
     try:
@@ -264,6 +269,8 @@ def main() -> None:
     except (FileNotFoundError, OSError) as e:
         log.error("load config: %s", e)
         sys.exit(1)
+
+    daemon_util.setup_logging(args.silent or cfg.silent)
 
     shutdown = threading.Event()
 
@@ -276,7 +283,7 @@ def main() -> None:
     except (ValueError, AttributeError):
         pass
 
-    run(cfg, shutdown)
+    run(cfg, shutdown, silent=args.silent or cfg.silent)
 
 
 if __name__ == "__main__":
