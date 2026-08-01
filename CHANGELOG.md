@@ -13,9 +13,9 @@ All MCP tools run synchronously.
 The MCP server now exposes a `lint` tool.
 It accepts `directory`, `exclude`, `max_lines`, `max_symbols`, `max_callees`, `max_params`, `max_nesting`, `unused`, and `statics` parameters.
 
-### Confusing MCP tool
+### antislop MCP tool
 
-The MCP server now exposes a `confusing` tool.
+The MCP server now exposes an `antislop` tool.
 It accepts `directory`, `file_extensions`, `exclude`, `n`, and `reset` parameters.
 
 ### search alias for query

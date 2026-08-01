@@ -72,7 +72,7 @@ _TOOLS = [
         },
     },
     {
-        "name": "confusing",
+        "name": "antislop",
         "description": "Find confusing or pointless code fragments using the blerk index.",
         "inputSchema": {
             "type": "object",
@@ -153,7 +153,7 @@ def _call(name: str, args: dict) -> str:
             cmd.append("--statics")
         return _run(*cmd) or "No lint findings."
 
-    if name == "confusing":
+    if name == "antislop":
         cmd = ["confusing"]
         if args.get("directory"):
             cmd += ["--dir", args["directory"]]

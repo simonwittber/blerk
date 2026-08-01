@@ -18,6 +18,7 @@ _DISPATCH = {
     "rescan":    "blerk_cmd.rescan",
     "purge":     "blerk_cmd.purge",
     "tags":      "blerk_cmd.tags",
+    "antislop":  "blerk_cmd.confusion_sweeper",
     "confusing": "blerk_cmd.confusion_sweeper",
 }
 
@@ -35,7 +36,8 @@ _HELP = {
     "rescan": "Re-queue files for symbolization",
     "purge":  "Remove indexed files that match ignore patterns",
     "tags":      "List all tag keys and values in the index",
-    "confusing": "Find confusing or pointless code fragments",
+    "antislop":  "Find confusing or pointless code fragments",
+    "confusing": "Find confusing or pointless code fragments (alias for antislop)",
     "add":    "Add a folder to the watch list",
     "remove": "Remove a folder from the watch list",
 }
