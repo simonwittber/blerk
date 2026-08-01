@@ -187,8 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-n", type=int, default=50, metavar="N")
     parser.add_argument("--reset", action="store_true", help="clear existing confusing tags before sweeping")
     args = parser.parse_args(argv)
-    if not args.directory:
-        args.directory = os.getcwd()
+    args.directory = os.path.abspath(args.directory) if args.directory else os.getcwd()
 
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)

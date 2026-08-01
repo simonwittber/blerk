@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
             k, v = t.split("=", 1)
             tag_filter[k.strip()] = v.strip()
 
-    directory = args.directory or os.getcwd()
+    directory = os.path.abspath(args.directory) if args.directory else os.getcwd()
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
     print(browse(conn, directory, args.exts, symbols=args.symbols, tags=tag_filter or None))
