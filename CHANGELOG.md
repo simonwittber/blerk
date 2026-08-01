@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.4
+
+### Duplicate function detection
+
+A new `fingerprinter` daemon computes two fingerprints per function and method: `normhash` (SHA256 of the whitespace-normalised snippet) and `simhash` (64-bit SimHash over character 4-grams).
+Both are stored in a new `fingerprints` table.
+`blerk lint` now reports `exact_clone` (same normhash in two or more files) and `near_clone` (SimHash Hamming distance within `--max-clone-distance`, default 3).
+The hub starts the fingerprinter daemon alongside the other daemons.
+
 ## 0.1.3
 
 ### DIP hints in lint

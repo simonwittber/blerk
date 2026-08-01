@@ -99,6 +99,25 @@ CREATE TABLE IF NOT EXISTS embedding_queue (
     error     TEXT
 );
 
+CREATE TABLE IF NOT EXISTS fingerprints (
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    kind      TEXT    NOT NULL,
+    value     TEXT    NOT NULL,
+    PRIMARY KEY (symbol_id, kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fingerprints_kind_value ON fingerprints(kind, value);
+
+CREATE TABLE IF NOT EXISTS fingerprint_queue (
+    id        INTEGER PRIMARY KEY,
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    status    TEXT    NOT NULL DEFAULT 'pending',
+    priority  INTEGER NOT NULL DEFAULT 1,
+    attempts  INTEGER NOT NULL DEFAULT 0,
+    queued_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    error     TEXT
+);
+
 CREATE TABLE IF NOT EXISTS daemon_status (
     daemon           TEXT    PRIMARY KEY,
     status           TEXT    NOT NULL DEFAULT 'idle',
@@ -160,6 +179,13 @@ END;
 CREATE TRIGGER IF NOT EXISTS symbols_description_update
 AFTER UPDATE ON symbols WHEN NEW.description IS NOT NULL AND OLD.description IS NULL BEGIN
     INSERT INTO embedding_queue(symbol_id) VALUES (NEW.id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS symbols_fingerprint_insert
+AFTER INSERT ON symbols
+WHEN NEW.kind IN ('function', 'method') AND NEW.snippet IS NOT NULL
+BEGIN
+    INSERT INTO fingerprint_queue(symbol_id) VALUES (NEW.id);
 END;
 
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
@@ -231,6 +257,16 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     ]:
         if col not in existing:
             conn.execute(f"ALTER TABLE symbols ADD COLUMN {col} {defn}")
+    # Backfill fingerprint_queue for existing symbols that have no fingerprints yet.
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO fingerprint_queue(symbol_id)
+        SELECT s.id FROM symbols s
+        WHERE s.kind IN ('function', 'method')
+          AND s.snippet IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM fingerprints f WHERE f.symbol_id = s.id)
+        """
+    )
     # Recreate description trigger to add the description IS NULL condition.
     conn.execute("DROP TRIGGER IF EXISTS symbols_description_insert")
     conn.executescript(

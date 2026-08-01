@@ -152,6 +152,72 @@ def unused_symbol(conn, directory: str, threshold: int, excludes: list[str] = []
     return [(path, line, "unused_symbol", name) for path, name, line in rows]
 
 
+@rule(default=3, flag="max-clone-distance", help="max SimHash Hamming distance for near-duplicate functions (default: 3, set -1 to disable)")
+def duplicate_symbol(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    clause, params = _path_clauses(directory, excludes)
+
+    # Exact clones: same normhash in 2+ files.
+    exact_rows = conn.execute(
+        f"""
+        SELECT f.path, s.line, s.name, fp.value
+        FROM fingerprints fp
+        JOIN symbols s ON s.id = fp.symbol_id
+        JOIN files f ON f.id = s.file_id
+        WHERE fp.kind = 'normhash'
+          AND fp.value IN (
+              SELECT fp2.value FROM fingerprints fp2
+              JOIN symbols s2 ON s2.id = fp2.symbol_id
+              JOIN files f2 ON f2.id = s2.file_id
+              WHERE fp2.kind = 'normhash'
+                AND f2.id != f.id
+          )
+          {clause}
+        ORDER BY fp.value, f.path, s.line
+        """,
+        params,
+    ).fetchall()
+
+    violations: list[Violation] = []
+    seen_hashes: set[str] = set()
+    for path, line, name, h in exact_rows:
+        display = f"exact clone: {name} (normhash {h[:8]})"
+        violations.append((path, line, "exact_clone", display))
+
+    # Near-duplicates: SimHash pairs within Hamming distance threshold.
+    if threshold >= 0:
+        sim_rows = conn.execute(
+            f"""
+            SELECT s.id, f.path, s.line, s.name, fp.value
+            FROM fingerprints fp
+            JOIN symbols s ON s.id = fp.symbol_id
+            JOIN files f ON f.id = s.file_id
+            WHERE fp.kind = 'simhash'
+              {clause}
+            ORDER BY fp.value
+            """,
+            params,
+        ).fetchall()
+
+        reported: set[tuple[int, int]] = set()
+        for i in range(len(sim_rows)):
+            sid_a, path_a, line_a, name_a, val_a = sim_rows[i]
+            h_a = int(val_a, 16)
+            for j in range(i + 1, len(sim_rows)):
+                sid_b, path_b, line_b, name_b, val_b = sim_rows[j]
+                if path_a == path_b:
+                    continue
+                h_b = int(val_b, 16)
+                dist = bin(h_a ^ h_b).count("1")
+                if dist <= threshold:
+                    pair = (min(sid_a, sid_b), max(sid_a, sid_b))
+                    if pair not in reported:
+                        reported.add(pair)
+                        violations.append((path_a, line_a, "near_clone",
+                            f"may duplicate {name_b} in {path_b} (distance {dist})"))
+
+    return violations
+
+
 @rule(default=3, flag="dip-threshold", help="min dependents for a module to count as low-level in DIP hints (default: 3, set -1 to disable)")
 def dip_violation(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
     parts: list[str] = []

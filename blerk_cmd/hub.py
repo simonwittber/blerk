@@ -21,8 +21,9 @@ STABLE_RUN = 30.0
 CONFIG_POLL_S = 5.0
 
 DAEMONS = [
-    ("git-enricher", "blerk_cmd.git_enricher"),
-    ("embedder", "blerk_cmd.embedder"),
+    ("git-enricher",  "blerk_cmd.git_enricher"),
+    ("embedder",      "blerk_cmd.embedder"),
+    ("fingerprinter", "blerk_cmd.fingerprinter"),
 ]
 
 log = logging.getLogger("hub")

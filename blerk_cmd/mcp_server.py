@@ -69,6 +69,7 @@ _TOOLS = [
                 "unused": {"type": "boolean"},
                 "statics": {"type": "boolean"},
                 "dip_threshold": {"type": "integer"},
+                "max_clone_distance": {"type": "integer"},
             },
         },
     },
@@ -148,6 +149,7 @@ def _call(name: str, args: dict) -> str:
             "--max-params", str(args.get("max_params", 4)),
             "--max-nesting", str(args.get("max_nesting", 3)),
             "--dip-threshold", str(args.get("dip_threshold", 3)),
+            "--max-clone-distance", str(args.get("max_clone_distance", 3)),
         ]
         if args.get("unused"):
             cmd.append("--unused")
