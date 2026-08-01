@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 
-from blerk import config, db
+from blerk import config, coordinator, db
 
 PID_FILE = Path.home() / ".blerk" / "blerk.pid"
 
@@ -133,6 +133,9 @@ def main() -> None:
         pass
 
     cfg = config.load(args.config)
+
+    coord = coordinator.CoordinatorServer(cfg.db.path, cfg.coordinator.port)
+    coord.start(shutdown)
 
     threads: list[threading.Thread] = []
     for name, module in DAEMONS:

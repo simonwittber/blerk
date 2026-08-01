@@ -13,7 +13,7 @@ from datetime import datetime
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from blerk import config, db
+from blerk import config, coordinator, db
 from blerk.ignore_match import IgnoreSet, is_ignored, load_ignore_file
 
 _conn_lock = db._write_lock
@@ -247,6 +247,7 @@ def watch_folder(
     debounce_s: float,
     scan_only: bool,
     shutdown: threading.Event,
+    db_path: str = "",
 ):
     ignore_path = ignore_flag
 
@@ -259,10 +260,16 @@ def watch_folder(
         except OSError as e:
             log.warning("load ignore %s: %s", ignore_path, e)
 
+    client = coordinator.CoordinatorClient("symbol_queue", db_path) if db_path else None
+
     all_sets: list[IgnoreSet] = list(root_sets)
     _scan_dir(folder, root_sets, conn, all_sets)
+    if client:
+        client.notify("symbol_queue")
 
     if scan_only:
+        if client:
+            client.close()
         return None
 
     seen: set[str] = set()
@@ -284,6 +291,8 @@ def watch_folder(
                 delete_file(conn, path)
             else:
                 upsert_file(conn, path)
+        if client and any(ev != "remove" for ev in events.values()):
+            client.notify("symbol_queue")
 
     debouncer = Debouncer(debounce_s, flush)
     handler = _Handler(conn, debouncer, get_sets)
@@ -367,7 +376,7 @@ def main() -> None:
     ignore_path = args.ignore or cfg.watch.ignore_file
     folders = [args.folder] if args.folder else cfg.watch.folders
     for folder in folders:
-        obs = watch_folder(folder, conn, ignore_path, debounce_s, args.scan, shutdown)
+        obs = watch_folder(folder, conn, ignore_path, debounce_s, args.scan, shutdown, cfg.db.path)
         if obs is not None:
             observers.append(obs)
 

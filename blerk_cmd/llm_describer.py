@@ -12,7 +12,7 @@ from datetime import datetime
 
 import httpx
 
-from blerk import config, db
+from blerk import config, coordinator, db
 from blerk.symbols import types as symbols_types
 
 
@@ -88,6 +88,7 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
     except sqlite3.Error as e:
         log.warning("recover orphans: %s", e)
 
+    client = coordinator.CoordinatorClient(QUEUE, cfg.db.path)
     poll = llm.poll_ms / 1000.0
 
     processed_today = 0
@@ -179,6 +180,8 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
                 rate_window.append(time.monotonic())
                 processed_today += 1
 
+            client.notify("embedding_queue")
+
         cutoff = time.monotonic() - 60.0
         while rate_window and rate_window[0] < cutoff:
             rate_window.pop(0)
@@ -213,9 +216,10 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
         except sqlite3.Error as e:
             log.warning("heartbeat: %s", e)
 
-        if shutdown.wait(timeout=poll):
+        if client.wait(shutdown, poll):
             break
 
+    client.close()
     try:
         conn.close()
     except sqlite3.Error:

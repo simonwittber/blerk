@@ -73,6 +73,11 @@ class Confusing:
 
 
 @dataclass
+class Coordinator:
+    port: int = 0
+
+
+@dataclass
 class Config:
     secrets_file: str = ""
     db: DB = field(default_factory=DB)
@@ -83,6 +88,8 @@ class Config:
     embedder: Embedder = field(default_factory=Embedder)
     reranker: Reranker = field(default_factory=Reranker)
     confusing: Confusing = field(default_factory=Confusing)
+    coordinator: Coordinator = field(default_factory=Coordinator)
+    silent: bool = False
 
 
 def defaults() -> Config:

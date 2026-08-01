@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.5
+
+### Coordinator
+
+A new `CoordinatorServer` runs in the hub and listens on a UDP port.
+Each daemon creates a `CoordinatorClient` that registers its queue name and listening port with the coordinator.
+When the symbolizer or LLM describer finishes a batch, it sends a `NOTIFY` message to the hub.
+The hub routes a `CHECK` signal to an idle worker registered for that queue.
+Workers call `client.wait()` instead of a plain sleep, so they wake immediately when new work arrives.
+Configure the hub port with `coordinator.port` in config.
+
+### Tests
+
+The MCP server tests are rewritten for the raw JSON-RPC server.
+A new test module covers `CoordinatorServer` and `CoordinatorClient`.
+
 ## 0.1.4
 
 ### Duplicate function detection

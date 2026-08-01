@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime
 
-from blerk import config, db
+from blerk import config, coordinator, db
 
 
 QUEUE = "git_queue"
@@ -133,6 +133,7 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
     except sqlite3.Error as e:
         log.warning("recover orphans: %s", e)
 
+    client = coordinator.CoordinatorClient(QUEUE, cfg.db.path)
     poll = cfg.git_enricher.poll_ms / 1000.0
 
     processed_today = 0
@@ -206,9 +207,10 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
         except sqlite3.Error as e:
             log.warning("heartbeat: %s", e)
 
-        if shutdown.wait(timeout=poll):
+        if client.wait(shutdown, poll):
             break
 
+    client.close()
     try:
         conn.close()
     except sqlite3.Error:

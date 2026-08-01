@@ -1,340 +1,258 @@
 from __future__ import annotations
 
-import asyncio
-import struct
+import io
+import json
+import sys
 
 import pytest
 
 import blerk_cmd.mcp_server as mcp_mod
-from blerk import config, db
-
-
-def _run(coro):
-    return asyncio.run(coro)
 
 
 # ---------------------------------------------------------------------------
-# Helpers shared by unit and integration tests
+# Helpers
 # ---------------------------------------------------------------------------
 
-def _open(tmp_path):
-    return db.open_db(str(tmp_path / "test.db"))
-
-
-def _seed_file(conn, path: str) -> int:
-    cur = conn.execute(
-        "INSERT INTO files (path, mtime, size, hash) VALUES (?, 0, 0, '')", (path,)
-    )
-    return cur.lastrowid
-
-
-def _seed_symbol(conn, file_id: int, name: str, kind: str = "function",
-                 line: int = 1, end_line: int = 5,
-                 description: str = "", snippet: str = "") -> int:
-    cur = conn.execute(
-        "INSERT INTO symbols (file_id, name, kind, line, end_line, snippet, description)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (file_id, name, kind, line, end_line, snippet or None, description or None),
-    )
-    return cur.lastrowid
-
-
-def _seed_embedding(conn, symbol_id: int, vec: list[float]) -> None:
-    blob = struct.pack(f"<{len(vec)}f", *vec)
-    conn.execute(
-        "INSERT INTO embeddings (symbol_id, model, vector, embedded_at) VALUES (?, 'm', ?, 0)",
-        (symbol_id, blob),
-    )
-
-
-def _fake_cfg(tmp_path) -> config.Config:
-    cfg = config.defaults()
-    cfg.db.path = str(tmp_path / "test.db")
-    cfg.reranker.enabled = False
-    return cfg
+def _drive(monkeypatch, requests: list[dict]) -> list[dict]:
+    collected: list[dict] = []
+    stdin_data = "\n".join(json.dumps(r) for r in requests) + "\n"
+    monkeypatch.setattr(sys, "stdin", io.StringIO(stdin_data))
+    monkeypatch.setattr(mcp_mod, "_send", lambda obj: collected.append(obj))
+    mcp_mod.main()
+    return collected
 
 
 # ---------------------------------------------------------------------------
-# Unit tests — all external calls are patched
+# _call() unit tests — _run is monkeypatched
 # ---------------------------------------------------------------------------
 
-class TestSearch:
-    def test_returns_matching_symbol(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        fid = _seed_file(conn, "src/alpha.py")
-        sid = _seed_symbol(conn, fid, "alpha_fn")
-        _seed_embedding(conn, sid, [1.0, 0.0, 0.0])
+class TestCall:
+    def test_search_calls_query(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("search", {"query": "foo bar"})
+        assert calls[0][0] == "query"
+        assert "foo bar" in calls[0]
 
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-        monkeypatch.setattr(mcp_mod, "embed", lambda *a: [1.0, 0.0, 0.0])
+    def test_search_n_clamped_to_50(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("search", {"query": "x", "n": 999})
+        args = list(calls[0])
+        assert int(args[args.index("-n") + 1]) == 50
 
-        result = _run(mcp_mod.search("alpha function"))
-        assert "alpha_fn" in result
+    def test_search_n_minimum_1(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("search", {"query": "x", "n": -5})
+        args = list(calls[0])
+        assert int(args[args.index("-n") + 1]) == 1
 
-    def test_returns_no_results_message_when_empty(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
+    def test_search_empty_result_fallback(self, monkeypatch):
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
+        assert mcp_mod._call("search", {"query": "x"}) == "No results found."
 
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-        monkeypatch.setattr(mcp_mod, "embed", lambda *a: [1.0, 0.0, 0.0])
+    def test_search_directory_passed(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("search", {"query": "x", "directory": "src/core"})
+        assert "--dir" in calls[0]
+        assert "src/core" in calls[0]
 
-        result = _run(mcp_mod.search("anything"))
-        assert result == "No results found."
+    def test_search_extensions_passed(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("search", {"query": "x", "file_extensions": [".py", ".cs"]})
+        args = list(calls[0])
+        assert args.count("--ext") == 2
 
-    def test_embedding_error_returns_message(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
+    def test_browse_fallback(self, monkeypatch):
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
+        assert mcp_mod._call("browse", {}) == "No indexed files found."
 
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-        monkeypatch.setattr(mcp_mod, "embed", lambda *a: (_ for _ in ()).throw(RuntimeError("connection refused")))
+    def test_browse_symbols_flag_added(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("browse", {"symbols": True})
+        assert "--symbols" in calls[0]
 
-        result = _run(mcp_mod.search("alpha"))
-        assert "Embedding error" in result
-        assert "connection refused" in result
+    def test_browse_symbols_flag_omitted(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("browse", {"symbols": False})
+        assert "--symbols" not in calls[0]
 
-    def test_n_clamped_to_max(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        fid = _seed_file(conn, "src/a.py")
-        for i in range(60):
-            sid = _seed_symbol(conn, fid, f"fn_{i}", line=i * 10 + 1, end_line=i * 10 + 5)
-            _seed_embedding(conn, sid, [1.0, 0.0, 0.0])
+    def test_detail_passes_name(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("detail", {"name": "my_fn"})
+        assert "detail" in calls[0]
+        assert "my_fn" in calls[0]
 
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-        monkeypatch.setattr(mcp_mod, "embed", lambda *a: [1.0, 0.0, 0.0])
+    def test_detail_file_path_passed(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("detail", {"name": "my_fn", "file_path": "src/a.py"})
+        assert "--file" in calls[0]
+        assert "src/a.py" in calls[0]
 
-        result = _run(mcp_mod.search("fn", n=999))
-        returned = [l for l in result.splitlines() if l.strip()]
-        assert len(returned) <= mcp_mod._MAX_N * 2  # each result is two lines
+    def test_deps_fallback(self, monkeypatch):
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
+        assert mcp_mod._call("deps", {}) == "No dependencies found."
 
-    def test_directory_filter(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        fid_a = _seed_file(conn, "src/core/alpha.py")
-        fid_b = _seed_file(conn, "src/ui/bravo.py")
-        sid_a = _seed_symbol(conn, fid_a, "core_fn")
-        sid_b = _seed_symbol(conn, fid_b, "ui_fn")
-        _seed_embedding(conn, sid_a, [1.0, 0.0, 0.0])
-        _seed_embedding(conn, sid_b, [1.0, 0.0, 0.0])
+    def test_deps_directory_passed(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("deps", {"directory": "src"})
+        assert "--dir" in calls[0]
 
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-        monkeypatch.setattr(mcp_mod, "embed", lambda *a: [1.0, 0.0, 0.0])
+    def test_lint_default_flags_present(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("lint", {})
+        args = list(calls[0])
+        for flag in ("--max-lines", "--max-symbols", "--max-callees",
+                     "--max-params", "--max-nesting", "--dip-threshold",
+                     "--max-clone-distance"):
+            assert flag in args
 
-        result = _run(mcp_mod.search("fn", directory="core"))
-        assert "core_fn" in result
-        assert "ui_fn" not in result
+    def test_lint_unused_flag(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("lint", {"unused": True})
+        assert "--unused" in calls[0]
 
-    def test_extension_filter(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        fid_py = _seed_file(conn, "src/a.py")
-        fid_cs = _seed_file(conn, "src/b.cs")
-        sid_py = _seed_symbol(conn, fid_py, "py_fn")
-        sid_cs = _seed_symbol(conn, fid_cs, "cs_fn")
-        _seed_embedding(conn, sid_py, [1.0, 0.0, 0.0])
-        _seed_embedding(conn, sid_cs, [1.0, 0.0, 0.0])
+    def test_lint_statics_flag(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("lint", {"statics": True})
+        assert "--statics" in calls[0]
 
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-        monkeypatch.setattr(mcp_mod, "embed", lambda *a: [1.0, 0.0, 0.0])
+    def test_lint_fallback(self, monkeypatch):
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
+        assert mcp_mod._call("lint", {}) == "No lint findings."
 
-        result = _run(mcp_mod.search("fn", file_extensions=[".py"]))
-        assert "py_fn" in result
-        assert "cs_fn" not in result
+    def test_antislop_calls_confusing_subcommand(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("antislop", {})
+        assert calls[0][0] == "confusing"
 
-    def test_reranker_api_key_passed_when_enabled(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        fid = _seed_file(conn, "src/a.py")
-        sid = _seed_symbol(conn, fid, "alpha_fn")
-        _seed_embedding(conn, sid, [1.0, 0.0, 0.0])
+    def test_antislop_reset_flag(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("antislop", {"reset": True})
+        assert "--reset" in calls[0]
 
-        cfg = _fake_cfg(tmp_path)
-        cfg.reranker.enabled = True
-        cfg.reranker.endpoint = "http://reranker"
-        cfg.reranker.model = "test-model"
-        cfg.reranker.api_key = "secret-key"
+    def test_antislop_n_passed(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("antislop", {"n": 5})
+        args = list(calls[0])
+        assert "-n" in args
+        assert "5" in args
 
-        captured: dict = {}
+    def test_antislop_n_absent_when_not_set(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("antislop", {})
+        assert "-n" not in calls[0]
 
-        def fake_query_symbols(conn, blob, query, n, **kwargs):
-            captured.update(kwargs)
-            from blerk_cmd.query import query_symbols as real_qs
-            return real_qs(conn, blob, query, n, **{k: v for k, v in kwargs.items()
-                                                    if k not in ("reranker_endpoint", "reranker_model", "reranker_api_key")})
+    def test_antislop_fallback(self, monkeypatch):
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
+        assert mcp_mod._call("antislop", {}) == "No confusing fragments found."
 
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: cfg)
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-        monkeypatch.setattr(mcp_mod, "embed", lambda *a: [1.0, 0.0, 0.0])
-        monkeypatch.setattr(mcp_mod, "query_symbols", fake_query_symbols)
-
-        _run(mcp_mod.search("alpha"))
-        assert captured.get("reranker_api_key") == "secret-key"
-        assert captured.get("reranker_endpoint") == "http://reranker"
-
-
-class TestBrowse:
-    def test_lists_files(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        fid = _seed_file(conn, "src/alpha.py")
-        _seed_symbol(conn, fid, "alpha_fn")
-
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-
-        result = mcp_mod.browse()
-        assert "src/alpha.py" in result
-
-    def test_symbols_false_omits_symbol_tree(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        fid = _seed_file(conn, "src/alpha.py")
-        _seed_symbol(conn, fid, "alpha_fn")
-
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-
-        result = mcp_mod.browse(symbols=False)
-        assert "alpha_fn" not in result
-        assert "src/alpha.py" in result
-
-    def test_symbols_true_includes_symbol_tree(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        fid = _seed_file(conn, "src/alpha.py")
-        _seed_symbol(conn, fid, "alpha_fn")
-
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-
-        result = mcp_mod.browse(symbols=True)
-        assert "alpha_fn" in result
-
-    def test_directory_filter(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        fid_a = _seed_file(conn, "src/core/alpha.py")
-        fid_b = _seed_file(conn, "src/ui/bravo.py")
-        _seed_symbol(conn, fid_a, "core_fn")
-        _seed_symbol(conn, fid_b, "ui_fn")
-
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-
-        result = mcp_mod.browse(directory="core")
-        assert "core" in result
-        assert "ui" not in result
-
-    def test_truncation(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        for i in range(2100):
-            fid = _seed_file(conn, f"src/file_{i:04d}.py")
-            _seed_symbol(conn, fid, f"fn_{i}")
-
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-
-        result = mcp_mod.browse(symbols=False)
-        assert "truncated" in result
-        assert len(result.splitlines()) <= 2001
-
-
-class TestDetail:
-    def test_returns_symbol_info(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        fid = _seed_file(conn, "src/alpha.py")
-        _seed_symbol(conn, fid, "alpha_fn", description="does alpha things",
-                     snippet="def alpha_fn(): pass")
-
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-
-        result = mcp_mod.detail("alpha_fn")
-        assert "alpha_fn" in result
-        assert "src/alpha.py" in result
-        assert "def alpha_fn" in result
-
-    def test_unknown_symbol_returns_message(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-
-        result = mcp_mod.detail("nonexistent_fn")
-        assert "No symbol named" in result
-
-    def test_file_path_disambiguates(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        fid_a = _seed_file(conn, "pkg_a/alpha.py")
-        fid_b = _seed_file(conn, "pkg_b/alpha.py")
-        _seed_symbol(conn, fid_a, "alpha_fn", snippet="# in pkg_a")
-        _seed_symbol(conn, fid_b, "alpha_fn", snippet="# in pkg_b")
-
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-
-        result = mcp_mod.detail("alpha_fn", file_path="pkg_a")
-        assert "pkg_a" in result
-        assert "pkg_b" not in result
-
-
-class TestDeps:
-    def test_returns_string(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-
-        result = mcp_mod.deps()
-        assert isinstance(result, str)
+    def test_unknown_tool_returns_error_message(self, monkeypatch):
+        result = mcp_mod._call("does_not_exist", {})
+        assert "Unknown tool" in result
 
 
 # ---------------------------------------------------------------------------
-# Integration tests — real module init, no monkeypatching of internals
+# main() loop tests
 # ---------------------------------------------------------------------------
 
-class TestIntegration:
-    def test_module_imports_cleanly(self):
-        import blerk_cmd.mcp_server  # noqa: F401
+class TestMain:
+    def test_initialize_response(self, monkeypatch):
+        responses = _drive(monkeypatch, [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        ])
+        assert len(responses) == 1
+        r = responses[0]
+        assert r["id"] == 1
+        assert r["result"]["protocolVersion"] == "2024-11-05"
+        assert r["result"]["serverInfo"]["name"] == "blerk"
 
-    def test_get_conn_reconnects_after_close(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        cfg = _fake_cfg(tmp_path)
+    def test_tools_list_returns_all_tools(self, monkeypatch):
+        responses = _drive(monkeypatch, [
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+        ])
+        names = {t["name"] for t in responses[0]["result"]["tools"]}
+        assert {"search", "browse", "detail", "deps", "lint", "antislop"} <= names
 
-        monkeypatch.setattr(mcp_mod, "_cfg", cfg)
-        monkeypatch.setattr(mcp_mod, "_conn", conn)
+    def test_tools_call_returns_text_content(self, monkeypatch):
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: "search result")
+        responses = _drive(monkeypatch, [
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "search", "arguments": {"query": "foo"}}}
+        ])
+        content = responses[0]["result"]["content"]
+        assert content[0]["type"] == "text"
+        assert content[0]["text"] == "search result"
 
-        conn.close()
-        new_conn = mcp_mod._get_conn()
-        assert new_conn.execute("SELECT 1").fetchone() == (1,)
+    def test_tools_call_fallback_when_run_empty(self, monkeypatch):
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
+        responses = _drive(monkeypatch, [
+            {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+             "params": {"name": "browse", "arguments": {}}}
+        ])
+        assert responses[0]["result"]["content"][0]["text"] == "No indexed files found."
 
-    def test_search_returns_str(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-        cfg = _fake_cfg(tmp_path)
+    def test_unknown_method_with_id_returns_error(self, monkeypatch):
+        responses = _drive(monkeypatch, [
+            {"jsonrpc": "2.0", "id": 5, "method": "unknown/method", "params": {}}
+        ])
+        assert len(responses) == 1
+        assert responses[0]["error"]["code"] == -32601
 
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: cfg)
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-        monkeypatch.setattr(mcp_mod, "embed", lambda *a: [1.0, 0.0, 0.0])
+    def test_notification_no_id_produces_no_response(self, monkeypatch):
+        responses = _drive(monkeypatch, [
+            {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        ])
+        assert len(responses) == 0
 
-        result = _run(mcp_mod.search("anything"))
-        assert isinstance(result, str)
+    def test_parse_error_returns_error_response(self, monkeypatch):
+        collected: list[dict] = []
+        monkeypatch.setattr(sys, "stdin", io.StringIO("not valid json\n"))
+        monkeypatch.setattr(mcp_mod, "_send", lambda obj: collected.append(obj))
+        mcp_mod.main()
+        assert len(collected) == 1
+        assert collected[0]["error"]["code"] == -32700
 
-    def test_browse_returns_str(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
+    def test_multiple_requests_handled_in_sequence(self, monkeypatch):
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: "ok")
+        responses = _drive(monkeypatch, [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "search", "arguments": {"query": "x"}}},
+        ])
+        assert len(responses) == 3
+        assert [r["id"] for r in responses] == [1, 2, 3]
 
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
+    def test_tools_call_exception_returns_error(self, monkeypatch):
+        def _bad_call(name, args):
+            raise ValueError("boom")
+        monkeypatch.setattr(mcp_mod, "_call", _bad_call)
+        responses = _drive(monkeypatch, [
+            {"jsonrpc": "2.0", "id": 6, "method": "tools/call",
+             "params": {"name": "search", "arguments": {"query": "x"}}}
+        ])
+        assert responses[0]["error"]["code"] == -32603
+        assert "boom" in responses[0]["error"]["message"]
 
-        assert isinstance(mcp_mod.browse(), str)
-
-    def test_detail_returns_str(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-
-        assert isinstance(mcp_mod.detail("anything"), str)
-
-    def test_deps_returns_str(self, tmp_path, monkeypatch):
-        conn = _open(tmp_path)
-
-        monkeypatch.setattr(mcp_mod, "_get_cfg", lambda: _fake_cfg(tmp_path))
-        monkeypatch.setattr(mcp_mod, "_get_conn", lambda: conn)
-
-        assert isinstance(mcp_mod.deps(), str)
+    def test_blank_lines_ignored(self, monkeypatch):
+        collected: list[dict] = []
+        monkeypatch.setattr(sys, "stdin", io.StringIO("\n\n\n"))
+        monkeypatch.setattr(mcp_mod, "_send", lambda obj: collected.append(obj))
+        mcp_mod.main()
+        assert len(collected) == 0

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from blerk import config, db
+from blerk import config, coordinator, daemon_util, db
 from blerk.symbols import regexp_extractor
 from blerk.symbols.types import CallRef, Symbol
 
@@ -212,7 +212,7 @@ def process_symbols(
         raise
 
 
-def run(cfg: config.Config, shutdown: threading.Event) -> None:
+def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> None:
     conn = db.open_db(cfg.db.path)
     try:
         db.recover_orphans(conn, QUEUE)
@@ -227,6 +227,7 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
         extractor = _RegexpAdapter()
         log.info("symbolizer engine: regexp")
 
+    client = coordinator.CoordinatorClient(QUEUE, cfg.db.path)
     poll = cfg.symbolizer.poll_ms / 1000.0
 
     processed_today = 0
@@ -289,6 +290,10 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
                 rate_window.append(time.monotonic())
                 processed_today += 1
 
+            client.notify("description_queue")
+            client.notify("embedding_queue")
+            client.notify("fingerprint_queue")
+
         cutoff = time.monotonic() - 60.0
         while rate_window and rate_window[0] < cutoff:
             rate_window.pop(0)
@@ -323,9 +328,10 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
         except sqlite3.Error as e:
             log.warning("heartbeat: %s", e)
 
-        if shutdown.wait(timeout=poll):
+        if client.wait(shutdown, poll):
             break
 
+    client.close()
     try:
         conn.close()
     except sqlite3.Error:
