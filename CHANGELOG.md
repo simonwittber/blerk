@@ -11,10 +11,27 @@ The hub routes a `CHECK` signal to an idle worker registered for that queue.
 Workers call `client.wait()` instead of a plain sleep, so they wake immediately when new work arrives.
 Configure the hub port with `coordinator.port` in config.
 
+### SRP hints in lint
+
+`blerk lint` now reports `wide_module` violations.
+It flags files whose symbols call into more than `--max-deps` distinct other files (default: 10).
+A file with many outgoing file dependencies may be doing too many things.
+
+### ISP hints in lint
+
+`blerk lint` now reports `fat_class` violations.
+It flags classes, structs, and interfaces whose method count exceeds `--max-methods` (default: 10).
+
+### Coordinator status in blerk status
+
+`blerk status` now shows a coordinator row.
+It reports the hub port and the number of registered workers, or "not running" if the coordinator port file is absent.
+
 ### Tests
 
 The MCP server tests are rewritten for the raw JSON-RPC server.
 A new test module covers `CoordinatorServer` and `CoordinatorClient`.
+New test modules cover the `fat_class` and `wide_module` lint rules, and the coordinator status row.
 
 ### Duplicate function detection
 

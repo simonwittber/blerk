@@ -290,6 +290,29 @@ def dip_violation(conn, directory: str, threshold: int, excludes: list[str] = []
     return violations
 
 
+@rule(default=10, flag="max-deps", help="flag files that call into many other files (SRP hint, default: 10)")
+def wide_module(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    clause, params = _path_clauses(directory, excludes)
+    rows = conn.execute(
+        f"""
+        SELECT f.path, COUNT(DISTINCT f2.id) AS dep_count
+        FROM files f
+        JOIN symbols s ON s.file_id = f.id
+        JOIN symbol_refs sr ON sr.caller_id = s.id
+        JOIN symbols callee ON callee.id = sr.callee_id
+        JOIN files f2 ON f2.id = callee.file_id AND f2.id != f.id
+        WHERE 1=1
+          {clause}
+        GROUP BY f.id
+        HAVING dep_count > ?
+        ORDER BY dep_count DESC
+        """,
+        (*params, threshold),
+    ).fetchall()
+    return [(path, 1, "wide_module", f"{dep_count} file dependencies")
+            for path, dep_count in rows]
+
+
 @rule(default=10, flag="max-methods", help="flag classes/structs/interfaces with more than N methods (ISP hint)")
 def fat_class(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
     clause, params = _path_clauses(directory, excludes)

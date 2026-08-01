@@ -71,6 +71,7 @@ _TOOLS = [
                 "dip_threshold": {"type": "integer"},
                 "max_clone_distance": {"type": "integer"},
                 "max_methods": {"type": "integer"},
+                "max_deps": {"type": "integer"},
             },
         },
     },
@@ -152,6 +153,7 @@ def _call(name: str, args: dict) -> str:
             "--dip-threshold", str(args.get("dip_threshold", 3)),
             "--max-clone-distance", str(args.get("max_clone_distance", 3)),
             "--max-methods", str(args.get("max_methods", 10)),
+            "--max-deps", str(args.get("max_deps", 10)),
         ]
         if args.get("unused"):
             cmd.append("--unused")

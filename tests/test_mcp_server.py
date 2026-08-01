@@ -113,7 +113,7 @@ class TestCall:
         args = list(calls[0])
         for flag in ("--max-lines", "--max-symbols", "--max-callees",
                      "--max-params", "--max-nesting", "--dip-threshold",
-                     "--max-clone-distance", "--max-methods"):
+                     "--max-clone-distance", "--max-methods", "--max-deps"):
             assert flag in args
 
     def test_lint_unused_flag(self, monkeypatch):
