@@ -17,8 +17,8 @@ from blerk_cmd.antislop import _parse_response, reset_tags, sweep
 def _make_cfg(min_lines: int = 3) -> config.Config:
     cfg = config.defaults()
     cfg.symbolizer.min_describe_lines = min_lines
-    cfg.confusing.endpoint = "http://localhost:11434"
-    cfg.confusing.model = "llama3.2"
+    cfg.antislop.endpoint = "http://localhost:11434"
+    cfg.antislop.model = "llama3.2"
     return cfg
 
 

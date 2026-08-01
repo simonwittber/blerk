@@ -7,18 +7,6 @@ import sys
 from blerk import config, db
 from blerk_cmd.llm_describer import describe
 
-_PROMPT = """\
-Does this {kind} look confusing, pointless, or misleading without additional context?
-
-{kind}: {name}({params})
-File: {path}
-Snippet:
-{snippet}
-
-Reply with exactly one of:
-CLEAR
-CONFUSING: <one sentence why>"""
-
 
 def _build_path_filters(directory: str, exts: list[str], excludes: list[str] = []) -> tuple[list[str], list]:
     filters: list[str] = []
@@ -114,11 +102,12 @@ def reset_tags(conn, directory: str, exts: list[str], excludes: list[str] = []) 
 
 
 def sweep(conn, cfg: config.Config, n: int, directory: str, exts: list[str], excludes: list[str] = []) -> None:
-    c = cfg.confusing
+    c = cfg.antislop
     if not c.endpoint or not c.model:
         raise RuntimeError(
-            "No [confusing] config found. Add endpoint and model to ~/.blerk/config.toml."
+            "No [antislop] config found. Add endpoint and model to ~/.blerk/config.toml."
         )
+    prompt_template = c.prompt
     already_tagged = _count_already_tagged(conn, directory, exts, excludes)
     candidates = _fetch_symbols(conn, n, directory, exts, excludes)
 
@@ -129,7 +118,7 @@ def sweep(conn, cfg: config.Config, n: int, directory: str, exts: list[str], exc
     for i, (sid, name, kind, path, params_str, snippet) in enumerate(candidates):
         print(f"[{i+1}/{total}] {name}  {path.split('/')[-1]}", flush=True)
         prompt = (
-            _PROMPT
+            prompt_template
             .replace("{kind}", kind)
             .replace("{name}", name)
             .replace("{params}", params_str)

@@ -8,13 +8,6 @@ import pytest
 from blerk import db
 
 
-@pytest.fixture
-def conn(tmp_path):
-    path = str(tmp_path / "test.db")
-    c = db.open_db(path)
-    yield c
-    c.close()
-
 
 def _insert_file(conn, path: str, hash_: str) -> int:
     cur = conn.execute(
@@ -252,7 +245,7 @@ def test_format_eta_days():
 
 
 def test_write_heartbeat_insert_and_update(conn):
-    db.write_heartbeat(conn, "test-daemon", "running", 5, 10, 2, 1, 3.5, 120, "")
+    db.write_heartbeat(conn, db.Heartbeat("test-daemon", "running", 5, 10, 2, 1, 3.5, 120))
     row = conn.execute(
         "SELECT daemon, status, queue_depth, processed_today, retries_today, "
         "failures_today, rate_per_minute, eta_seconds, eta_display, last_error "
@@ -270,7 +263,7 @@ def test_write_heartbeat_insert_and_update(conn):
     assert row[8] == "2m"
     assert row[9] is None
 
-    db.write_heartbeat(conn, "test-daemon", "idle", 0, 11, 2, 1, 0.0, None, "boom")
+    db.write_heartbeat(conn, db.Heartbeat("test-daemon", "idle", 0, 11, 2, 1, 0.0, None, "boom"))
     row = conn.execute(
         "SELECT status, queue_depth, processed_today, eta_seconds, eta_display, last_error "
         "FROM daemon_status WHERE daemon=?",

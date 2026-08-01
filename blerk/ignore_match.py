@@ -110,7 +110,7 @@ def load_ignore_file(path: str) -> list[Pattern]:
     return patterns
 
 
-def _to_slash(p: str) -> str:
+def to_slash(p: str) -> str:
     return p.replace("\\", "/")
 
 
@@ -121,7 +121,7 @@ def is_ignored(path: str, is_dir: bool, sets: list[IgnoreSet]) -> bool:
             rel = os.path.relpath(path, s.dir)
         except ValueError:
             continue
-        rel = _to_slash(rel).lower()
+        rel = to_slash(rel).lower()
         parts = rel.split("/")
         for p in s.patterns:
             if p.dir_only and not is_dir:

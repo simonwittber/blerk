@@ -90,7 +90,7 @@ def test_vector_ranks_order(tmp_path):
     _seed_embedding(conn, b, [0.9, 0.1, 0.0])
     _seed_embedding(conn, c, [0.0, 1.0, 0.0])
 
-    ranks = query._vector_ranks(conn, to_blob([1.0, 0.0, 0.0]), 10, [])
+    ranks = query._vector_positions(conn, to_blob([1.0, 0.0, 0.0]), 10, [])
     assert ranks[a] < ranks[b] < ranks[c]
 
 
@@ -102,15 +102,15 @@ def test_bm25_ranks_match(tmp_path):
     a = _seed_symbol(conn, file_id, "debouncer", snippet="class Debouncer: pass")
     b = _seed_symbol(conn, file_id, "unrelated", snippet="def foo(): pass")
 
-    ranks = query._bm25_ranks(conn, "debouncer", 10, [])
+    ranks = query._bm25_positions(conn, "debouncer", 10, [])
     assert a in ranks
     assert ranks.get(a, 999) < ranks.get(b, 999)
 
 
 def test_bm25_ranks_empty_query(tmp_path):
     conn = _open(tmp_path)
-    assert query._bm25_ranks(conn, "", 10, []) == {}
-    assert query._bm25_ranks(conn, "   ", 10, []) == {}
+    assert query._bm25_positions(conn, "", 10, []) == {}
+    assert query._bm25_positions(conn, "   ", 10, []) == {}
 
 
 # --- RRF fusion ---

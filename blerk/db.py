@@ -4,6 +4,7 @@ import logging
 import os
 import sqlite3
 import threading
+from dataclasses import dataclass, field
 from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
@@ -233,6 +234,19 @@ class QueueRow(NamedTuple):
     target_id: int
 
 
+@dataclass
+class Heartbeat:
+    daemon: str
+    status: str
+    queue_depth: int
+    processed_today: int
+    retries_today: int
+    failures_today: int
+    rate_per_minute: float
+    eta_seconds: int | None
+    last_error: str = ""
+
+
 def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     parent = os.path.dirname(path)
     if parent:
@@ -397,24 +411,13 @@ def format_eta(seconds: int) -> str:
     return f"{seconds // 86400}d"
 
 
-def write_heartbeat(
-    conn: sqlite3.Connection,
-    daemon: str,
-    status: str,
-    queue_depth: int,
-    processed_today: int,
-    retries_today: int,
-    failures_today: int,
-    rate_per_minute: float,
-    eta_seconds: int | None,
-    last_error: str,
-) -> None:
-    err_val: str | None = last_error if last_error else None
+def write_heartbeat(conn: sqlite3.Connection, hb: Heartbeat) -> None:
+    err_val: str | None = hb.last_error if hb.last_error else None
     eta: int | None = None
     eta_display: str | None = None
-    if eta_seconds is not None:
-        eta = eta_seconds
-        eta_display = format_eta(eta_seconds)
+    if hb.eta_seconds is not None:
+        eta = hb.eta_seconds
+        eta_display = format_eta(hb.eta_seconds)
 
     query = (
         "INSERT INTO daemon_status("
@@ -437,13 +440,13 @@ def write_heartbeat(
         conn.execute(
             query,
             (
-                daemon,
-                status,
-                queue_depth,
-                processed_today,
-                retries_today,
-                failures_today,
-                rate_per_minute,
+                hb.daemon,
+                hb.status,
+                hb.queue_depth,
+                hb.processed_today,
+                hb.retries_today,
+                hb.failures_today,
+                hb.rate_per_minute,
                 eta,
                 eta_display,
                 err_val,

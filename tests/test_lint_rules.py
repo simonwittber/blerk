@@ -2,17 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from blerk import db
 from blerk_cmd.lint_rules import build_scope, fat_class, wide_module
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _make_db(tmp_path):
-    return db.open_db(str(tmp_path / "test.db"))
-
 
 def _insert_file(conn, path: str) -> int:
     cur = conn.execute("INSERT INTO files(path, mtime, hash) VALUES(?,0,'h')", (path,))
@@ -40,8 +35,7 @@ def _insert_ref(conn, caller_id: int, callee_id: int) -> None:
 # ---------------------------------------------------------------------------
 
 class TestFatClass:
-    def test_class_over_threshold_flagged(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_class_over_threshold_flagged(self, conn):
         fid = _insert_file(conn, "src/a.py")
         _insert_symbol(conn, fid, "BigClass", "class", 1, 120)
         for i in range(12):
@@ -54,8 +48,7 @@ class TestFatClass:
         assert "BigClass" in violations[0][3]
         assert "12 methods" in violations[0][3]
 
-    def test_class_at_threshold_not_flagged(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_class_at_threshold_not_flagged(self, conn):
         fid = _insert_file(conn, "src/a.py")
         _insert_symbol(conn, fid, "OkClass", "class", 1, 110)
         for i in range(10):
@@ -65,8 +58,7 @@ class TestFatClass:
         violations = fat_class(conn, "", 10, [])
         assert not violations
 
-    def test_class_without_end_line_skipped(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_class_without_end_line_skipped(self, conn):
         fid = _insert_file(conn, "src/a.py")
         _insert_symbol(conn, fid, "NoEnd", "class", 1, None)
         for i in range(15):
@@ -76,8 +68,7 @@ class TestFatClass:
         violations = fat_class(conn, "", 10, [])
         assert not violations
 
-    def test_methods_outside_line_range_not_counted(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_methods_outside_line_range_not_counted(self, conn):
         fid = _insert_file(conn, "src/a.py")
         _insert_symbol(conn, fid, "SmallClass", "class", 1, 20)
         for i in range(3):
@@ -90,8 +81,7 @@ class TestFatClass:
         violations = fat_class(conn, "", 10, [])
         assert not violations
 
-    def test_struct_flagged(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_struct_flagged(self, conn):
         fid = _insert_file(conn, "src/a.go")
         _insert_symbol(conn, fid, "BigStruct", "struct", 1, 120)
         for i in range(12):
@@ -101,8 +91,7 @@ class TestFatClass:
         violations = fat_class(conn, "", 10, [])
         assert any(v[2] == "fat_class" for v in violations)
 
-    def test_interface_flagged(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_interface_flagged(self, conn):
         fid = _insert_file(conn, "src/IFoo.cs")
         _insert_symbol(conn, fid, "IFoo", "interface", 1, 120)
         for i in range(12):
@@ -112,8 +101,7 @@ class TestFatClass:
         violations = fat_class(conn, "", 10, [])
         assert any(v[2] == "fat_class" for v in violations)
 
-    def test_directory_filter(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_directory_filter(self, conn, tmp_path):
         fid_a = _insert_file(conn, str(tmp_path / "pkg_a" / "a.py"))
         fid_b = _insert_file(conn, str(tmp_path / "pkg_b" / "b.py"))
         for fid in (fid_a, fid_b):
@@ -142,8 +130,7 @@ class TestWideModule:
             _insert_ref(conn, caller_sid, callee_sid)
         return caller_fid
 
-    def test_wide_file_flagged(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_wide_file_flagged(self, conn):
         self._setup_wide_file(conn, "src/hub.py", 12)
 
         build_scope(conn, "", [])
@@ -152,24 +139,21 @@ class TestWideModule:
         assert violations[0][2] == "wide_module"
         assert "12 file dependencies" in violations[0][3]
 
-    def test_narrow_file_not_flagged(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_narrow_file_not_flagged(self, conn):
         self._setup_wide_file(conn, "src/small.py", 5)
 
         build_scope(conn, "", [])
         violations = wide_module(conn, "", 10, [])
         assert not violations
 
-    def test_at_threshold_not_flagged(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_at_threshold_not_flagged(self, conn):
         self._setup_wide_file(conn, "src/mid.py", 10)
 
         build_scope(conn, "", [])
         violations = wide_module(conn, "", 10, [])
         assert not violations
 
-    def test_self_calls_not_counted(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_self_calls_not_counted(self, conn):
         fid = _insert_file(conn, "src/self.py")
         sids = [_insert_symbol(conn, fid, f"fn_{i}", "function", i + 1) for i in range(20)]
         for i in range(1, len(sids)):
@@ -179,8 +163,7 @@ class TestWideModule:
         violations = wide_module(conn, "", 10, [])
         assert not violations
 
-    def test_multiple_callers_same_callee_counted_once(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_multiple_callers_same_callee_counted_once(self, conn):
         caller_fid = _insert_file(conn, "src/a.py")
         callee_fid = _insert_file(conn, "src/b.py")
         for i in range(5):
@@ -192,8 +175,7 @@ class TestWideModule:
         violations = wide_module(conn, "", 10, [])
         assert not violations
 
-    def test_directory_filter(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_directory_filter(self, conn, tmp_path):
         pkg_a = str(tmp_path / "pkg_a")
         pkg_b = str(tmp_path / "pkg_b")
 
@@ -214,8 +196,7 @@ class TestWideModule:
         assert all(pkg_a in p for p in paths)
         assert not any(pkg_b in p for p in paths)
 
-    def test_no_refs_no_violations(self, tmp_path):
-        conn = _make_db(tmp_path)
+    def test_no_refs_no_violations(self, conn):
         fid = _insert_file(conn, "src/isolated.py")
         _insert_symbol(conn, fid, "fn", "function", 1)
 

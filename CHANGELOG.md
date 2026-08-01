@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## 0.2.1
+
+### Config section renamed: [confusing] to [antislop]
+
+The `[confusing]` section in `~/.blerk/config.toml` is now `[antislop]`.
+If you have an existing config with `[confusing]`, rename the section header to `[antislop]`.
+The `endpoint`, `model`, and `api_key` fields are unchanged.
+
+### Configurable prompts
+
+The `[reranker]` and `[antislop]` config sections now accept a `prompt` field.
+Set it to override the default prompt template sent to the LLM.
+Omit the field to keep the built-in default.
+
+### Internal refactoring
+
+Shared daemon helpers (`fmt_duration`, `setup_logging`, `beginning_of_day`, `make_shutdown`) are extracted into `blerk/daemon_util.py`.
+All daemon entry points now import from there instead of duplicating the code.
+`db.write_heartbeat` now accepts a `db.Heartbeat` dataclass instead of positional arguments.
+Test fixtures are consolidated in `tests/conftest.py`.
+
 ## 0.2.0
 
 ### Daemon activity logging

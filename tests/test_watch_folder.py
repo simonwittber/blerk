@@ -11,13 +11,6 @@ from blerk import db
 from blerk_cmd import watch_folder as wf
 
 
-@pytest.fixture
-def conn(tmp_path):
-    path = str(tmp_path / "test.db")
-    c = db.open_db(path)
-    yield c
-    c.close()
-
 
 def test_debouncer_only_last_event_fires():
     received: list[dict[str, str]] = []

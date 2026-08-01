@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from blerk import config, db
-from blerk_cmd.query import _ext_clause, _tag_clause
+from blerk_cmd.query import _ext_sql, _tag_clause
 
 
 def _unindexed_subdirs(conn, directory: str) -> list[str]:
@@ -36,7 +36,7 @@ def browse(
     tags: dict[str, str] | None = None,
 ) -> str:
     exts = exts or []
-    ext_sql, ext_params = _ext_clause(exts)
+    ext_sql, ext_params = _ext_sql(exts)
     tag_sql, tag_params = _tag_clause(tags or {})
 
     dir_sql = ""

@@ -22,13 +22,6 @@ from blerk_cmd.symbolizer import process_symbols
 # Helpers shared with test_symbolizer.py
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def conn(tmp_path):
-    path = str(tmp_path / "test.db")
-    c = db.open_db(path)
-    yield c
-    c.close()
-
 
 def _cfg() -> config.Config:
     cfg = config.defaults()
@@ -44,17 +37,12 @@ def _insert_file(conn, path: str) -> int:
     return int(cur.lastrowid)
 
 
-def write_temp(tmp_path, name: str, src: str) -> str:
-    p = tmp_path / name
-    p.write_bytes(src.encode("utf-8"))
-    return str(p)
-
 
 # ---------------------------------------------------------------------------
 # Failure 1: treesitter C# call extraction for instance method calls
 # ---------------------------------------------------------------------------
 
-def test_cs_direct_call_extracted(tmp_path):
+def test_cs_direct_call_extracted(write_temp):
     """Sanity check: direct calls like Foo() are captured."""
     src = """\
 public class A {
@@ -62,13 +50,13 @@ public class A {
     public void Callee() { }
 }
 """
-    path = write_temp(tmp_path, "a.cs", src)
+    path = write_temp("a.cs", src)
     _, refs = Extractor().extract(path)
     assert any(r.caller_name == "A.Caller" and r.callee_name == "A.Callee" for r in refs), \
         f"Expected A.Caller->A.Callee in refs, got: {refs}"
 
 
-def test_cs_instance_method_call_extracted(tmp_path):
+def test_cs_instance_method_call_extracted(write_temp):
     """
     _obj.SpawnEnemy() must produce a CallRef(caller='Update', callee='SpawnEnemy').
     This is the pattern used throughout the module-games codebase.
@@ -87,7 +75,7 @@ public class RenderableSimulation {
     public void SpawnEnemy(int a, int b) { }
 }
 """
-    path = write_temp(tmp_path, "spawner.cs", src)
+    path = write_temp("spawner.cs", src)
     _, refs = Extractor().extract(path)
     callee_names = {r.callee_name for r in refs}
     assert "RenderableSimulation.SpawnEnemy" in callee_names, \
@@ -96,7 +84,7 @@ public class RenderableSimulation {
         f"Expected EnemySpawner.Update->RenderableSimulation.SpawnEnemy, got: {refs}"
 
 
-def test_cs_chained_method_call_extracted(tmp_path):
+def test_cs_chained_method_call_extracted(write_temp):
     """obj.Inner.Method() - the leaf method name must be captured."""
     src = """\
 public class Ship {
@@ -109,7 +97,7 @@ public class Weapon {
     public void Shoot(Vector2 pos) { }
 }
 """
-    path = write_temp(tmp_path, "ship.cs", src)
+    path = write_temp("ship.cs", src)
     _, refs = Extractor().extract(path)
     assert any(r.caller_name == "Ship.Fire" and r.callee_name == "Weapon.Shoot" for r in refs), \
         f"Expected Ship.Fire->Weapon.Shoot, got: {refs}"

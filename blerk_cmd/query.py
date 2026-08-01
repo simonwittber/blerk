@@ -10,6 +10,7 @@ import httpx
 
 from blerk import config, db
 
+# RRF smoothing constant: 60 is the standard value that prevents top ranks from dominating.
 _RRF_K = 60
 _OVERFETCH = 20
 
@@ -35,7 +36,7 @@ def truncate(s: str, n: int) -> str:
     return s[:n - 3] + "..."
 
 
-def _ext_clause(exts: list[str]) -> tuple[str, list[str]]:
+def _ext_sql(exts: list[str]) -> tuple[str, list[str]]:
     if not exts:
         return "", []
     parts = " OR ".join("f.path LIKE ?" for _ in exts)
@@ -49,7 +50,7 @@ def _dir_clause(directory: str) -> tuple[str, list[str]]:
     return "AND f.path LIKE ?", [f"%{norm}%"]
 
 
-def _heading_clause(exts: list[str]) -> str:
+def _no_headings_sql(exts: list[str]) -> str:
     return "" if ".md" in exts else "AND s.kind != 'heading'"
 
 
@@ -90,10 +91,10 @@ def print_refs(conn, symbol_id: int) -> None:
         print(f"calledby: {name} ({path})")
 
 
-def _vector_ranks(conn, blob: bytes, k: int, exts: list[str], directory: str = "", tags: dict[str, str] | None = None) -> dict[int, int]:
-    ext_sql, ext_params = _ext_clause(exts)
+def _vector_positions(conn, blob: bytes, k: int, exts: list[str], directory: str = "", tags: dict[str, str] | None = None) -> dict[int, int]:
+    ext_sql, ext_params = _ext_sql(exts)
     dir_sql, dir_params = _dir_clause(directory)
-    heading_sql = _heading_clause(exts)
+    heading_sql = _no_headings_sql(exts)
     tag_sql, tag_params = _tag_clause(tags or {})
     rows = conn.execute(
         f"""
@@ -111,12 +112,12 @@ def _vector_ranks(conn, blob: bytes, k: int, exts: list[str], directory: str = "
     return {row[0]: rank for rank, row in enumerate(rows)}
 
 
-def _bm25_ranks(conn, query_text: str, k: int, exts: list[str], directory: str = "", tags: dict[str, str] | None = None) -> dict[int, int]:
+def _bm25_positions(conn, query_text: str, k: int, exts: list[str], directory: str = "", tags: dict[str, str] | None = None) -> dict[int, int]:
     if not query_text.strip():
         return {}
-    ext_sql, ext_params = _ext_clause(exts)
+    ext_sql, ext_params = _ext_sql(exts)
     dir_sql, dir_params = _dir_clause(directory)
-    heading_sql = _heading_clause(exts)
+    heading_sql = _no_headings_sql(exts)
     tag_sql, tag_params = _tag_clause(tags or {})
     try:
         rows = conn.execute(
@@ -148,16 +149,14 @@ def _rerank(
     api_key: str,
     query_text: str,
     rows: list,
+    prompt_template: str = "",
 ) -> list:
+    from blerk.config import _DEFAULT_RERANKER_PROMPT
     numbered = "\n".join(
         f"{i+1}. {kind} {name}({params}) in {path}" + (f"\n   {desc}" if desc else "")
         for i, (_, name, kind, path, _, _, desc, snippet, params) in enumerate(rows)
     )
-    prompt = (
-        f'Rank these code symbols by relevance to: "{query_text}"\n'
-        f"Reply with only comma-separated indices, most relevant first.\n\n"
-        f"{numbered}"
-    )
+    prompt = (prompt_template or _DEFAULT_RERANKER_PROMPT).replace("{query_text}", query_text).replace("{numbered}", numbered)
     headers: dict[str, str] = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -214,14 +213,15 @@ def query_symbols(
     reranker_endpoint: str = "",
     reranker_model: str = "",
     reranker_api_key: str = "",
+    reranker_prompt: str = "",
     directory: str = "",
     tags: dict[str, str] | None = None,
 ) -> list[QueryResult]:
     k = n * _OVERFETCH
     exts = exts or []
 
-    vector = _vector_ranks(conn, blob, k, exts, directory, tags)
-    bm25 = _bm25_ranks(conn, query_text, k, exts, directory, tags)
+    vector = _vector_positions(conn, blob, k, exts, directory, tags)
+    bm25 = _bm25_positions(conn, query_text, k, exts, directory, tags)
 
     all_ids = set(vector) | set(bm25)
     scores: dict[int, float] = {}
@@ -279,7 +279,7 @@ def query_symbols(
     rows.sort(key=lambda r: scores[r[0]], reverse=True)
 
     if reranker_endpoint and reranker_model:
-        rows = _rerank(reranker_endpoint, reranker_model, reranker_api_key, query_text, rows)
+        rows = _rerank(reranker_endpoint, reranker_model, reranker_api_key, query_text, rows, reranker_prompt)
 
     return [
         QueryResult(id_, name, kind, path, line, end_line, desc, snippet, params, scores[id_])
@@ -330,12 +330,13 @@ def run_query(
     reranker_endpoint: str = "",
     reranker_model: str = "",
     reranker_api_key: str = "",
+    reranker_prompt: str = "",
     directory: str = "",
     verbose: bool = False,
     tags: dict[str, str] | None = None,
 ) -> None:
     results = query_symbols(conn, blob, query_text, n, exts, min_score,
-                            reranker_endpoint, reranker_model, reranker_api_key, directory, tags)
+                            reranker_endpoint, reranker_model, reranker_api_key, reranker_prompt, directory, tags)
     if results:
         if verbose or refs:
             print(format_verbose(conn, results, refs))
@@ -367,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
     reranker_endpoint = cfg.reranker.endpoint if cfg.reranker.enabled else ""
     reranker_model = cfg.reranker.model if cfg.reranker.enabled else ""
     reranker_api_key = cfg.reranker.api_key if cfg.reranker.enabled else ""
+    reranker_prompt = cfg.reranker.prompt if cfg.reranker.enabled else ""
     tag_filter: dict[str, str] = {}
     for t in args.tags:
         if "=" in t:
@@ -374,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
             tag_filter[k.strip()] = v.strip()
     run_query(conn, blob, args.query, args.n, args.refs, args.exts,
               reranker_endpoint=reranker_endpoint, reranker_model=reranker_model,
-              reranker_api_key=reranker_api_key,
+              reranker_api_key=reranker_api_key, reranker_prompt=reranker_prompt,
               directory=args.directory,
               verbose=args.verbose or args.refs,
               tags=tag_filter or None)

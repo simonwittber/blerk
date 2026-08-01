@@ -86,6 +86,9 @@ queued_at INTEGER NOT NULL DEFAULT (unixepoch())
 error     TEXT
 ```
 
+Shared daemon utilities (`fmt_duration`, `setup_logging`, `beginning_of_day`, `make_shutdown`) live in `blerk/daemon_util.py`.
+All daemon entry points import from there.
+
 Each daemon runs this loop:
 
 1. **Claim a batch**: `UPDATE <queue> SET status='processing' WHERE id IN (SELECT id FROM <queue> WHERE status='pending' ORDER BY priority DESC, id ASC LIMIT ?) RETURNING id, <target_col>`. This is a single atomic statement.

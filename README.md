@@ -113,6 +113,13 @@ vector_dim = 768
 endpoint = "http://localhost:11434"
 model = ""
 enabled = false
+# prompt = "Rank these code symbols by relevance to: ..."  # optional: override the default prompt
+
+[antislop]
+endpoint = "http://localhost:11434"
+model = ""
+api_key = ""
+# prompt = "Does this {kind} look confusing...?"  # optional: override the default prompt
 ```
 
 ### LLM API key

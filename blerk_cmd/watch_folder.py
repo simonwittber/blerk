@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import logging
 import os
-import signal
 import sqlite3
 import threading
 import time
@@ -14,7 +13,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from blerk import config, coordinator, daemon_util, db
-from blerk.ignore_match import IgnoreSet, is_ignored, load_ignore_file
+from blerk.ignore_match import IgnoreSet, is_ignored, load_ignore_file, to_slash
 
 _conn_lock = db._write_lock
 
@@ -39,9 +38,6 @@ class _Counter:
 _upsert_count = _Counter()
 
 
-def _to_slash(p: str) -> str:
-    return p.replace("\\", "/")
-
 
 def hash_file(path: str) -> str:
     h = hashlib.sha1()
@@ -59,7 +55,7 @@ def upsert_file(conn: sqlite3.Connection, path: str) -> None:
     mtime = int(st.st_mtime)
     size = int(st.st_size)
 
-    stored = _to_slash(path)
+    stored = to_slash(path)
     try:
         with _conn_lock:
             row = conn.execute(
@@ -91,16 +87,13 @@ def upsert_file(conn: sqlite3.Connection, path: str) -> None:
 
 
 def delete_file(conn: sqlite3.Connection, path: str) -> None:
-    stored = _to_slash(path)
+    stored = to_slash(path)
     try:
         with _conn_lock:
             conn.execute("DELETE FROM files WHERE path=?", (stored,))
     except sqlite3.Error as e:
         log.warning("delete file %s: %s", stored, e)
 
-
-def beginning_of_day(t: datetime) -> datetime:
-    return datetime(t.year, t.month, t.day, 0, 0, 0, 0, tzinfo=t.tzinfo)
 
 
 def _scan_dir(
@@ -315,15 +308,15 @@ def start_heartbeat_thread(conn: sqlite3.Connection, shutdown: threading.Event) 
                 row = conn.execute("SELECT COUNT(*) FROM files").fetchone()
             total = int(row[0]) if row else 0
             try:
-                db.write_heartbeat(
-                    conn, "watch-folder", "running", total, processed_today, 0, 0, 0.0, None, ""
-                )
+                db.write_heartbeat(conn, db.Heartbeat(
+                    "watch-folder", "running", total, processed_today, 0, 0, 0.0, None,
+                ))
             except sqlite3.Error as e:
                 log.warning("heartbeat: %s", e)
 
         write_stats(0)
         last_count = 0
-        day_start = beginning_of_day(datetime.now())
+        day_start = daemon_util.beginning_of_day(datetime.now())
         processed_today = 0
 
         while not shutdown.is_set():
@@ -335,7 +328,7 @@ def start_heartbeat_thread(conn: sqlite3.Connection, shutdown: threading.Event) 
 
             now = datetime.now()
             if (now - day_start).total_seconds() >= 24 * 3600:
-                day_start = beginning_of_day(now)
+                day_start = daemon_util.beginning_of_day(now)
                 processed_today = 0
             processed_today += delta
 
@@ -366,17 +359,7 @@ def main() -> None:
     conn = db.open_db(cfg.db.path)
 
     debounce_s = cfg.watch.debounce_ms / 1000.0
-    shutdown = threading.Event()
-
-    def _sig(_signum, _frame):
-        shutdown.set()
-
-    signal.signal(signal.SIGINT, _sig)
-    try:
-        signal.signal(signal.SIGTERM, _sig)
-    except (ValueError, AttributeError):
-        pass
-
+    shutdown = daemon_util.make_shutdown()
     silent = args.silent or cfg.silent
     if not args.scan:
         start_heartbeat_thread(conn, shutdown)

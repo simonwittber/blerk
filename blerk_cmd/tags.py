@@ -4,11 +4,11 @@ import argparse
 import sys
 
 from blerk import config, db
-from blerk_cmd.query import _ext_clause
+from blerk_cmd.query import _ext_sql
 
 
 def list_tags(conn, directory: str = "", exts: list[str] | None = None) -> str:
-    ext_sql, ext_params = _ext_clause(exts or [])
+    ext_sql, ext_params = _ext_sql(exts or [])
 
     dir_sql = ""
     dir_params: list[str] = []

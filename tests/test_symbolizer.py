@@ -8,13 +8,6 @@ from blerk.symbols.types import CallRef, Symbol
 from blerk_cmd.symbolizer import process_symbols
 
 
-@pytest.fixture
-def conn(tmp_path):
-    path = str(tmp_path / "test.db")
-    c = db.open_db(path)
-    yield c
-    c.close()
-
 
 def _cfg(min_lines: int = 0) -> config.Config:
     cfg = config.defaults()

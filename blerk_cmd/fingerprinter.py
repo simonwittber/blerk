@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import logging
 import re
-import signal
 import sqlite3
 import sys
 import threading
@@ -142,11 +141,11 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
         eta: int | None = int(queue_depth / rate * 60) if rate > 0 else None
 
         try:
-            db.write_heartbeat(
-                conn, DAEMON, status, queue_depth,
+            db.write_heartbeat(conn, db.Heartbeat(
+                DAEMON, status, queue_depth,
                 processed_today, retries_today, failures_today,
                 rate, eta, last_err,
-            )
+            ))
         except sqlite3.Error as e:
             log.warning("heartbeat: %s", e)
 
@@ -180,17 +179,7 @@ def main() -> None:
 
     daemon_util.setup_logging(args.silent or cfg.silent)
 
-    shutdown = threading.Event()
-
-    def _sig(_signum, _frame):
-        shutdown.set()
-
-    signal.signal(signal.SIGINT, _sig)
-    try:
-        signal.signal(signal.SIGTERM, _sig)
-    except (ValueError, AttributeError):
-        pass
-
+    shutdown = daemon_util.make_shutdown()
     run(cfg, shutdown, silent=args.silent or cfg.silent)
 
 

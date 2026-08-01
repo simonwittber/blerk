@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import signal
 import sqlite3
 import struct
 import sys
@@ -56,9 +55,6 @@ def to_float32_blob(vec: list[float]) -> bytes:
     return struct.pack(f"<{len(vec)}f", *vec)
 
 
-def beginning_of_day(t: datetime) -> datetime:
-    return datetime(t.year, t.month, t.day, 0, 0, 0, 0, tzinfo=t.tzinfo)
-
 
 def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> None:
     conn = db.open_db(cfg.db.path)
@@ -74,7 +70,7 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
     retries_today = 0
     failures_today = 0
     rate_window: list[float] = []
-    day_start = beginning_of_day(datetime.now())
+    day_start = daemon_util.beginning_of_day(datetime.now())
 
     while not shutdown.is_set():
         status = "idle"
@@ -201,7 +197,7 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
 
                 now = datetime.now()
                 if (now - day_start).total_seconds() >= 24 * 3600:
-                    day_start = beginning_of_day(now)
+                    day_start = daemon_util.beginning_of_day(now)
                     processed_today = 0
                     retries_today = 0
                     failures_today = 0
@@ -227,18 +223,11 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
             eta = int(queue_depth / rate * 60)
 
         try:
-            db.write_heartbeat(
-                conn,
-                DAEMON,
-                status,
-                queue_depth,
-                processed_today,
-                retries_today,
-                failures_today,
-                rate,
-                eta,
-                last_err,
-            )
+            db.write_heartbeat(conn, db.Heartbeat(
+                DAEMON, status, queue_depth,
+                processed_today, retries_today, failures_today,
+                rate, eta, last_err,
+            ))
         except sqlite3.Error as e:
             log.warning("heartbeat: %s", e)
 
@@ -272,17 +261,7 @@ def main() -> None:
 
     daemon_util.setup_logging(args.silent or cfg.silent)
 
-    shutdown = threading.Event()
-
-    def _sig(_signum, _frame):
-        shutdown.set()
-
-    signal.signal(signal.SIGINT, _sig)
-    try:
-        signal.signal(signal.SIGTERM, _sig)
-    except (ValueError, AttributeError):
-        pass
-
+    shutdown = daemon_util.make_shutdown()
     run(cfg, shutdown, silent=args.silent or cfg.silent)
 
 
