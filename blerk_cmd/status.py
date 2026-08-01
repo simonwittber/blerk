@@ -78,11 +78,13 @@ def status(conn) -> str:
             result += f"\n  error: {error}"
         return result
 
-    for label, db_name in [
-        ("watch-folder", "watch-folder"),
-        ("symbolizer",   "symbolizer"),
-        ("describer",    "llm-describer"),
-        ("embedder",     "embedder"),
+    for label, db_name, mode in [
+        ("watch-folder",  "watch-folder",  "files"),
+        ("symbolizer",    "symbolizer",    "queue"),
+        ("git-enricher",  "git-enricher",  "queue"),
+        ("fingerprinter", "fingerprinter", "queue"),
+        ("describer",     "llm-describer", "pct_described"),
+        ("embedder",      "embedder",      "pct_embedded"),
     ]:
         hb = _aggregate(db_name)
         eta = None
@@ -94,13 +96,13 @@ def status(conn) -> str:
             _, stat, queue, _, eta, ts, err = hb
             err = err or ""
 
-        if label == "watch-folder":
+        if mode == "files":
             detail = f"{total_files} files"
-        elif label == "symbolizer":
+        elif mode == "queue":
             detail = f"{queue} pending" if queue else "idle"
             if not queue:
                 eta = None
-        elif label == "describer":
+        elif mode == "pct_described":
             detail = _pct(described, describable)
             if stat == "idle":
                 eta = None
