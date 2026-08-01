@@ -2,6 +2,13 @@
 
 blerk indexes source code into a local SQLite database and lets you search it with natural language. It watches folders, extracts symbols, adds git metadata, generates LLM descriptions, and stores vector embeddings for semantic search.
 
+It also provides tools to counter slop: AI coding assistants generate code quickly, but that code can be long, repetitive, deeply nested, or just confusing without additional context. blerk gives you two tools to find and track these problems before they accumulate.
+
+- **`blerk lint`** checks every indexed function against structural rules: line count, parameter count, nesting depth, duplicate detection, and several design hints. It uses a per-directory `.blerk` config file to suppress known false positives.
+- **`blerk antislop`** asks an LLM whether each function looks confusing or pointless without extra context. It tags results in the index so you can query or filter on them later.
+
+Run both regularly as you accept AI-generated code to keep the codebase from drifting toward unmaintainable complexity.
+
 ## Why blerk exists
 
 The primary use case is as a context source for AI coding assistants via the MCP server.
@@ -16,12 +23,8 @@ The MCP tools blerk exposes are:
 
 - `search` - semantic + keyword hybrid search over all indexed symbols. Returns the most relevant functions, methods, and types for a query.
 - `browse` - lists all symbols in a directory with their signatures and line ranges. Useful for orienting in an unfamiliar package before doing targeted searches.
-
-blerk also supports linting. The `blerk lint` command checks functions and methods in the indexed codebase against rules such as line count, parameter count, and nesting depth. Use `--exclude PATTERN` (repeatable) to skip paths that match a glob, for example `--exclude "*Generated*"`.
-
-The `blerk confusing` command asks an LLM whether each function looks confusing or pointless without extra context. It tags results in the index so you can query them later. It accepts the same `--exclude PATTERN` flag to skip generated or vendor paths.
-
-You can also use blerk directly from the command line for human-readable search output.
+- `lint` - runs lint rules against the indexed codebase and returns violations.
+- `antislop` - tags functions that look confusing or pointless.
 
 
 ## Requirements
@@ -139,7 +142,7 @@ ollama pull llama3.2
 blerk
 ```
 
-This starts the hub, which manages all five daemons. On first run it scans your watched folders and indexes them. Leave it running in the background.
+This starts the hub, which manages all daemons. On first run it scans your watched folders and indexes them. Leave it running in the background.
 
 To index once and exit without watching for changes:
 
@@ -168,6 +171,8 @@ Once connected, the assistant can call:
 - `browse(directory="", file_extensions=[], symbols=False)` — list files or symbols in a directory
 - `detail(name, file_path="")` — show description, snippet, callers, and callees for a named symbol
 - `deps(directory="")` — show the file-level dependency graph
+- `lint(directory="", ...)` — run lint rules and return violations
+- `antislop(directory="", n=50, reset=False, ...)` — tag confusing or pointless functions
 
 The assistant decides when to call these based on what it needs. No prompting required.
 
@@ -208,6 +213,60 @@ lines: 60-68
 score: 0.887
 ```
 
+## Lint
+
+```
+blerk lint [--dir PATH] [--exclude PATTERN]
+```
+
+Checks every indexed function and method against structural rules. Violations are printed with file, line, rule name, and a short description.
+
+| Rule | Flag | Default | Description |
+|---|---|---|---|
+| `long_function` | `--max-lines N` | 40 | Function body exceeds N lines |
+| `god_file` | `--max-symbols N` | 20 | File contains more than N symbols |
+| `too_many_params` | `--max-params N` | 4 | Function has more than N parameters |
+| `deep_nesting` | `--max-nesting N` | 3 | Function nesting depth exceeds N |
+| `high_fan_out` | `--max-callees N` | 8 | Function calls more than N distinct others |
+| `fat_class` | `--max-methods N` | 10 | Class or struct has more than N methods |
+| `wide_module` | `--max-deps N` | 10 | File calls into more than N other files |
+| `exact_clone` | `--max-clone-distance N` | 3 | Function body is identical to one in another file |
+| `near_clone` | `--max-clone-distance N` | 3 | Function body is nearly identical (SimHash distance) |
+| `dip_hint` | `--dip-threshold N` | 3 | Module depends on a lower-level module |
+| `unused_symbol` | `--unused` | off | Function has no callers (opt-in) |
+| `static_symbol` | `--statics` | off | Symbol is static (opt-in) |
+
+### Suppression with .blerk files
+
+Place a `.blerk` file in any directory to control lint behaviour for that directory and all subdirectories. The file uses TOML format.
+
+```toml
+# Suppress specific rules
+suppress = ["long_function", "too_many_params"]
+
+# Suppress all rules
+suppress = ["*"]
+
+# Exclude files from linting entirely (* wildcard supported)
+exclude = ["*.generated.py", "migrations/*"]
+```
+
+## antislop
+
+```
+blerk antislop [--dir PATH] [--ext EXT] [-n N]
+```
+
+Asks an LLM whether each untagged function looks confusing or pointless without additional context. Tags results as `confusing=true` or `confusing=false` in the index. The `blerk lint` output includes a confusing count at the end of each run.
+
+To clear all tags and start fresh:
+
+```
+blerk antislop --reset
+```
+
+This removes all confusing tags under the current directory regardless of `--ext` or `--exclude` filters.
+
 ## Symbol extraction engines
 
 blerk offers two extraction engines, set by `symbolizer.engine` in config:
@@ -217,7 +276,7 @@ blerk offers two extraction engines, set by `symbolizer.engine` in config:
 
 ## Daemons
 
-The hub manages five background processes. You can also run them individually:
+The hub manages background processes. You can also run them individually:
 
 | Command | Role |
 |---|---|
@@ -226,6 +285,7 @@ The hub manages five background processes. You can also run them individually:
 | `blerk-git` | Enriches files with git commit/author/branch |
 | `blerk-describe` | Calls LLM to generate symbol descriptions |
 | `blerk-embed` | Generates vector embeddings via Ollama |
+| `blerk-fingerprint` | Computes normhash and SimHash fingerprints for duplicate detection |
 
 Each daemon writes a heartbeat row to the `daemon_status` table every poll cycle, including queue depth, rate, and ETA.
 
@@ -237,14 +297,14 @@ Each daemon writes a heartbeat row to the `daemon_status` table every poll cycle
 | `blerk browse [--dir PATH]` | List symbols in a directory |
 | `blerk detail <name>` | Show full detail for a symbol by exact name |
 | `blerk deps [--dir PATH]` | Show the file-level dependency graph |
-| `blerk lint [--exclude PATTERN]` | Check functions against lint rules (line count, params, nesting) |
-| `blerk confusing [--exclude PATTERN]` | Tag functions that look confusing or pointless using an LLM |
+| `blerk lint [--dir PATH] [--exclude PATTERN]` | Check functions against lint rules |
+| `blerk antislop [--dir PATH] [-n N] [--reset]` | Tag functions that look confusing or pointless |
 | `blerk tags [--dir PATH]` | List all tag keys and values in the index |
 | `blerk rescan [PATH]` | Re-queue files for symbolization |
 | `blerk purge [--dry-run]` | Remove DB records for files that match ignore patterns |
 | `blerk status` | Show daemon status and queue depths |
 | `blerk add <path>` | Add a folder to the watch list |
-| `blerk remove <path>` | Remove a folder from the watch list and purge its DB records and queue entries |
+| `blerk remove <path>` | Remove a folder from the watch list and purge its records |
 
 
 ## Development
