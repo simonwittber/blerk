@@ -113,11 +113,7 @@ def reset_tags(conn, directory: str, exts: list[str], excludes: list[str] = []) 
     return result.rowcount
 
 
-def sweep(conn, cfg: config.Config, n: int, directory: str, exts: list[str], excludes: list[str] = [], reset: bool = False) -> None:
-    if reset:
-        removed = reset_tags(conn, directory, exts, excludes)
-        print(f"Reset {removed} tag rows.")
-
+def sweep(conn, cfg: config.Config, n: int, directory: str, exts: list[str], excludes: list[str] = []) -> None:
     c = cfg.confusing
     if not c.endpoint or not c.model:
         raise RuntimeError(
@@ -192,7 +188,11 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
     try:
-        sweep(conn, cfg, args.n, args.directory, args.exts, args.excludes, reset=args.reset)
+        if args.reset:
+            reset_tags(conn, args.directory, [], [])
+            print("All antislop tags removed.")
+            return 0
+        sweep(conn, cfg, args.n, args.directory, args.exts, args.excludes)
     finally:
         conn.close()
     return 0

@@ -10,11 +10,18 @@ Pass `--silent` on the command line or set `silent = true` in config to suppress
 httpx request logs are now silenced to WARNING level in all daemons regardless of the silent flag.
 Shared helpers `fmt_duration` and `setup_logging` live in `blerk/daemon_util.py`.
 
+### antislop --reset
+
+`blerk antislop --reset` now clears all confusing tags under the current directory, regardless of `--ext` or `--exclude` filters.
+It prints "All antislop tags removed." and exits without running a sweep.
+
 ### Lint rule suppression
 
 Place a `.blerk` file in any directory to suppress lint rules for that directory and all subdirectories.
 The file uses TOML format with a `suppress` key listing the rule names to silence.
 Use `suppress = ["*"]` to suppress all rules under that path.
+Use the `exclude` key to skip files from linting entirely.
+Patterns in `exclude` are relative to the `.blerk` file location and support `*` wildcards.
 This replaces the `[[lint.suppress]]` config mechanism.
 
 ### Near-clone detection uses LSH banding

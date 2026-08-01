@@ -15,6 +15,7 @@ from blerk_cmd.lint_rules import RULES, Violation, build_scope
 class _Suppression:
     dir: str
     rules: list[str]
+    excludes: list[str]  # absolute-style glob patterns ready for build_scope
 
 
 def load_suppressions(directory: str) -> list[_Suppression]:
@@ -25,10 +26,13 @@ def load_suppressions(directory: str) -> list[_Suppression]:
                 with open(os.path.join(root, ".blerk"), "rb") as f:
                     data = tomllib.load(f)
                 rules = data.get("suppress", [])
-                if rules:
+                norm_dir = root.replace("\\", "/").rstrip("/")
+                excludes = [f"%{norm_dir}/{pat}" for pat in data.get("exclude", [])]
+                if rules or excludes:
                     result.append(_Suppression(
-                        dir=root.replace("\\", "/"),
+                        dir=norm_dir,
                         rules=rules,
+                        excludes=excludes,
                     ))
             except Exception:
                 pass
@@ -57,8 +61,9 @@ def _symbol_count(conn) -> int:
 
 def lint(conn, directory: str, thresholds: dict[str, int], excludes: list[str] = [],
          timing: bool = False) -> list[Violation]:
-    build_scope(conn, directory, excludes)
     suppressions = load_suppressions(directory)
+    all_excludes = list(excludes) + [e for s in suppressions for e in s.excludes]
+    build_scope(conn, directory, all_excludes)
     violations: list[Violation] = []
     for rule in RULES:
         t = thresholds.get(rule.name, rule.default)

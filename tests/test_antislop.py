@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from blerk import config, db
+from blerk import config
 from blerk_cmd import antislop
 from blerk_cmd.antislop import _parse_response, reset_tags, sweep
 
@@ -13,12 +13,6 @@ from blerk_cmd.antislop import _parse_response, reset_tags, sweep
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _make_db(tmp_path):
-    path = str(tmp_path / "test.db")
-    conn = db.open_db(path)
-    return conn
-
 
 def _make_cfg(min_lines: int = 3) -> config.Config:
     cfg = config.defaults()
@@ -89,8 +83,7 @@ def test_parse_malformed():
 # sweep behaviour tests
 # ---------------------------------------------------------------------------
 
-def test_clear_response_stores_false_no_reason(tmp_path, monkeypatch):
-    conn = _make_db(tmp_path)
+def test_clear_response_stores_false_no_reason(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
     sid = _insert_symbol(conn, tmp_path, "foo")
 
@@ -103,8 +96,7 @@ def test_clear_response_stores_false_no_reason(tmp_path, monkeypatch):
     assert "confusing_reason" not in tags
 
 
-def test_confusing_response_stores_true_and_reason(tmp_path, monkeypatch):
-    conn = _make_db(tmp_path)
+def test_confusing_response_stores_true_and_reason(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
     sid = _insert_symbol(conn, tmp_path, "bar")
 
@@ -120,8 +112,7 @@ def test_confusing_response_stores_true_and_reason(tmp_path, monkeypatch):
     assert tags.get("confusing_reason") == "This looks pointless."
 
 
-def test_already_tagged_symbols_are_skipped(tmp_path, monkeypatch):
-    conn = _make_db(tmp_path)
+def test_already_tagged_symbols_are_skipped(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
     sid = _insert_symbol(conn, tmp_path, "already")
     _tag(conn, sid, "confusing", "false")
@@ -134,8 +125,7 @@ def test_already_tagged_symbols_are_skipped(tmp_path, monkeypatch):
     assert len(calls) == 0
 
 
-def test_symbols_without_snippet_are_skipped(tmp_path, monkeypatch):
-    conn = _make_db(tmp_path)
+def test_symbols_without_snippet_are_skipped(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
     p = str(tmp_path / "empty.py")
     cur = conn.execute("INSERT INTO files(path, mtime, hash) VALUES(?,?,?)", (p, 0, "h"))
@@ -153,8 +143,7 @@ def test_symbols_without_snippet_are_skipped(tmp_path, monkeypatch):
     assert len(calls) == 0
 
 
-def test_n_limit_is_respected(tmp_path, monkeypatch):
-    conn = _make_db(tmp_path)
+def test_n_limit_is_respected(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
     for i in range(10):
         _insert_symbol(conn, tmp_path, f"sym{i}")
@@ -167,8 +156,7 @@ def test_n_limit_is_respected(tmp_path, monkeypatch):
     assert len(calls) == 3
 
 
-def test_dir_filter_works(tmp_path, monkeypatch):
-    conn = _make_db(tmp_path)
+def test_dir_filter_works(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
 
     sub = tmp_path / "subdir"
@@ -207,8 +195,7 @@ def test_dir_filter_works(tmp_path, monkeypatch):
     assert "outside_fn" not in seen_names
 
 
-def test_malformed_response_does_not_store_tag(tmp_path, monkeypatch):
-    conn = _make_db(tmp_path)
+def test_malformed_response_does_not_store_tag(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
     sid = _insert_symbol(conn, tmp_path, "mystery")
 
@@ -220,8 +207,7 @@ def test_malformed_response_does_not_store_tag(tmp_path, monkeypatch):
     assert "confusing" not in tags
 
 
-def test_output_contains_name_and_reason(tmp_path, monkeypatch, capsys):
-    conn = _make_db(tmp_path)
+def test_output_contains_name_and_reason(conn, tmp_path, monkeypatch, capsys):
     cfg = _make_cfg()
     _insert_symbol(conn, tmp_path, "weirdFunc")
 
@@ -237,8 +223,7 @@ def test_output_contains_name_and_reason(tmp_path, monkeypatch, capsys):
     assert "This writes to a field that is never read." in captured
 
 
-def test_output_reports_assessed_and_skipped(tmp_path, monkeypatch, capsys):
-    conn = _make_db(tmp_path)
+def test_output_reports_assessed_and_skipped(conn, tmp_path, monkeypatch, capsys):
     cfg = _make_cfg()
 
     sid_tagged = _insert_symbol(conn, tmp_path, "already_done")
@@ -256,8 +241,7 @@ def test_output_reports_assessed_and_skipped(tmp_path, monkeypatch, capsys):
     assert "Assessed 1" in out
 
 
-def test_no_confusing_message_when_all_clear(tmp_path, monkeypatch, capsys):
-    conn = _make_db(tmp_path)
+def test_no_confusing_message_when_all_clear(conn, tmp_path, monkeypatch, capsys):
     cfg = _make_cfg()
     _insert_symbol(conn, tmp_path, "cleanFunc")
 
@@ -269,24 +253,17 @@ def test_no_confusing_message_when_all_clear(tmp_path, monkeypatch, capsys):
     assert "No confusing fragments found." in out
 
 
-def test_reset_clears_existing_tags(tmp_path, monkeypatch):
-    conn = _make_db(tmp_path)
-    cfg = _make_cfg()
+def test_reset_clears_existing_tags(conn, tmp_path):
     sid = _insert_symbol(conn, tmp_path, "old_sym")
     _tag(conn, sid, "confusing", "true")
     _tag(conn, sid, "confusing_reason", "old reason")
 
-    monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "CLEAR")
+    reset_tags(conn, "", [], [])
 
-    sweep(conn, cfg, n=10, directory="", exts=[], reset=True)
-
-    tags = _get_tags(conn, sid)
-    assert tags.get("confusing") == "false"
-    assert "confusing_reason" not in tags
+    assert not _get_tags(conn, sid)
 
 
-def test_reset_false_skips_already_tagged(tmp_path, monkeypatch):
-    conn = _make_db(tmp_path)
+def test_reset_false_skips_already_tagged(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
     sid = _insert_symbol(conn, tmp_path, "old_sym")
     _tag(conn, sid, "confusing", "true")
@@ -295,14 +272,13 @@ def test_reset_false_skips_already_tagged(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
 
-    sweep(conn, cfg, n=10, directory="", exts=[], reset=False)
+    sweep(conn, cfg, n=10, directory="", exts=[])
 
     assert len(calls) == 0
     assert _get_tags(conn, sid).get("confusing_reason") == "old reason"
 
 
-def test_short_snippet_is_assessed(tmp_path, monkeypatch):
-    conn = _make_db(tmp_path)
+def test_short_snippet_is_assessed(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
     _insert_symbol(conn, tmp_path, "tiny", snippet="def tiny():\n    pass\n")
 
