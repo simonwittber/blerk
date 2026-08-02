@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## 0.2.3
+
+### Lint: severity scores and clone grouping
+
+Every lint violation now carries a severity score: the ratio of the actual value to the threshold.
+A function with 200 lines against a threshold of 40 scores `5.0x`.
+Violations are sorted worst-first so the most egregious findings lead the output.
+
+Exact clone groups are now reported as one violation instead of one per file.
+Three files containing the same function produce a single line: `exact clone: fn (3 copies, hash ...)`.
+
+Near-clone pairs are grouped into connected components via union-find.
+A cluster of N similar functions produces one line: `near-clone group: N symbols, closest distance D`.
+
+### New flag: --min-score
+
+`blerk lint --min-score X` hides violations with a score below X.
+Use `--min-score 2.0` to see only findings at least twice the threshold.
+This reduces display noise without changing what the rules detect or raising any threshold permanently.
+
 ## 0.2.2
 
 ### Four new SRP lint rules
@@ -13,6 +33,17 @@
 `split_class` (opt-in): flags classes whose methods form two or more disconnected groups with no shared calls between them (LCOM). Enable with `--max-cohesion N`.
 
 `mixed_abstraction` (opt-in): flags files that call into both widely-shared utility modules and leaf-level implementation modules in the same function. Enable with `--abstraction-threshold N`.
+
+### Refactoring
+
+`daemon_main(run_fn)` is now a helper in `blerk/daemon_util.py`.
+The `main()` functions in `blerk-embed`, `blerk-git`, and `blerk-symbolize` were identical; all three now delegate to it.
+
+`blerk_cmd/query.py` introduces a `QueryOptions` dataclass that bundles `n`, `exts`, `min_score`, `reranker`, `directory`, `tags`, `refs`, and `verbose`.
+`query_symbols` and `run_query` each take one `opts` argument instead of 13 and 15 positional parameters.
+
+`blerk_cmd/antislop.py` introduces a `Scope` dataclass that bundles `directory`, `exts`, and `excludes`.
+`sweep`, `_fetch_symbols`, `_count_already_tagged`, and `reset_tags` each take one `scope` argument instead of repeating the three filter parameters.
 
 ## 0.2.1
 

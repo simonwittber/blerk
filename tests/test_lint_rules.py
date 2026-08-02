@@ -5,6 +5,7 @@ import pytest
 from blerk_cmd.lint_rules import (
     build_scope, fat_class, wide_module,
     wide_package, dep_spread, split_class, mixed_abstraction,
+    duplicate_symbol, long_function,
 )
 
 
@@ -372,7 +373,10 @@ class TestMixedAbstraction:
 
         build_scope(conn, "", [])
         violations = mixed_abstraction(conn, "", 2, [])
-        assert any(v[2] == "mixed_abstraction" for v in violations)
+        assert len(violations) == 1
+        assert violations[0][2] == "mixed_abstraction"
+        assert "mixed_fn" in violations[0][3]
+        assert violations[0][1] == 1
 
     def test_only_high_inbound_deps_no_violation(self, conn):
         caller_fid = _insert_file(conn, "src/pure.py")
@@ -394,3 +398,111 @@ class TestMixedAbstraction:
 
         build_scope(conn, "", [])
         assert not mixed_abstraction(conn, "", 2, [])
+
+
+# ---------------------------------------------------------------------------
+# duplicate_symbol tests (grouping and scores)
+# ---------------------------------------------------------------------------
+
+def _insert_fingerprint(conn, sid: int, kind: str, value: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO fingerprints(symbol_id, kind, value) VALUES(?,?,?)",
+        (sid, kind, value),
+    )
+
+
+class TestDuplicateSymbol:
+    def test_exact_clone_three_files_gives_one_violation(self, conn):
+        normhash = "aabbccdd" * 8  # 64 hex chars (32 bytes)
+        for i in range(3):
+            fid = _insert_file(conn, f"src/file_{i}.py")
+            sid = _insert_symbol(conn, fid, "clone_fn", "function", 10)
+            _insert_fingerprint(conn, sid, "normhash", normhash)
+
+        build_scope(conn, "", [])
+        violations = duplicate_symbol(conn, "", 3, [])
+        exact = [v for v in violations if v[2] == "exact_clone"]
+        assert len(exact) == 1
+        assert "3 copies" in exact[0][3]
+        assert exact[0][4] == 2.0
+
+    def test_exact_clone_two_groups_two_violations(self, conn):
+        for g, h in enumerate(["aa" * 32, "bb" * 32]):
+            for i in range(2):
+                fid = _insert_file(conn, f"src/g{g}_file_{i}.py")
+                sid = _insert_symbol(conn, fid, f"fn_{g}", "function", 1)
+                _insert_fingerprint(conn, sid, "normhash", h)
+
+        build_scope(conn, "", [])
+        violations = duplicate_symbol(conn, "", 3, [])
+        exact = [v for v in violations if v[2] == "exact_clone"]
+        assert len(exact) == 2
+
+    def test_near_clone_three_symbols_gives_one_violation(self, conn):
+        # Three simhashes differing by at most 1 bit from their neighbors.
+        # A=1, B=3 (dist 1), C=7 (dist 1 from B, 2 from A); all within threshold=3.
+        simhashes = [
+            ("0000000000000001", "src/a.py"),
+            ("0000000000000003", "src/b.py"),
+            ("0000000000000007", "src/c.py"),
+        ]
+        for val, path in simhashes:
+            fid = _insert_file(conn, path)
+            sid = _insert_symbol(conn, fid, "near_fn", "function", 1)
+            _insert_fingerprint(conn, sid, "simhash", val)
+
+        build_scope(conn, "", [])
+        violations = duplicate_symbol(conn, "", 3, [])
+        near = [v for v in violations if v[2] == "near_clone"]
+        assert len(near) == 1
+        assert "3 symbols" in near[0][3]
+
+    def test_near_clone_dist0_scores_2(self, conn):
+        for val, path in [("0000000000000001", "src/p.py"),
+                          ("0000000000000001", "src/q.py")]:
+            fid = _insert_file(conn, path)
+            sid = _insert_symbol(conn, fid, "fn", "function", 1)
+            _insert_fingerprint(conn, sid, "simhash", val)
+
+        build_scope(conn, "", [])
+        near = [v for v in duplicate_symbol(conn, "", 3, []) if v[2] == "near_clone"]
+        assert len(near) == 1
+        assert near[0][4] == 2.0
+
+    def test_no_clones_no_violations(self, conn):
+        # These simhashes differ by 32 bits from each other, well above threshold=3.
+        distinct_hashes = ["0000000000000000", "00000000ffffffff", "ffffffff00000000"]
+        for i, simhash in enumerate(distinct_hashes):
+            fid = _insert_file(conn, f"src/unique_{i}.py")
+            sid = _insert_symbol(conn, fid, f"fn_{i}", "function", 1)
+            _insert_fingerprint(conn, sid, "normhash", f"{'%02x' % (i + 1)}" * 32)
+            _insert_fingerprint(conn, sid, "simhash", simhash)
+
+        build_scope(conn, "", [])
+        assert not duplicate_symbol(conn, "", 3, [])
+
+
+# ---------------------------------------------------------------------------
+# Score field tests
+# ---------------------------------------------------------------------------
+
+class TestViolationScores:
+    def test_long_function_score_is_ratio(self, conn):
+        fid = _insert_file(conn, "src/a.py")
+        _insert_symbol(conn, fid, "big_fn", "function", 1, 81)  # 80 lines
+
+        build_scope(conn, "", [])
+        violations = long_function(conn, "", 40, [])
+        assert len(violations) == 1
+        assert abs(violations[0][4] - 2.0) < 0.01  # 80 / 40 = 2.0
+
+    def test_fat_class_score_is_ratio(self, conn):
+        fid = _insert_file(conn, "src/a.py")
+        _insert_symbol(conn, fid, "BigClass", "class", 1, 200)
+        for i in range(20):
+            _insert_symbol(conn, fid, f"m_{i}", "method", 2 + i * 9, 8 + i * 9)
+
+        build_scope(conn, "", [])
+        violations = fat_class(conn, "", 10, [])
+        assert len(violations) == 1
+        assert abs(violations[0][4] - 2.0) < 0.01  # 20 / 10 = 2.0

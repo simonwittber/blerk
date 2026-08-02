@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable
 
-Violation = tuple[str, int, str, str]  # path, line, rule, display
+Violation = tuple[str, int, str, str, float]  # path, line, rule, display, score
 
 RULES: list[Rule] = []
 
@@ -59,7 +59,8 @@ def long_function(conn, directory: str, threshold: int, excludes: list[str] = []
         """,
         (threshold,),
     ).fetchall()
-    return [(path, line, "long_function", f"{name} ({end - line} lines)")
+    t = max(threshold, 1)
+    return [(path, line, "long_function", f"{name} ({end - line} lines)", (end - line) / t)
             for path, name, line, end in rows]
 
 
@@ -76,7 +77,8 @@ def god_file(conn, directory: str, threshold: int, excludes: list[str] = []) -> 
         """,
         (threshold,),
     ).fetchall()
-    return [(path, 1, "god_file", f"{count} symbols") for path, count in rows]
+    t = max(threshold, 1)
+    return [(path, 1, "god_file", f"{count} symbols", count / t) for path, count in rows]
 
 
 @rule(default=8, flag="max-callees", help="max callees per function/method (default: 8)")
@@ -95,7 +97,8 @@ def high_fan_out(conn, directory: str, threshold: int, excludes: list[str] = [])
         """,
         (threshold,),
     ).fetchall()
-    return [(path, line, "high_fan_out", f"{name} ({count} callees)")
+    t = max(threshold, 1)
+    return [(path, line, "high_fan_out", f"{name} ({count} callees)", count / t)
             for path, name, line, count in rows]
 
 
@@ -111,7 +114,8 @@ def too_many_params(conn, directory: str, threshold: int, excludes: list[str] = 
         """,
         (threshold,),
     ).fetchall()
-    return [(path, line, "too_many_params", f"{name} ({count} params)")
+    t = max(threshold, 1)
+    return [(path, line, "too_many_params", f"{name} ({count} params)", count / t)
             for path, name, line, count in rows]
 
 
@@ -127,7 +131,8 @@ def deep_nesting(conn, directory: str, threshold: int, excludes: list[str] = [])
         """,
         (threshold,),
     ).fetchall()
-    return [(path, line, "deep_nesting", f"{name} (depth {depth})")
+    t = max(threshold, 1)
+    return [(path, line, "deep_nesting", f"{name} (depth {depth})", depth / t)
             for path, name, line, depth in rows]
 
 
@@ -143,7 +148,7 @@ def unused_symbol(conn, directory: str, threshold: int, excludes: list[str] = []
         ORDER BY f.path, s.line
         """,
     ).fetchall()
-    return [(path, line, "unused_symbol", name) for path, name, line in rows]
+    return [(path, line, "unused_symbol", name, 1.0) for path, name, line in rows]
 
 
 @rule(default=3, flag="max-clone-distance", help="max SimHash Hamming distance for near-duplicate functions (default: 3, set -1 to disable)")
@@ -170,58 +175,114 @@ def duplicate_symbol(conn, directory: str, threshold: int, excludes: list[str] =
     ).fetchall()
 
     violations: list[Violation] = []
-    for path, line, name, h in exact_rows:
-        display = f"exact clone: {name} (normhash {h[:8]})"
-        violations.append((path, line, "exact_clone", display))
 
-    # Near-duplicates: SimHash pairs within Hamming distance threshold.
-    # Uses banding to prune candidates: with n_bands = threshold+1 bands, any pair
-    # with distance <= threshold must share at least one band, so no near-clones are missed.
-    if threshold >= 0:
-        sim_rows = conn.execute(
-            """
-            SELECT s.id, f.path, s.line, s.name, fp.value
-            FROM fingerprints fp
-            JOIN symbols s ON s.id = fp.symbol_id
-            JOIN _lint_files f ON f.file_id = s.file_id
-            WHERE fp.kind = 'simhash'
-            ORDER BY fp.value
-            """,
-        ).fetchall()
+    # One violation per normhash group instead of one per file.
+    if exact_rows:
+        groups: dict[str, list[tuple[str, int, str]]] = defaultdict(list)
+        for path, line, name, h in exact_rows:
+            groups[h].append((path, line, name))
+        for h, members in groups.items():
+            members.sort()
+            rep_path, rep_line, rep_name = members[0]
+            count = len(members)
+            display = f"exact clone: {rep_name} ({count} copies, hash {h[:8]})"
+            violations.append((rep_path, rep_line, "exact_clone", display, 2.0))
 
-        if sim_rows:
-            hashes = [(sid, path, line, name, int(val, 16))
-                      for sid, path, line, name, val in sim_rows]
-            n_bands = threshold + 1
-            bits_per_band = 64 // n_bands
-            band_mask = (1 << bits_per_band) - 1
+    if threshold < 0:
+        return violations
 
-            candidates: set[tuple[int, int]] = set()
-            for b in range(n_bands):
-                shift = b * bits_per_band
-                mask = band_mask if b < n_bands - 1 else (1 << (64 - shift)) - 1
-                buckets: dict[int, list[int]] = {}
-                for i, (_, _, _, _, h) in enumerate(hashes):
-                    key = (h >> shift) & mask
-                    buckets.setdefault(key, []).append(i)
-                for group in buckets.values():
-                    for x in range(len(group)):
-                        for y in range(x + 1, len(group)):
-                            a, b_ = group[x], group[y]
-                            if hashes[a][1] != hashes[b_][1]:
-                                candidates.add((min(a, b_), max(a, b_)))
+    sim_rows = conn.execute(
+        """
+        SELECT s.id, f.path, s.line, s.name, fp.value
+        FROM fingerprints fp
+        JOIN symbols s ON s.id = fp.symbol_id
+        JOIN _lint_files f ON f.file_id = s.file_id
+        WHERE fp.kind = 'simhash'
+        ORDER BY fp.value
+        """,
+    ).fetchall()
 
-            reported: set[tuple[int, int]] = set()
-            for a_idx, b_idx in candidates:
-                sid_a, path_a, line_a, name_a, h_a = hashes[a_idx]
-                sid_b, path_b, line_b, name_b, h_b = hashes[b_idx]
-                dist = bin(h_a ^ h_b).count("1")
-                if dist <= threshold:
-                    pair = (min(sid_a, sid_b), max(sid_a, sid_b))
-                    if pair not in reported:
-                        reported.add(pair)
-                        violations.append((path_a, line_a, "near_clone",
-                            f"may duplicate {name_b} in {path_b} (distance {dist})"))
+    if not sim_rows:
+        return violations
+
+    hashes = [(sid, path, line, name, int(val, 16))
+              for sid, path, line, name, val in sim_rows]
+    n_bands = threshold + 1
+    bits_per_band = 64 // n_bands
+    band_mask = (1 << bits_per_band) - 1
+
+    candidates: set[tuple[int, int]] = set()
+    for b in range(n_bands):
+        shift = b * bits_per_band
+        mask = band_mask if b < n_bands - 1 else (1 << (64 - shift)) - 1
+        buckets: dict[int, list[int]] = {}
+        for i, (_, _, _, _, h) in enumerate(hashes):
+            key = (h >> shift) & mask
+            buckets.setdefault(key, []).append(i)
+        for group in buckets.values():
+            for x in range(len(group)):
+                for y in range(x + 1, len(group)):
+                    a, b_ = group[x], group[y]
+                    if hashes[a][1] != hashes[b_][1]:
+                        candidates.add((min(a, b_), max(a, b_)))
+
+    # Verify candidates and build edge list for grouping.
+    edges: list[tuple[int, int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for a_idx, b_idx in candidates:
+        sid_a, _, _, _, h_a = hashes[a_idx]
+        sid_b, _, _, _, h_b = hashes[b_idx]
+        dist = bin(h_a ^ h_b).count("1")
+        if dist <= threshold:
+            pair = (min(sid_a, sid_b), max(sid_a, sid_b))
+            if pair not in seen:
+                seen.add(pair)
+                edges.append((sid_a, sid_b, dist))
+
+    if not edges:
+        return violations
+
+    # Union-find: group near-clone pairs into connected components.
+    all_nodes: set[int] = set()
+    for sid_a, sid_b, _ in edges:
+        all_nodes.add(sid_a)
+        all_nodes.add(sid_b)
+
+    parent: dict[int, int] = {sid: sid for sid in all_nodes}
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for sid_a, sid_b, _ in edges:
+        ra, rb = find(sid_a), find(sid_b)
+        if ra != rb:
+            parent[ra] = rb
+
+    hash_by_sid = {sid: (path, line, name) for sid, path, line, name, _ in hashes}
+    comp_members: dict[int, list[tuple[str, int, str]]] = defaultdict(list)
+    for sid in all_nodes:
+        root = find(sid)
+        path, line, name = hash_by_sid[sid]
+        comp_members[root].append((path, line, name))
+
+    comp_min_dist: dict[int, int] = {}
+    for sid_a, sid_b, dist in edges:
+        root = find(sid_a)
+        if root not in comp_min_dist or dist < comp_min_dist[root]:
+            comp_min_dist[root] = dist
+
+    t = max(threshold, 1)
+    for root, members in comp_members.items():
+        members.sort()
+        rep_path, rep_line, _ = members[0]
+        min_d = comp_min_dist.get(root, threshold)
+        n = len(members)
+        score = 1.0 + (threshold - min_d) / t
+        display = f"near-clone group: {n} symbols, closest distance {min_d}"
+        violations.append((rep_path, rep_line, "near_clone", display, score))
 
     return violations
 
@@ -277,12 +338,13 @@ def dip_violation(conn, directory: str, threshold: int, excludes: list[str] = []
     for _, ie in module_edges:
         inbound[ie] = inbound.get(ie, 0) + 1
 
+    t = max(threshold, 1)
     violations: list[Violation] = []
     for im, ie in sorted(module_edges):
         ie_inbound = inbound.get(ie, 0)
         if ie_inbound >= threshold and inbound.get(im, 0) < ie_inbound:
             display = f"may depend on lower-level module {ie} ({ie_inbound} dependents)"
-            violations.append((module_file[im], 1, "dip_hint", display))
+            violations.append((module_file[im], 1, "dip_hint", display, ie_inbound / t))
     return violations
 
 
@@ -302,7 +364,8 @@ def wide_module(conn, directory: str, threshold: int, excludes: list[str] = []) 
         """,
         (threshold,),
     ).fetchall()
-    return [(path, 1, "wide_module", f"{dep_count} file dependencies")
+    t = max(threshold, 1)
+    return [(path, 1, "wide_module", f"{dep_count} file dependencies", dep_count / t)
             for path, dep_count in rows]
 
 
@@ -325,7 +388,8 @@ def fat_class(conn, directory: str, threshold: int, excludes: list[str] = []) ->
         """,
         (threshold,),
     ).fetchall()
-    return [(path, line, "fat_class", f"{name} ({mc} methods)")
+    t = max(threshold, 1)
+    return [(path, line, "fat_class", f"{name} ({mc} methods)", mc / t)
             for path, name, line, mc in rows]
 
 
@@ -339,7 +403,7 @@ def static_symbol(conn, directory: str, threshold: int, excludes: list[str] = []
         ORDER BY f.path, s.line
         """,
     ).fetchall()
-    return [(path, line, "static_symbol", f"{name} ({kind})")
+    return [(path, line, "static_symbol", f"{name} ({kind})", 1.0)
             for path, name, line, kind in rows]
 
 
@@ -373,8 +437,9 @@ def wide_package(conn, directory: str, threshold: int, excludes: list[str] = [])
     pkg_deps: dict[str, set[str]] = defaultdict(set)
     for caller, callee in rows:
         pkg_deps[caller].add(os.path.dirname(callee.replace("\\", "/")))
+    t = max(threshold, 1)
     return [
-        (p, 1, "wide_package", f"{len(pkgs)} packages")
+        (p, 1, "wide_package", f"{len(pkgs)} packages", len(pkgs) / t)
         for p, pkgs in pkg_deps.items()
         if len(pkgs) > threshold
     ]
@@ -406,12 +471,14 @@ def dep_spread(conn, directory: str, threshold: int, excludes: list[str] = []) -
         """,
     ).fetchall())
 
+    t = max(threshold, 1)
     violations: list[Violation] = []
     for p, deps in dep_files.items():
         total = max(sym_counts.get(p, 1), 1)
         ratio = int(len(deps) * 100 / total)
         if ratio > threshold:
-            violations.append((p, 1, "dep_spread", f"{ratio}% spread ({len(deps)} deps, {total} symbols)"))
+            violations.append((p, 1, "dep_spread",
+                f"{ratio}% spread ({len(deps)} deps, {total} symbols)", ratio / t))
     return violations
 
 
@@ -453,6 +520,7 @@ def split_class(conn, directory: str, threshold: int, excludes: list[str] = []) 
     ).fetchall()
     all_edges = list(ref_rows)
 
+    t = max(threshold, 1)
     violations: list[Violation] = []
     for (_, path), (cname, mids) in class_info.items():
         if len(mids) < 2:
@@ -460,11 +528,12 @@ def split_class(conn, directory: str, threshold: int, excludes: list[str] = []) 
         class_edges = [(a, b) for a, b in all_edges if a in mids and b in mids]
         n = _union_find_components(mids, class_edges)
         if n >= threshold:
-            violations.append((path, 1, "split_class", f"{cname} ({n} disconnected method groups)"))
+            violations.append((path, 1, "split_class",
+                f"{cname} ({n} disconnected method groups)", n / t))
     return violations
 
 
-@rule(default=-1, flag="abstraction-threshold", help="flag files mixing high- and low-inbound deps (opt-in)")
+@rule(default=-1, flag="abstraction-threshold", help="flag functions mixing high- and low-inbound deps (opt-in)")
 def mixed_abstraction(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
     rows = conn.execute(
         """
@@ -476,22 +545,26 @@ def mixed_abstraction(conn, directory: str, threshold: int, excludes: list[str] 
             WHERE s1.file_id != s2.file_id
             GROUP BY s2.file_id
         )
-        SELECT lf.path,
+        SELECT lf.path, s1.name, s1.line,
                COUNT(DISTINCT CASE WHEN COALESCE(i.caller_count, 0) >= 5 THEN f2.id END) AS high,
                COUNT(DISTINCT CASE WHEN COALESCE(i.caller_count, 0) <= 1 THEN f2.id END) AS low
         FROM _lint_files lf
         JOIN symbols s1 ON s1.file_id = lf.file_id
+          AND s1.kind IN ('function', 'method')
         JOIN symbol_refs sr ON sr.caller_id = s1.id
         JOIN symbols s2 ON s2.id = sr.callee_id
         JOIN files f2 ON f2.id = s2.file_id
         LEFT JOIN inbound i ON i.file_id = f2.id
         WHERE f2.id != lf.file_id
-        GROUP BY lf.path
+        GROUP BY s1.id
         HAVING high >= ? AND low >= ?
         """,
         (threshold, threshold),
     ).fetchall()
+    t = max(2 * threshold, 1)
     return [
-        (path, 1, "mixed_abstraction", f"mixes {high} high-level + {low} low-level deps")
-        for path, high, low in rows
+        (path, line, "mixed_abstraction",
+         f"{name} mixes {high} high-level + {low} low-level deps",
+         (high + low) / t)
+        for path, name, line, high, low in rows
     ]

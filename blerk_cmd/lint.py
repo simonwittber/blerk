@@ -75,7 +75,7 @@ def lint(conn, directory: str, thresholds: dict[str, int], excludes: list[str] =
             ms = (time.perf_counter() - t0) * 1000
             print(f"  {rule.name:<28} {ms:6.1f}ms  {len(result)} findings", file=sys.stderr)
         violations += result
-    violations.sort(key=lambda v: (v[0], v[1]))
+    violations.sort(key=lambda v: (-v[4], v[0], v[1]))
     if suppressions:
         violations = [v for v in violations if not _is_suppressed(v[0], v[2], suppressions)]
     return violations
@@ -101,9 +101,9 @@ def fetch_confusing(conn) -> list[ConfusingSymbol]:
 
 def print_results(directory: str, violations: list[Violation], symbol_count: int,
                   confusing: list[ConfusingSymbol] | None = None) -> None:
-    for path, line, rule, display in violations:
+    for path, line, rule, display, score in violations:
         loc = f"{path}:{line}"
-        print(f"  {loc:<60} {rule:<22} {display}")
+        print(f"  {loc:<60} {rule:<22}  {score:5.1f}x  {display}")
     total = len(violations)
     per100 = round(total * 100.0 / symbol_count, 2) if symbol_count else 0.0
     label = directory or "(all)"
@@ -125,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--exclude", action="append", dest="excludes", default=[], metavar="PATTERN",
                         help="exclude paths matching glob pattern (repeatable)")
     parser.add_argument("--timing", action="store_true", help="print per-rule timing to stderr")
+    parser.add_argument("--min-score", type=float, default=0.0, metavar="X",
+                        help="only show violations with score >= X (e.g. 1.5 hides near-threshold hits)")
 
     for rule in RULES:
         if rule.default < 0:
@@ -146,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
     conn = db.open_db(cfg.db.path)
 
     violations = lint(conn, directory, thresholds, args.excludes, timing=args.timing)
+    if args.min_score > 0.0:
+        violations = [v for v in violations if v[4] >= args.min_score]
     symbol_count = _symbol_count(conn)
     confusing = fetch_confusing(conn)
     conn.execute("DROP TABLE IF EXISTS _lint_files")
