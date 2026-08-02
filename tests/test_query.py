@@ -6,7 +6,7 @@ import pytest
 
 from blerk import db
 from blerk_cmd import query
-from blerk_cmd.query import to_blob, truncate
+from blerk_cmd.query import QueryOptions, to_blob, truncate
 
 
 def _seed_file(conn, path: str) -> int:
@@ -90,7 +90,7 @@ def test_vector_ranks_order(tmp_path):
     _seed_embedding(conn, b, [0.9, 0.1, 0.0])
     _seed_embedding(conn, c, [0.0, 1.0, 0.0])
 
-    ranks = query._vector_positions(conn, to_blob([1.0, 0.0, 0.0]), 10, [])
+    ranks = query._vector_positions(conn, to_blob([1.0, 0.0, 0.0]), 10, QueryOptions())
     assert ranks[a] < ranks[b] < ranks[c]
 
 
@@ -102,15 +102,15 @@ def test_bm25_ranks_match(tmp_path):
     a = _seed_symbol(conn, file_id, "debouncer", snippet="class Debouncer: pass")
     b = _seed_symbol(conn, file_id, "unrelated", snippet="def foo(): pass")
 
-    ranks = query._bm25_positions(conn, "debouncer", 10, [])
+    ranks = query._bm25_positions(conn, "debouncer", 10, QueryOptions())
     assert a in ranks
     assert ranks.get(a, 999) < ranks.get(b, 999)
 
 
 def test_bm25_ranks_empty_query(tmp_path):
     conn = _open(tmp_path)
-    assert query._bm25_positions(conn, "", 10, []) == {}
-    assert query._bm25_positions(conn, "   ", 10, []) == {}
+    assert query._bm25_positions(conn, "", 10, QueryOptions()) == {}
+    assert query._bm25_positions(conn, "   ", 10, QueryOptions()) == {}
 
 
 # --- RRF fusion ---
@@ -128,7 +128,7 @@ def test_rrf_boosts_symbol_in_both_legs(tmp_path, capsys):
     _seed_embedding(conn, b, [1.0, 0.0, 0.0])  # bravo closer in vector space
 
     blob = to_blob([1.0, 0.0, 0.0])
-    query.run_query(conn, blob, "debounce", 10, False)
+    query.run_query(conn, blob, "debounce", QueryOptions(n=10))
     out = capsys.readouterr().out
 
     # alpha should appear first because RRF fuses both signals
@@ -145,7 +145,7 @@ def test_run_query_block_format(tmp_path, capsys):
                      description="does alpha stuff", snippet="def alpha(): pass")
     _seed_embedding(conn, a, [1.0, 0.0, 0.0])
 
-    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "alpha", 10, False, verbose=True)
+    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "alpha", QueryOptions(n=10, verbose=True))
     out = capsys.readouterr().out
 
     assert "[1] function alpha" in out
@@ -162,7 +162,7 @@ def test_run_query_no_description_or_snippet(tmp_path, capsys):
     a = _seed_symbol(conn, file_id, "alpha", line=1, end_line=1)
     _seed_embedding(conn, a, [1.0, 0.0, 0.0])
 
-    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "alpha", 10, False)
+    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "alpha", QueryOptions(n=10))
     out = capsys.readouterr().out
 
     assert "description:" not in out
@@ -171,7 +171,7 @@ def test_run_query_no_description_or_snippet(tmp_path, capsys):
 
 def test_run_query_empty_db_prints_nothing(tmp_path, capsys):
     conn = _open(tmp_path)
-    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "anything", 10, False)
+    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "anything", QueryOptions(n=10))
     assert capsys.readouterr().out == ""
 
 
@@ -186,7 +186,7 @@ def test_ext_filter_excludes_other_lang(tmp_path, capsys):
     _seed_embedding(conn, a, [1.0, 0.0, 0.0])
     _seed_embedding(conn, b, [1.0, 0.0, 0.0])
 
-    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "alpha", 10, False, [".py"])
+    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "alpha", QueryOptions(n=10, exts=[".py"]))
     out = capsys.readouterr().out
 
     assert "alpha_py" in out
@@ -205,7 +205,7 @@ def test_ext_filter_multi(tmp_path, capsys):
     _seed_embedding(conn, b, [1.0, 0.0, 0.0])
     _seed_embedding(conn, c, [1.0, 0.0, 0.0])
 
-    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "alpha", 10, False, [".py", ".cs"])
+    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "alpha", QueryOptions(n=10, exts=[".py", ".cs"]))
     out = capsys.readouterr().out
 
     assert "alpha_py" in out
@@ -221,7 +221,7 @@ def test_heading_excluded_by_default(tmp_path, capsys):
     _seed_embedding(conn, a, [1.0, 0.0, 0.0])
     _seed_embedding(conn, b, [1.0, 0.0, 0.0])
 
-    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "Introduction", 10, False)
+    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "Introduction", QueryOptions(n=10))
     out = capsys.readouterr().out
 
     assert "Introduction" not in out
@@ -234,7 +234,7 @@ def test_heading_included_when_md_ext(tmp_path, capsys):
     a = _seed_symbol(conn, file_id, "Introduction", kind="heading")
     _seed_embedding(conn, a, [1.0, 0.0, 0.0])
 
-    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "Introduction", 10, False, [".md"])
+    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "Introduction", QueryOptions(n=10, exts=[".md"]))
     out = capsys.readouterr().out
 
     assert "Introduction" in out
@@ -267,7 +267,7 @@ def test_run_query_with_refs(tmp_path, capsys):
     _seed_embedding(conn, a, [1.0, 0.0, 0.0])
     conn.execute("INSERT INTO symbol_refs (caller_id, callee_id) VALUES (?, ?)", (a, b))
 
-    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "alpha", 10, True)
+    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "alpha", QueryOptions(n=10, refs=True))
     out = capsys.readouterr().out
 
     assert "[1] function alpha" in out

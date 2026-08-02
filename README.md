@@ -274,12 +274,9 @@ blerk antislop --reset
 
 This removes all confusing tags under the current directory regardless of `--ext` or `--exclude` filters.
 
-## Symbol extraction engines
+## Symbol extraction
 
-blerk offers two extraction engines, set by `symbolizer.engine` in config:
-
-- **regexp** (default): fast regex-based extraction. No call-graph data. Good for quick setup.
-- **treesitter**: AST-based. Accurate snippet boundaries and caller/callee relationships. Supports Go, Python, JS/TS, C, C++, C#. Falls back to regexp for other file types.
+blerk uses tree-sitter for all symbol extraction. Supported languages: Go, Python, JS/TS, C, C++, C#. The extractor produces accurate snippet boundaries and caller/callee relationships for use in lint and search.
 
 ## Daemons
 

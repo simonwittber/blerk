@@ -63,13 +63,6 @@ def test_cs_class_and_method(write_temp):
     assert kinds.get("Greeter.Hello") == "method"
 
 
-def test_markdown_fallback(write_temp):
-    src = "# Heading\n\nSome text.\n"
-    path = write_temp("g.md", src)
-    syms, refs = Extractor().extract(path)
-    assert refs == []
-    assert any(s.kind == "heading" and s.name == "Heading" for s in syms)
-
 
 def test_line_numbers(write_temp):
     src = "package main\n\nfunc First() {}\n\nfunc Second() {}\n"
@@ -89,12 +82,12 @@ def test_snippet_cap(write_temp):
     assert big.snippet.count("\n") + 1 <= 100
 
 
-def test_unsupported_ext_delegates(write_temp):
+def test_unsupported_ext_returns_empty(write_temp):
     src = "# heading\ncontent\n"
     path = write_temp("x.md", src)
     syms, refs = Extractor().extract(path)
+    assert syms == []
     assert refs == []
-    assert any(s.name == "heading" for s in syms)
 
 
 # ---------------------------------------------------------------------------

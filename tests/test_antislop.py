@@ -7,7 +7,7 @@ import pytest
 
 from blerk import config
 from blerk_cmd import antislop
-from blerk_cmd.antislop import _parse_response, reset_tags, sweep
+from blerk_cmd.antislop import Scope, _parse_response, reset_tags, sweep
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ def test_clear_response_stores_false_no_reason(conn, tmp_path, monkeypatch):
 
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "CLEAR")
 
-    sweep(conn, cfg, n=10, directory="", exts=[])
+    sweep(conn, cfg, n=10, scope=Scope())
 
     tags = _get_tags(conn, sid)
     assert tags.get("confusing") == "false"
@@ -105,7 +105,7 @@ def test_confusing_response_stores_true_and_reason(conn, tmp_path, monkeypatch):
         lambda *a, **kw: "CONFUSING: This looks pointless.",
     )
 
-    sweep(conn, cfg, n=10, directory="", exts=[])
+    sweep(conn, cfg, n=10, scope=Scope())
 
     tags = _get_tags(conn, sid)
     assert tags.get("confusing") == "true"
@@ -120,7 +120,7 @@ def test_already_tagged_symbols_are_skipped(conn, tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
 
-    sweep(conn, cfg, n=10, directory="", exts=[])
+    sweep(conn, cfg, n=10, scope=Scope())
 
     assert len(calls) == 0
 
@@ -138,7 +138,7 @@ def test_symbols_without_snippet_are_skipped(conn, tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
 
-    sweep(conn, cfg, n=10, directory="", exts=[])
+    sweep(conn, cfg, n=10, scope=Scope())
 
     assert len(calls) == 0
 
@@ -151,7 +151,7 @@ def test_n_limit_is_respected(conn, tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
 
-    sweep(conn, cfg, n=3, directory="", exts=[])
+    sweep(conn, cfg, n=3, scope=Scope())
 
     assert len(calls) == 3
 
@@ -189,7 +189,7 @@ def test_dir_filter_works(conn, tmp_path, monkeypatch):
 
     monkeypatch.setattr(antislop, "describe", fake_describe)
 
-    sweep(conn, cfg, n=10, directory=str(sub), exts=[])
+    sweep(conn, cfg, n=10, scope=Scope(directory=str(sub)))
 
     assert "inside_fn" in seen_names
     assert "outside_fn" not in seen_names
@@ -201,7 +201,7 @@ def test_malformed_response_does_not_store_tag(conn, tmp_path, monkeypatch):
 
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "DUNNO")
 
-    sweep(conn, cfg, n=10, directory="", exts=[])
+    sweep(conn, cfg, n=10, scope=Scope())
 
     tags = _get_tags(conn, sid)
     assert "confusing" not in tags
@@ -216,7 +216,7 @@ def test_output_contains_name_and_reason(conn, tmp_path, monkeypatch, capsys):
         lambda *a, **kw: "CONFUSING: This writes to a field that is never read.",
     )
 
-    sweep(conn, cfg, n=10, directory="", exts=[])
+    sweep(conn, cfg, n=10, scope=Scope())
 
     captured = capsys.readouterr().out
     assert "weirdFunc" in captured
@@ -234,7 +234,7 @@ def test_output_reports_assessed_and_skipped(conn, tmp_path, monkeypatch, capsys
 
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "CLEAR")
 
-    sweep(conn, cfg, n=10, directory="", exts=[])
+    sweep(conn, cfg, n=10, scope=Scope())
 
     out = capsys.readouterr().out
     assert "1 already tagged" in out
@@ -247,7 +247,7 @@ def test_no_confusing_message_when_all_clear(conn, tmp_path, monkeypatch, capsys
 
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "CLEAR")
 
-    sweep(conn, cfg, n=10, directory="", exts=[])
+    sweep(conn, cfg, n=10, scope=Scope())
 
     out = capsys.readouterr().out
     assert "No confusing fragments found." in out
@@ -258,7 +258,7 @@ def test_reset_clears_existing_tags(conn, tmp_path):
     _tag(conn, sid, "confusing", "true")
     _tag(conn, sid, "confusing_reason", "old reason")
 
-    reset_tags(conn, "", [], [])
+    reset_tags(conn, Scope())
 
     assert not _get_tags(conn, sid)
 
@@ -272,7 +272,7 @@ def test_reset_false_skips_already_tagged(conn, tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
 
-    sweep(conn, cfg, n=10, directory="", exts=[])
+    sweep(conn, cfg, n=10, scope=Scope())
 
     assert len(calls) == 0
     assert _get_tags(conn, sid).get("confusing_reason") == "old reason"
@@ -285,6 +285,6 @@ def test_short_snippet_is_assessed(conn, tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
 
-    sweep(conn, cfg, n=10, directory="", exts=[])
+    sweep(conn, cfg, n=10, scope=Scope())
 
     assert len(calls) == 1

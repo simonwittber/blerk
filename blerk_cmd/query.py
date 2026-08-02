@@ -4,11 +4,24 @@ import argparse
 import sqlite3
 import struct
 import sys
+from dataclasses import dataclass, field
 from typing import NamedTuple
 
 import httpx
 
 from blerk import config, db
+
+
+@dataclass
+class QueryOptions:
+    n: int = 10
+    exts: list[str] | None = None
+    min_score: float = 0.0
+    reranker: config.Reranker | None = None
+    directory: str = ""
+    tags: dict[str, str] | None = None
+    refs: bool = False
+    verbose: bool = False
 
 # RRF smoothing constant: 60 is the standard value that prevents top ranks from dominating.
 _RRF_K = 60
@@ -91,11 +104,12 @@ def print_refs(conn, symbol_id: int) -> None:
         print(f"calledby: {name} ({path})")
 
 
-def _vector_positions(conn, blob: bytes, k: int, exts: list[str], directory: str = "", tags: dict[str, str] | None = None) -> dict[int, int]:
+def _vector_positions(conn, blob: bytes, k: int, opts: QueryOptions) -> dict[int, int]:
+    exts = opts.exts or []
     ext_sql, ext_params = _ext_sql(exts)
-    dir_sql, dir_params = _dir_clause(directory)
+    dir_sql, dir_params = _dir_clause(opts.directory)
     heading_sql = _no_headings_sql(exts)
-    tag_sql, tag_params = _tag_clause(tags or {})
+    tag_sql, tag_params = _tag_clause(opts.tags or {})
     rows = conn.execute(
         f"""
         SELECT s.id
@@ -112,13 +126,14 @@ def _vector_positions(conn, blob: bytes, k: int, exts: list[str], directory: str
     return {row[0]: rank for rank, row in enumerate(rows)}
 
 
-def _bm25_positions(conn, query_text: str, k: int, exts: list[str], directory: str = "", tags: dict[str, str] | None = None) -> dict[int, int]:
+def _bm25_positions(conn, query_text: str, k: int, opts: QueryOptions) -> dict[int, int]:
     if not query_text.strip():
         return {}
+    exts = opts.exts or []
     ext_sql, ext_params = _ext_sql(exts)
-    dir_sql, dir_params = _dir_clause(directory)
+    dir_sql, dir_params = _dir_clause(opts.directory)
     heading_sql = _no_headings_sql(exts)
-    tag_sql, tag_params = _tag_clause(tags or {})
+    tag_sql, tag_params = _tag_clause(opts.tags or {})
     try:
         rows = conn.execute(
             f"""
@@ -143,28 +158,21 @@ def _rrf_score(rank: int) -> float:
     return 1.0 / (_RRF_K + rank + 1)
 
 
-def _rerank(
-    endpoint: str,
-    model: str,
-    api_key: str,
-    query_text: str,
-    rows: list,
-    prompt_template: str = "",
-) -> list:
+def _rerank(reranker: config.Reranker, query_text: str, rows: list) -> list:
     from blerk.config import _DEFAULT_RERANKER_PROMPT
     numbered = "\n".join(
         f"{i+1}. {kind} {name}({params}) in {path}" + (f"\n   {desc}" if desc else "")
         for i, (_, name, kind, path, _, _, desc, snippet, params) in enumerate(rows)
     )
-    prompt = (prompt_template or _DEFAULT_RERANKER_PROMPT).replace("{query_text}", query_text).replace("{numbered}", numbered)
+    prompt = (reranker.prompt or _DEFAULT_RERANKER_PROMPT).replace("{query_text}", query_text).replace("{numbered}", numbered)
     headers: dict[str, str] = {}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    if reranker.api_key:
+        headers["Authorization"] = f"Bearer {reranker.api_key}"
     try:
         r = httpx.post(
-            endpoint + "/v1/chat/completions",
+            reranker.endpoint + "/v1/chat/completions",
             json={
-                "model": model,
+                "model": reranker.model,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 64,
                 "temperature": 0,
@@ -207,21 +215,12 @@ def query_symbols(
     conn,
     blob: bytes,
     query_text: str,
-    n: int,
-    exts: list[str] | None = None,
-    min_score: float = 0.0,
-    reranker_endpoint: str = "",
-    reranker_model: str = "",
-    reranker_api_key: str = "",
-    reranker_prompt: str = "",
-    directory: str = "",
-    tags: dict[str, str] | None = None,
+    opts: QueryOptions,
 ) -> list[QueryResult]:
-    k = n * _OVERFETCH
-    exts = exts or []
+    k = opts.n * _OVERFETCH
 
-    vector = _vector_positions(conn, blob, k, exts, directory, tags)
-    bm25 = _bm25_positions(conn, query_text, k, exts, directory, tags)
+    vector = _vector_positions(conn, blob, k, opts)
+    bm25 = _bm25_positions(conn, query_text, k, opts)
 
     all_ids = set(vector) | set(bm25)
     scores: dict[int, float] = {}
@@ -233,10 +232,10 @@ def query_symbols(
             score += _rrf_score(bm25[id_])
         scores[id_] = score
 
-    if min_score > 0.0:
-        scores = {id_: s for id_, s in scores.items() if s >= min_score}
+    if opts.min_score > 0.0:
+        scores = {id_: s for id_, s in scores.items() if s >= opts.min_score}
 
-    top_ids = sorted(scores, key=lambda x: scores[x], reverse=True)[:n]
+    top_ids = sorted(scores, key=lambda x: scores[x], reverse=True)[:opts.n]
     if not top_ids:
         return []
 
@@ -278,8 +277,9 @@ def query_symbols(
 
     rows.sort(key=lambda r: scores[r[0]], reverse=True)
 
-    if reranker_endpoint and reranker_model:
-        rows = _rerank(reranker_endpoint, reranker_model, reranker_api_key, query_text, rows, reranker_prompt)
+    r = opts.reranker
+    if r and r.endpoint and r.model:
+        rows = _rerank(r, query_text, rows)
 
     return [
         QueryResult(id_, name, kind, path, line, end_line, desc, snippet, params, scores[id_])
@@ -319,27 +319,11 @@ def format_compact(results: list[QueryResult]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def run_query(
-    conn,
-    blob: bytes,
-    query_text: str,
-    n: int,
-    refs: bool,
-    exts: list[str] | None = None,
-    min_score: float = 0.0,
-    reranker_endpoint: str = "",
-    reranker_model: str = "",
-    reranker_api_key: str = "",
-    reranker_prompt: str = "",
-    directory: str = "",
-    verbose: bool = False,
-    tags: dict[str, str] | None = None,
-) -> None:
-    results = query_symbols(conn, blob, query_text, n, exts, min_score,
-                            reranker_endpoint, reranker_model, reranker_api_key, reranker_prompt, directory, tags)
+def run_query(conn, blob: bytes, query_text: str, opts: QueryOptions) -> None:
+    results = query_symbols(conn, blob, query_text, opts)
     if results:
-        if verbose or refs:
-            print(format_verbose(conn, results, refs))
+        if opts.verbose or opts.refs:
+            print(format_verbose(conn, results, opts.refs))
         else:
             print(format_compact(results))
 
@@ -365,21 +349,22 @@ def main(argv: list[str] | None = None) -> int:
     vec = embed(cfg.embedder.endpoint, cfg.embedder.model, args.query)
     blob = to_blob(vec)
 
-    reranker_endpoint = cfg.reranker.endpoint if cfg.reranker.enabled else ""
-    reranker_model = cfg.reranker.model if cfg.reranker.enabled else ""
-    reranker_api_key = cfg.reranker.api_key if cfg.reranker.enabled else ""
-    reranker_prompt = cfg.reranker.prompt if cfg.reranker.enabled else ""
     tag_filter: dict[str, str] = {}
     for t in args.tags:
         if "=" in t:
             k, v = t.split("=", 1)
             tag_filter[k.strip()] = v.strip()
-    run_query(conn, blob, args.query, args.n, args.refs, args.exts,
-              reranker_endpoint=reranker_endpoint, reranker_model=reranker_model,
-              reranker_api_key=reranker_api_key, reranker_prompt=reranker_prompt,
-              directory=args.directory,
-              verbose=args.verbose or args.refs,
-              tags=tag_filter or None)
+
+    opts = QueryOptions(
+        n=args.n,
+        exts=args.exts or None,
+        reranker=cfg.reranker if cfg.reranker.enabled else None,
+        directory=args.directory,
+        verbose=args.verbose or args.refs,
+        refs=args.refs,
+        tags=tag_filter or None,
+    )
+    run_query(conn, blob, args.query, opts)
     return 0
 
 

@@ -80,7 +80,6 @@ path = "/abs/db.sqlite"
     assert cfg.symbolizer.poll_ms == 1000
     assert cfg.symbolizer.max_retries == 3
     assert cfg.symbolizer.min_describe_lines == 5
-    assert cfg.symbolizer.engine == "regexp"
     assert cfg.git_enricher.batch_size == 20
     assert cfg.git_enricher.poll_ms == 2000
     assert cfg.git_enricher.max_retries == 3
@@ -158,7 +157,6 @@ def test_defaults_values() -> None:
     d = config.defaults()
     assert d.secrets_file == "~/.blerk/secrets.toml"
     assert d.db.path == "~/.blerk/blerk.db"
-    assert d.symbolizer.engine == "regexp"
     assert d.llm[0].model == "llama3.2"
     assert d.embedder.vector_dim == 768
 

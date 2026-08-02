@@ -12,7 +12,7 @@ import tree_sitter_javascript
 import tree_sitter_python
 from tree_sitter import Language, Parser, Query
 
-from blerk.symbols import queries, regexp_extractor
+from blerk.symbols import queries
 from blerk.symbols.types import SNIPPET_MAX_LINES, CallRef, Symbol, count_params
 
 
@@ -172,8 +172,7 @@ class Extractor:
             return yaml_extractor.extract(path), []
         ld = _EXT_TO_LANG.get(ext)
         if ld is None:
-            syms = regexp_extractor.extract_symbols(path)
-            return syms, []
+            return [], []
         try:
             with open(path, "rb") as f:
                 src = f.read()

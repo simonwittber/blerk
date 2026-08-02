@@ -36,3 +36,11 @@ coverage.xml
 # OS
 .DS_Store
 Thumbs.db
+
+# Editor temp files
+*~
+*.un~
+*.swp
+*.swo
+.#*
+\#*\#

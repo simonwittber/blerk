@@ -153,14 +153,9 @@ Rules include: function line count, parameter count, nesting depth, file symbol 
 | `daemon_status` | One row per daemon. Updated each poll cycle with queue depth, rate, ETA, and errors. |
 | `schema_version` | Single-row table tracking the migration version. |
 
-## Symbol extraction engines
+## Symbol extraction engine
 
-Set `symbolizer.engine` in `config.toml` to choose an engine:
-
-- **regexp** (default): regex patterns per language. Fast. No call refs. Supports Go, Python, JS/TS, C, C++, C#, Markdown.
-- **treesitter**: AST-based. Slower to start (parses the full file). Accurate snippet boundaries. Extracts call refs (which symbol calls which). Same language set.
-
-For unsupported file extensions, the tree-sitter extractor falls back to the regexp engine automatically.
+blerk uses tree-sitter for all symbol extraction. The extractor is AST-based, produces accurate snippet boundaries, and extracts call refs (which symbol calls which). Supported languages: Go, Python, JS/TS, C, C++, C#. Files with unsupported extensions return no symbols.
 
 ## Configuration
 

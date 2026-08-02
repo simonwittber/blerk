@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-import argparse
 import logging
 import os
 import sqlite3
-import sys
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
 from blerk import config, coordinator, daemon_util, db
-from blerk.symbols import regexp_extractor
 from blerk.symbols.types import CallRef, Symbol
 
 
@@ -21,19 +17,6 @@ TARGET_COL = "file_id"
 DAEMON = "symbolizer"
 
 log = logging.getLogger("symbolizer")
-
-
-class _RegexpAdapter:
-    def extract(self, path: str) -> tuple[list[Symbol], list[CallRef]]:
-        import os
-        if os.path.basename(path) == "package.json":
-            from blerk.symbols import package_json_extractor
-            return package_json_extractor.extract(path), []
-        ext = os.path.splitext(path)[1].lower()
-        if ext in (".yaml", ".yml"):
-            from blerk.symbols import yaml_extractor
-            return yaml_extractor.extract(path), []
-        return regexp_extractor.extract_symbols(path), []
 
 
 
@@ -216,13 +199,8 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
     except sqlite3.Error as e:
         log.warning("recover orphans: %s", e)
 
-    if cfg.symbolizer.engine == "treesitter":
-        from blerk.symbols import treesitter_extractor
-        extractor: Any = treesitter_extractor.Extractor()
-        log.info("symbolizer engine: treesitter")
-    else:
-        extractor = _RegexpAdapter()
-        log.info("symbolizer engine: regexp")
+    from blerk.symbols import treesitter_extractor
+    extractor = treesitter_extractor.Extractor()
 
     client = coordinator.CoordinatorClient(QUEUE, cfg.db.path)
     poll = cfg.symbolizer.poll_ms / 1000.0
@@ -333,27 +311,7 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(message)s",
-        datefmt="%Y/%m/%d %H:%M:%S",
-    )
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("--silent", action="store_true")
-    args = parser.parse_args()
-
-    try:
-        cfg = config.load(args.config)
-    except (FileNotFoundError, OSError) as e:
-        log.error("load config: %s", e)
-        sys.exit(1)
-
-    daemon_util.setup_logging(args.silent or cfg.silent)
-
-    shutdown = daemon_util.make_shutdown()
-    run(cfg, shutdown, silent=args.silent or cfg.silent)
+    daemon_util.daemon_main(run)
 
 
 if __name__ == "__main__":

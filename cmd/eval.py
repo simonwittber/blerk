@@ -8,7 +8,7 @@ from pathlib import Path
 
 from blerk import config, db
 from blerk_cmd.llm_describer import describe
-from blerk_cmd.query import embed, query_symbols, to_blob
+from blerk_cmd.query import QueryOptions, embed, query_symbols, to_blob
 
 BASELINE_PATH = Path(__file__).parent / "eval_baseline.json"
 
@@ -44,13 +44,8 @@ def _run_query(conn, cfg: config.Config, text: str, sym_id: int) -> int | None:
     except Exception:
         return None
     blob = to_blob(vec)
-    reranker_endpoint = cfg.reranker.endpoint if cfg.reranker.enabled else ""
-    reranker_model = cfg.reranker.model if cfg.reranker.enabled else ""
-    reranker_api_key = cfg.reranker.api_key if cfg.reranker.enabled else ""
-    results = query_symbols(conn, blob, text, n=20,
-                            reranker_endpoint=reranker_endpoint,
-                            reranker_model=reranker_model,
-                            reranker_api_key=reranker_api_key)
+    opts = QueryOptions(n=20, reranker=cfg.reranker if cfg.reranker.enabled else None)
+    results = query_symbols(conn, blob, text, opts)
     return _find_rank(results, sym_id)
 
 

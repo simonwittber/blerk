@@ -23,7 +23,6 @@ class Symbolizer:
     poll_ms: int = 0
     max_retries: int = 0
     min_describe_lines: int = 0
-    engine: str = ""
     workers: int = 1
 
 
@@ -136,7 +135,6 @@ def defaults() -> Config:
             poll_ms=1000,
             max_retries=3,
             min_describe_lines=5,
-            engine="regexp",
         ),
         git_enricher=GitEnricher(
             batch_size=20,

@@ -3,28 +3,36 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import dataclass, field
 
 from blerk import config, db
 from blerk_cmd.llm_describer import describe
 
 
-def _build_path_filters(directory: str, exts: list[str], excludes: list[str] = []) -> tuple[list[str], list]:
+@dataclass
+class Scope:
+    directory: str = ""
+    exts: list[str] = field(default_factory=list)
+    excludes: list[str] = field(default_factory=list)
+
+
+def _build_path_filters(scope: Scope) -> tuple[list[str], list]:
     filters: list[str] = []
     params: list = []
 
-    if directory:
-        fwd = directory.replace("\\", "/").rstrip("/")
-        bwd = directory.replace("/", "\\").rstrip("\\")
+    if scope.directory:
+        fwd = scope.directory.replace("\\", "/").rstrip("/")
+        bwd = scope.directory.replace("/", "\\").rstrip("\\")
         filters.append("(f.path LIKE ? OR f.path LIKE ? OR f.path LIKE ? OR f.path LIKE ?)")
         params += [f"%{fwd}/%", f"%{fwd}", f"%{bwd}\\%", f"%{bwd}"]
 
-    if exts:
-        ext_conds = " OR ".join("f.path LIKE ?" for _ in exts)
+    if scope.exts:
+        ext_conds = " OR ".join("f.path LIKE ?" for _ in scope.exts)
         filters.append(f"({ext_conds})")
-        for ext in exts:
+        for ext in scope.exts:
             params.append(f"%{ext}")
 
-    for pat in excludes:
+    for pat in scope.excludes:
         sql = pat.replace("\\", "/").replace("*", "%").replace("?", "_")
         filters.append("f.path NOT LIKE ?")
         params.append(sql)
@@ -32,8 +40,8 @@ def _build_path_filters(directory: str, exts: list[str], excludes: list[str] = [
     return filters, params
 
 
-def _fetch_symbols(conn, n: int, directory: str, exts: list[str], excludes: list[str] = []) -> list[tuple]:
-    path_filters, params = _build_path_filters(directory, exts, excludes)
+def _fetch_symbols(conn, n: int, scope: Scope) -> list[tuple]:
+    path_filters, params = _build_path_filters(scope)
     filters = [
         "s.kind IN ('function', 'method')",
         "s.snippet IS NOT NULL",
@@ -57,8 +65,8 @@ def _fetch_symbols(conn, n: int, directory: str, exts: list[str], excludes: list
             for sid, name, kind, path, params_str, snippet in rows]
 
 
-def _count_already_tagged(conn, directory: str, exts: list[str], excludes: list[str] = []) -> int:
-    path_filters, params = _build_path_filters(directory, exts, excludes)
+def _count_already_tagged(conn, scope: Scope) -> int:
+    path_filters, params = _build_path_filters(scope)
     filters = [
         "s.kind IN ('function', 'method')",
         "EXISTS (SELECT 1 FROM symbol_tags st WHERE st.symbol_id = s.id AND st.key = 'confusing')",
@@ -82,8 +90,8 @@ def _parse_response(text: str) -> tuple[bool | None, str]:
     return None, ""
 
 
-def reset_tags(conn, directory: str, exts: list[str], excludes: list[str] = []) -> int:
-    path_filters, params = _build_path_filters(directory, exts, excludes)
+def reset_tags(conn, scope: Scope) -> int:
+    path_filters, params = _build_path_filters(scope)
     filters = ["s.kind IN ('function', 'method')"] + path_filters
     where = " AND ".join(filters)
     result = conn.execute(
@@ -101,15 +109,15 @@ def reset_tags(conn, directory: str, exts: list[str], excludes: list[str] = []) 
     return result.rowcount
 
 
-def sweep(conn, cfg: config.Config, n: int, directory: str, exts: list[str], excludes: list[str] = []) -> None:
+def sweep(conn, cfg: config.Config, n: int, scope: Scope) -> None:
     c = cfg.antislop
     if not c.endpoint or not c.model:
         raise RuntimeError(
             "No [antislop] config found. Add endpoint and model to ~/.blerk/config.toml."
         )
     prompt_template = c.prompt
-    already_tagged = _count_already_tagged(conn, directory, exts, excludes)
-    candidates = _fetch_symbols(conn, n, directory, exts, excludes)
+    already_tagged = _count_already_tagged(conn, scope)
+    candidates = _fetch_symbols(conn, n, scope)
 
     assessed = 0
     confusing: list[tuple[str, str, str]] = []
@@ -178,10 +186,10 @@ def main(argv: list[str] | None = None) -> int:
     conn = db.open_db(cfg.db.path)
     try:
         if args.reset:
-            reset_tags(conn, args.directory, [], [])
+            reset_tags(conn, Scope(directory=args.directory))
             print("All antislop tags removed.")
             return 0
-        sweep(conn, cfg, args.n, args.directory, args.exts, args.excludes)
+        sweep(conn, cfg, args.n, Scope(directory=args.directory, exts=args.exts, excludes=args.excludes))
     finally:
         conn.close()
     return 0

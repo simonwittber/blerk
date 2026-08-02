@@ -16,8 +16,6 @@ debounce_ms = 100
 ignore_file = "~/.blerk/ignore"
 
 [symbolizer]
-# Symbol extraction engine: "regexp" (fast, no call refs) or "treesitter" (accurate, extracts call graph).
-engine = "regexp"
 # Symbols per batch claimed from the queue.
 batch_size = 10
 # Milliseconds between queue polls.

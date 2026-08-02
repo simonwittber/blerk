@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import argparse
 import logging
 import os
 import sqlite3
 import subprocess
-import sys
 import threading
 import time
 from datetime import datetime
@@ -211,27 +209,7 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(message)s",
-        datefmt="%Y/%m/%d %H:%M:%S",
-    )
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("--silent", action="store_true")
-    args = parser.parse_args()
-
-    try:
-        cfg = config.load(args.config)
-    except (FileNotFoundError, OSError) as e:
-        log.error("load config: %s", e)
-        sys.exit(1)
-
-    daemon_util.setup_logging(args.silent or cfg.silent)
-
-    shutdown = daemon_util.make_shutdown()
-    run(cfg, shutdown, silent=args.silent or cfg.silent)
+    daemon_util.daemon_main(run)
 
 
 if __name__ == "__main__":
