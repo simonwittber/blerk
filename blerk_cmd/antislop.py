@@ -55,7 +55,10 @@ def _fetch_symbols(conn, n: int, scope: Scope) -> list[tuple]:
         SELECT s.id, s.name, s.kind, f.path, COALESCE(s.params, ''), s.snippet
         FROM symbols s
         JOIN files f ON f.id = s.file_id
+        LEFT JOIN symbol_refs sr ON sr.callee_id = s.id
         WHERE {where}
+        GROUP BY s.id
+        ORDER BY COUNT(sr.caller_id) DESC, (COALESCE(s.end_line, s.line) - s.line) DESC
         LIMIT ?
         """,
         params + [n],

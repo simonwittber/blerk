@@ -7,7 +7,7 @@ import pytest
 
 from blerk import config
 from blerk_cmd import antislop
-from blerk_cmd.antislop import Scope, _parse_response, reset_tags, sweep
+from blerk_cmd.antislop import Scope, _fetch_symbols, _parse_response, reset_tags, sweep
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +24,7 @@ def _make_cfg(min_lines: int = 3) -> config.Config:
 
 def _insert_symbol(conn, tmp_path, name: str, kind: str = "function",
                    snippet: str = "def foo():\n    pass\n    pass\n    pass\n",
-                   params: str = "") -> int:
+                   params: str = "", end_line: int = 10) -> int:
     p = str(tmp_path / f"{name}.py")
     cur = conn.execute(
         "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
@@ -33,7 +33,7 @@ def _insert_symbol(conn, tmp_path, name: str, kind: str = "function",
     fid = int(cur.lastrowid)
     cur = conn.execute(
         "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, params) VALUES(?,?,?,?,?,?,?)",
-        (fid, name, kind, 1, 10, snippet, params),
+        (fid, name, kind, 1, end_line, snippet, params),
     )
     return int(cur.lastrowid)
 
@@ -77,6 +77,49 @@ def test_parse_malformed():
     is_c, reason = _parse_response("MAYBE?")
     assert is_c is None
     assert reason == ""
+
+
+# ---------------------------------------------------------------------------
+# _fetch_symbols ordering tests
+# ---------------------------------------------------------------------------
+
+def _insert_ref(conn, caller_id: int, callee_id: int) -> None:
+    conn.execute(
+        "INSERT OR IGNORE INTO symbol_refs(caller_id, callee_id) VALUES(?,?)",
+        (caller_id, callee_id),
+    )
+
+
+def test_fetch_symbols_ordered_by_callers_then_size(conn, tmp_path):
+    # popular: 3 callers, short body
+    popular = _insert_symbol(conn, tmp_path, "popular", snippet="def popular():\n    pass\n")
+    # obscure: 0 callers, long body
+    obscure = _insert_symbol(conn, tmp_path, "obscure",
+                             snippet="def obscure():\n" + "    x = 1\n" * 20)
+    # mid: 1 caller, short body
+    mid = _insert_symbol(conn, tmp_path, "mid", snippet="def mid():\n    pass\n")
+
+    # Add callers for popular (3 distinct callers) and mid (1 caller).
+    for i in range(3):
+        caller = _insert_symbol(conn, tmp_path, f"caller_{i}")
+        _insert_ref(conn, caller, popular)
+    caller_mid = _insert_symbol(conn, tmp_path, "caller_mid")
+    _insert_ref(conn, caller_mid, mid)
+
+    rows = _fetch_symbols(conn, 10, Scope())
+    names = [r[1] for r in rows if r[1] in ("popular", "mid", "obscure")]
+    assert names.index("popular") < names.index("mid")
+    assert names.index("mid") < names.index("obscure")
+
+
+def test_fetch_symbols_size_breaks_caller_tie(conn, tmp_path):
+    # Both have 0 callers; big should come before small due to size (end_line - line).
+    big = _insert_symbol(conn, tmp_path, "big", end_line=50)
+    small = _insert_symbol(conn, tmp_path, "small", end_line=5)
+
+    rows = _fetch_symbols(conn, 10, Scope())
+    names = [r[1] for r in rows if r[1] in ("big", "small")]
+    assert names.index("big") < names.index("small")
 
 
 # ---------------------------------------------------------------------------
