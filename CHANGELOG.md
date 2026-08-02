@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-## 0.2.4
-
 ### antislop: priority ordering
 
 `blerk antislop` now processes symbols in order of importance. Symbols with the most inbound callers go first, with function size (line count) as the tiebreaker. This ensures the `-n` budget is spent on the most-used code rather than arbitrary insertion order.
@@ -11,8 +9,6 @@
 ### Remove regexp symbolizer
 
 The regexp-based symbol extractor is removed. Tree-sitter is now the only extraction engine. The `symbolizer.engine` config field is ignored and can be removed from existing configs. Files with unsupported extensions (including `.md`) return no symbols instead of falling back to regexp.
-
-## 0.2.3
 
 ### Lint: severity scores and clone grouping
 
