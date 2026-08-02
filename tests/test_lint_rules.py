@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from blerk_cmd.lint_rules import build_scope, fat_class, wide_module
+from blerk_cmd.lint_rules import (
+    build_scope, fat_class, wide_module,
+    wide_package, dep_spread, split_class, mixed_abstraction,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -203,3 +206,191 @@ class TestWideModule:
         build_scope(conn, "", [])
         violations = wide_module(conn, "", 10, [])
         assert not violations
+
+
+# ---------------------------------------------------------------------------
+# wide_package tests
+# ---------------------------------------------------------------------------
+
+class TestWidePackage:
+    def test_fires_when_pkg_count_exceeds_threshold(self, conn):
+        caller_fid = _insert_file(conn, "src/hub.py")
+        s = _insert_symbol(conn, caller_fid, "hub_fn", "function", 1)
+        for i in range(6):
+            dep_fid = _insert_file(conn, f"pkg{i}/mod.py")
+            t = _insert_symbol(conn, dep_fid, f"fn_{i}", "function", 1)
+            _insert_ref(conn, s, t)
+
+        build_scope(conn, "", [])
+        violations = wide_package(conn, "", 5, [])
+        assert len(violations) == 1
+        assert violations[0][2] == "wide_package"
+        assert "6 packages" in violations[0][3]
+
+    def test_does_not_fire_at_threshold(self, conn):
+        caller_fid = _insert_file(conn, "src/hub.py")
+        s = _insert_symbol(conn, caller_fid, "hub_fn", "function", 1)
+        for i in range(5):
+            dep_fid = _insert_file(conn, f"pkg{i}/mod.py")
+            t = _insert_symbol(conn, dep_fid, f"fn_{i}", "function", 1)
+            _insert_ref(conn, s, t)
+
+        build_scope(conn, "", [])
+        assert not wide_package(conn, "", 5, [])
+
+    def test_multiple_symbols_same_package_counted_once(self, conn):
+        caller_fid = _insert_file(conn, "src/hub.py")
+        s = _insert_symbol(conn, caller_fid, "hub_fn", "function", 1)
+        for i in range(8):
+            dep_fid = _insert_file(conn, f"shared/dep_{i}.py")
+            t = _insert_symbol(conn, dep_fid, f"fn_{i}", "function", 1)
+            _insert_ref(conn, s, t)
+
+        build_scope(conn, "", [])
+        assert not wide_package(conn, "", 5, [])
+
+    def test_same_dir_calls_not_counted_as_separate_package(self, conn):
+        fid = _insert_file(conn, "pkg/a.py")
+        s = _insert_symbol(conn, fid, "fn_a", "function", 1)
+        for i in range(6):
+            dep_fid = _insert_file(conn, f"pkg/dep_{i}.py")
+            t = _insert_symbol(conn, dep_fid, f"fn_{i}", "function", 1)
+            _insert_ref(conn, s, t)
+
+        build_scope(conn, "", [])
+        assert not wide_package(conn, "", 5, [])
+
+
+# ---------------------------------------------------------------------------
+# dep_spread tests
+# ---------------------------------------------------------------------------
+
+class TestDepSpread:
+    def test_fires_when_spread_high(self, conn):
+        fid = _insert_file(conn, "src/thin.py")
+        s = _insert_symbol(conn, fid, "fn", "function", 1)
+        for i in range(6):
+            dep_fid = _insert_file(conn, f"dep/d_{i}.py")
+            t = _insert_symbol(conn, dep_fid, f"fn_{i}", "function", 1)
+            _insert_ref(conn, s, t)
+
+        build_scope(conn, "", [])
+        violations = dep_spread(conn, "", 100, [])
+        assert len(violations) == 1
+        assert violations[0][2] == "dep_spread"
+
+    def test_does_not_fire_when_spread_low(self, conn):
+        fid = _insert_file(conn, "src/fat.py")
+        dep_fid = _insert_file(conn, "dep/shared.py")
+        for i in range(10):
+            s = _insert_symbol(conn, fid, f"fn_{i}", "function", i + 1)
+            t = _insert_symbol(conn, dep_fid, f"dep_{i}", "function", i + 1)
+            _insert_ref(conn, s, t)
+
+        build_scope(conn, "", [])
+        assert not dep_spread(conn, "", 100, [])
+
+    def test_zero_deps_no_violation(self, conn):
+        fid = _insert_file(conn, "src/isolated.py")
+        _insert_symbol(conn, fid, "fn", "function", 1)
+
+        build_scope(conn, "", [])
+        assert not dep_spread(conn, "", 10, [])
+
+
+# ---------------------------------------------------------------------------
+# split_class tests
+# ---------------------------------------------------------------------------
+
+class TestSplitClass:
+    def test_disconnected_methods_flagged(self, conn):
+        fid = _insert_file(conn, "src/mixed.py")
+        _insert_symbol(conn, fid, "MyClass", "class", 1, 50)
+        _insert_symbol(conn, fid, "group_a", "method", 2, 10)
+        _insert_symbol(conn, fid, "group_b", "method", 12, 20)
+
+        build_scope(conn, "", [])
+        violations = split_class(conn, "", 2, [])
+        assert len(violations) == 1
+        assert violations[0][2] == "split_class"
+
+    def test_connected_methods_not_flagged(self, conn):
+        fid = _insert_file(conn, "src/cohesive.py")
+        _insert_symbol(conn, fid, "MyClass", "class", 1, 50)
+        m1 = _insert_symbol(conn, fid, "method_a", "method", 2, 10)
+        m2 = _insert_symbol(conn, fid, "method_b", "method", 12, 20)
+        _insert_ref(conn, m1, m2)
+
+        build_scope(conn, "", [])
+        assert not split_class(conn, "", 2, [])
+
+    def test_single_method_class_not_flagged(self, conn):
+        fid = _insert_file(conn, "src/tiny.py")
+        _insert_symbol(conn, fid, "Tiny", "class", 1, 20)
+        _insert_symbol(conn, fid, "only_method", "method", 2, 10)
+
+        build_scope(conn, "", [])
+        assert not split_class(conn, "", 2, [])
+
+    def test_three_disconnected_groups_flagged(self, conn):
+        fid = _insert_file(conn, "src/god.py")
+        _insert_symbol(conn, fid, "GodClass", "class", 1, 100)
+        _insert_symbol(conn, fid, "a1", "method", 2, 10)
+        _insert_symbol(conn, fid, "b1", "method", 20, 30)
+        _insert_symbol(conn, fid, "c1", "method", 40, 50)
+
+        build_scope(conn, "", [])
+        violations = split_class(conn, "", 2, [])
+        assert len(violations) == 1
+        assert "3" in violations[0][3]
+
+
+# ---------------------------------------------------------------------------
+# mixed_abstraction tests
+# ---------------------------------------------------------------------------
+
+class TestMixedAbstraction:
+    def _make_high_inbound(self, conn, path: str, n_callers: int) -> int:
+        dep_fid = _insert_file(conn, path)
+        dep_sid = _insert_symbol(conn, dep_fid, "dep_fn", "function", 1)
+        for i in range(n_callers):
+            other_fid = _insert_file(conn, f"other_{i}_{path}")
+            other_sid = _insert_symbol(conn, other_fid, f"other_fn_{i}", "function", 1)
+            _insert_ref(conn, other_sid, dep_sid)
+        return dep_sid
+
+    def test_fires_when_mixing_high_and_low(self, conn):
+        caller_fid = _insert_file(conn, "src/mixed.py")
+        caller_sid = _insert_symbol(conn, caller_fid, "mixed_fn", "function", 1)
+        for i in range(2):
+            h_sid = self._make_high_inbound(conn, f"high_{i}.py", 5)
+            _insert_ref(conn, caller_sid, h_sid)
+        for i in range(2):
+            low_fid = _insert_file(conn, f"low_{i}.py")
+            low_sid = _insert_symbol(conn, low_fid, "low_fn", "function", 1)
+            _insert_ref(conn, caller_sid, low_sid)
+
+        build_scope(conn, "", [])
+        violations = mixed_abstraction(conn, "", 2, [])
+        assert any(v[2] == "mixed_abstraction" for v in violations)
+
+    def test_only_high_inbound_deps_no_violation(self, conn):
+        caller_fid = _insert_file(conn, "src/pure.py")
+        caller_sid = _insert_symbol(conn, caller_fid, "pure_fn", "function", 1)
+        for i in range(3):
+            h_sid = self._make_high_inbound(conn, f"util_{i}.py", 5)
+            _insert_ref(conn, caller_sid, h_sid)
+
+        build_scope(conn, "", [])
+        assert not mixed_abstraction(conn, "", 2, [])
+
+    def test_only_low_inbound_deps_no_violation(self, conn):
+        caller_fid = _insert_file(conn, "src/leaf.py")
+        caller_sid = _insert_symbol(conn, caller_fid, "leaf_fn", "function", 1)
+        for i in range(3):
+            low_fid = _insert_file(conn, f"detail_{i}.py")
+            low_sid = _insert_symbol(conn, low_fid, "detail_fn", "function", 1)
+            _insert_ref(conn, caller_sid, low_sid)
+
+        build_scope(conn, "", [])
+        assert not mixed_abstraction(conn, "", 2, [])

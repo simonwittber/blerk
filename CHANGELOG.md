@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## 0.2.2
+
+### Four new SRP lint rules
+
+`wide_package` (default on, threshold 5): flags files that import from more than N distinct packages. Runs by default.
+
+`dep_spread` (opt-in): flags files where the ratio of distinct dependency files to total symbols exceeds a percentage threshold. Enable with `--max-dep-spread N`.
+
+`split_class` (opt-in): flags classes whose methods form two or more disconnected groups with no shared calls between them (LCOM). Enable with `--max-cohesion N`.
+
+`mixed_abstraction` (opt-in): flags files that call into both widely-shared utility modules and leaf-level implementation modules in the same function. Enable with `--abstraction-threshold N`.
+
 ## 0.2.1
 
 ### Config section renamed: [confusing] to [antislop]

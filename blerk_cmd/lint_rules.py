@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable
 
@@ -339,3 +341,157 @@ def static_symbol(conn, directory: str, threshold: int, excludes: list[str] = []
     ).fetchall()
     return [(path, line, "static_symbol", f"{name} ({kind})")
             for path, name, line, kind in rows]
+
+
+def _union_find_components(nodes: set[int], edges: list[tuple[int, int]]) -> int:
+    parent = {n: n for n in nodes}
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for a, b in edges:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+    return len({find(n) for n in nodes})
+
+
+@rule(default=5, flag="max-pkg-deps", help="max distinct packages a file may import from (SRP hint, default: 5)")
+def wide_package(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT lf.path, f2.path
+        FROM _lint_files lf
+        JOIN symbols s1 ON s1.file_id = lf.file_id
+        JOIN symbol_refs sr ON sr.caller_id = s1.id
+        JOIN symbols s2 ON s2.id = sr.callee_id
+        JOIN files f2 ON f2.id = s2.file_id
+        WHERE f2.id != lf.file_id
+        """,
+    ).fetchall()
+    pkg_deps: dict[str, set[str]] = defaultdict(set)
+    for caller, callee in rows:
+        pkg_deps[caller].add(os.path.dirname(callee.replace("\\", "/")))
+    return [
+        (p, 1, "wide_package", f"{len(pkgs)} packages")
+        for p, pkgs in pkg_deps.items()
+        if len(pkgs) > threshold
+    ]
+
+
+@rule(default=-1, flag="max-dep-spread", help="max dep-file/symbol ratio as integer percent (opt-in)")
+def dep_spread(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT lf.path, f2.path
+        FROM _lint_files lf
+        JOIN symbols s1 ON s1.file_id = lf.file_id
+        JOIN symbol_refs sr ON sr.caller_id = s1.id
+        JOIN symbols s2 ON s2.id = sr.callee_id
+        JOIN files f2 ON f2.id = s2.file_id
+        WHERE f2.id != lf.file_id
+        """,
+    ).fetchall()
+    dep_files: dict[str, set[str]] = defaultdict(set)
+    for caller, callee in rows:
+        dep_files[caller].add(callee)
+
+    sym_counts = dict(conn.execute(
+        """
+        SELECT lf.path, COUNT(s.id)
+        FROM _lint_files lf
+        JOIN symbols s ON s.file_id = lf.file_id
+        GROUP BY lf.path
+        """,
+    ).fetchall())
+
+    violations: list[Violation] = []
+    for p, deps in dep_files.items():
+        total = max(sym_counts.get(p, 1), 1)
+        ratio = int(len(deps) * 100 / total)
+        if ratio > threshold:
+            violations.append((p, 1, "dep_spread", f"{ratio}% spread ({len(deps)} deps, {total} symbols)"))
+    return violations
+
+
+@rule(default=-1, flag="max-cohesion", help="flag classes with N+ disconnected method groups (LCOM, opt-in)")
+def split_class(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    class_methods = conn.execute(
+        """
+        SELECT c.id, c.name, m.id, lf.path
+        FROM _lint_files lf
+        JOIN symbols c ON c.file_id = lf.file_id
+          AND c.kind IN ('class', 'struct')
+          AND c.end_line IS NOT NULL
+        JOIN symbols m ON m.file_id = lf.file_id
+          AND m.kind IN ('method', 'function')
+          AND m.line > c.line
+          AND m.end_line <= c.end_line
+        """,
+    ).fetchall()
+    if not class_methods:
+        return []
+
+    class_info: dict[tuple[int, str], tuple[str, set[int]]] = {}
+    for cid, cname, mid, path in class_methods:
+        key = (cid, path)
+        if key not in class_info:
+            class_info[key] = (cname, set())
+        class_info[key][1].add(mid)
+
+    method_ids = {mid for _, (_, mids) in class_info.items() for mid in mids}
+    placeholders = ",".join("?" * len(method_ids))
+    ref_rows = conn.execute(
+        f"""
+        SELECT sr.caller_id, sr.callee_id
+        FROM symbol_refs sr
+        WHERE sr.caller_id IN ({placeholders})
+          AND sr.callee_id IN ({placeholders})
+        """,
+        list(method_ids) + list(method_ids),
+    ).fetchall()
+    all_edges = list(ref_rows)
+
+    violations: list[Violation] = []
+    for (_, path), (cname, mids) in class_info.items():
+        if len(mids) < 2:
+            continue
+        class_edges = [(a, b) for a, b in all_edges if a in mids and b in mids]
+        n = _union_find_components(mids, class_edges)
+        if n >= threshold:
+            violations.append((path, 1, "split_class", f"{cname} ({n} disconnected method groups)"))
+    return violations
+
+
+@rule(default=-1, flag="abstraction-threshold", help="flag files mixing high- and low-inbound deps (opt-in)")
+def mixed_abstraction(conn, directory: str, threshold: int, excludes: list[str] = []) -> list[Violation]:
+    rows = conn.execute(
+        """
+        WITH inbound AS (
+            SELECT s2.file_id, COUNT(DISTINCT s1.file_id) AS caller_count
+            FROM symbol_refs sr
+            JOIN symbols s1 ON s1.id = sr.caller_id
+            JOIN symbols s2 ON s2.id = sr.callee_id
+            WHERE s1.file_id != s2.file_id
+            GROUP BY s2.file_id
+        )
+        SELECT lf.path,
+               COUNT(DISTINCT CASE WHEN COALESCE(i.caller_count, 0) >= 5 THEN f2.id END) AS high,
+               COUNT(DISTINCT CASE WHEN COALESCE(i.caller_count, 0) <= 1 THEN f2.id END) AS low
+        FROM _lint_files lf
+        JOIN symbols s1 ON s1.file_id = lf.file_id
+        JOIN symbol_refs sr ON sr.caller_id = s1.id
+        JOIN symbols s2 ON s2.id = sr.callee_id
+        JOIN files f2 ON f2.id = s2.file_id
+        LEFT JOIN inbound i ON i.file_id = f2.id
+        WHERE f2.id != lf.file_id
+        GROUP BY lf.path
+        HAVING high >= ? AND low >= ?
+        """,
+        (threshold, threshold),
+    ).fetchall()
+    return [
+        (path, 1, "mixed_abstraction", f"mixes {high} high-level + {low} low-level deps")
+        for path, high, low in rows
+    ]
