@@ -48,14 +48,15 @@ def hash_file(path: str) -> str:
 
 
 def upsert_file(conn: sqlite3.Connection, path: str) -> None:
+    real = os.path.realpath(path)
     try:
-        st = os.lstat(path)
+        st = os.lstat(real)
     except OSError:
         return
     mtime = int(st.st_mtime)
     size = int(st.st_size)
 
-    stored = to_slash(path)
+    stored = to_slash(real)
     try:
         with _conn_lock:
             row = conn.execute(
@@ -68,7 +69,7 @@ def upsert_file(conn: sqlite3.Connection, path: str) -> None:
         return
 
     try:
-        h = hash_file(path)
+        h = hash_file(real)
     except OSError:
         return
 
@@ -87,7 +88,7 @@ def upsert_file(conn: sqlite3.Connection, path: str) -> None:
 
 
 def delete_file(conn: sqlite3.Connection, path: str) -> None:
-    stored = to_slash(path)
+    stored = to_slash(os.path.realpath(path))
     try:
         with _conn_lock:
             conn.execute("DELETE FROM files WHERE path=?", (stored,))

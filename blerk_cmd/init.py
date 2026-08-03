@@ -121,6 +121,36 @@ UserSettings/
 *.meta
 ~UnityDirMonSyncFile~*
 
+# Unity binary assets (textures, audio, video, models, fonts)
+*.png
+*.jpg
+*.jpeg
+*.tga
+*.tiff
+*.tif
+*.psd
+*.gif
+*.bmp
+*.exr
+*.hdr
+*.wav
+*.mp3
+*.ogg
+*.aiff
+*.aif
+*.mp4
+*.mov
+*.avi
+*.webm
+*.fbx
+*.obj
+*.dae
+*.blend
+*.ttf
+*.otf
+*.cubemap
+*.unitypackage
+
 # Python virtualenvs
 .venv/
 venv/

@@ -30,7 +30,9 @@ def _table_exists(conn, name: str) -> bool:
 
 
 def test_open_creates_schema(conn):
-    for tbl in ["files", "symbols", "embeddings", "symbol_queue", "git_queue", "description_queue", "embedding_queue", "daemon_status", "symbol_refs"]:
+    for tbl in ["files", "symbols", "embeddings", "symbol_queue", "git_queue",
+                "description_queue", "embedding_queue", "daemon_status", "symbol_refs",
+                "analyzers", "analyzer_rules", "findings"]:
         assert _table_exists(conn, tbl), f"missing table {tbl}"
 
 
@@ -278,3 +280,97 @@ def test_write_heartbeat_insert_and_update(conn):
 
     count = int(conn.execute("SELECT COUNT(*) FROM daemon_status WHERE daemon=?", ("test-daemon",)).fetchone()[0])
     assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# get_or_create_rule tests
+# ---------------------------------------------------------------------------
+
+def test_get_or_create_rule_returns_id(conn):
+    rid = db.get_or_create_rule(conn, "antislop", "confusing", "warning", "desc")
+    assert isinstance(rid, int)
+    assert rid > 0
+
+
+def test_get_or_create_rule_is_idempotent(conn):
+    rid1 = db.get_or_create_rule(conn, "antislop", "confusing", "warning", "desc")
+    rid2 = db.get_or_create_rule(conn, "antislop", "confusing", "warning", "desc updated")
+    assert rid1 == rid2
+
+
+def test_get_or_create_rule_updates_description(conn):
+    db.get_or_create_rule(conn, "antislop", "confusing", "warning", "original")
+    db.get_or_create_rule(conn, "antislop", "confusing", "warning", "updated")
+    row = conn.execute(
+        "SELECT ar.description FROM analyzer_rules ar"
+        " JOIN analyzers a ON a.id = ar.analyzer_id"
+        " WHERE a.name='antislop' AND ar.name='confusing'"
+    ).fetchone()
+    assert row[0] == "updated"
+
+
+def test_get_or_create_rule_different_rules_different_ids(conn):
+    rid1 = db.get_or_create_rule(conn, "myanalyzer", "rule_a", "error", "desc a")
+    rid2 = db.get_or_create_rule(conn, "myanalyzer", "rule_b", "warning", "desc b")
+    assert rid1 != rid2
+
+
+# ---------------------------------------------------------------------------
+# ensure_analyzers tests
+# ---------------------------------------------------------------------------
+
+class _FakeRule:
+    def __init__(self, name, severity, description):
+        self.name = name
+        self.severity = severity
+        self.description = description
+
+
+class _FakeAnalyzer:
+    def __init__(self, name, description, rules):
+        self.name = name
+        self.description = description
+        self.rules = rules
+
+
+def test_ensure_analyzers_returns_mapping(conn):
+    rules = [_FakeRule("r1", "error", "desc1"), _FakeRule("r2", "warning", "desc2")]
+    analyzer = _FakeAnalyzer("myanalyzer", "My analyzer", rules)
+    result = db.ensure_analyzers(conn, [analyzer])
+    assert "myanalyzer" in result
+    assert "r1" in result["myanalyzer"]
+    assert "r2" in result["myanalyzer"]
+    assert result["myanalyzer"]["r1"] != result["myanalyzer"]["r2"]
+
+
+def test_ensure_analyzers_is_idempotent(conn):
+    rules = [_FakeRule("r1", "error", "desc1")]
+    analyzer = _FakeAnalyzer("myanalyzer", "desc", rules)
+    result1 = db.ensure_analyzers(conn, [analyzer])
+    result2 = db.ensure_analyzers(conn, [analyzer])
+    assert result1 == result2
+
+
+def test_ensure_analyzers_updates_rule_description(conn):
+    rules_v1 = [_FakeRule("r1", "error", "original")]
+    rules_v2 = [_FakeRule("r1", "error", "updated")]
+    db.ensure_analyzers(conn, [_FakeAnalyzer("a", "", rules_v1)])
+    db.ensure_analyzers(conn, [_FakeAnalyzer("a", "", rules_v2)])
+    row = conn.execute(
+        "SELECT ar.description FROM analyzer_rules ar"
+        " JOIN analyzers a ON a.id = ar.analyzer_id"
+        " WHERE a.name='a' AND ar.name='r1'"
+    ).fetchone()
+    assert row[0] == "updated"
+
+
+def test_ensure_analyzers_orphan_rules_stay(conn):
+    rules = [_FakeRule("r1", "error", "desc"), _FakeRule("r2", "warning", "desc")]
+    db.ensure_analyzers(conn, [_FakeAnalyzer("a", "", rules)])
+    # Second run with only r1
+    db.ensure_analyzers(conn, [_FakeAnalyzer("a", "", [_FakeRule("r1", "error", "desc")])])
+    count = conn.execute(
+        "SELECT COUNT(*) FROM analyzer_rules ar"
+        " JOIN analyzers a ON a.id = ar.analyzer_id WHERE a.name='a'"
+    ).fetchone()[0]
+    assert count == 2

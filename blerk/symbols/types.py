@@ -122,8 +122,7 @@ def build_context(path: str, target_line: int, target_end_line: int, max_chars: 
     lines = text.split("\n")
     if len(data) <= max_chars:
         return _insert_markers(lines, target_line, target_end_line)
-    from blerk.symbols.regexp_extractor import extract_from_lines
-    ext = os.path.splitext(path)[1].lower()
-    lang = EXT_TO_LANG.get(ext, "")
-    syms = extract_from_lines(lang, lines) if lang else []
+    # File exceeds max_chars: strip other symbol bodies using tree-sitter.
+    from blerk.symbols.treesitter_extractor import Extractor
+    syms, _ = Extractor().extract(path)
     return _build_stripped(lines, syms, target_line, target_end_line)

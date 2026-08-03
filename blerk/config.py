@@ -94,6 +94,29 @@ class Antislop:
 
 
 @dataclass
+class AnalyzerRule:
+    name: str = ""
+    severity: str = "warning"
+    description: str = ""
+
+
+@dataclass
+class Analyzer:
+    name: str = ""
+    description: str = ""
+    endpoint: str = ""
+    model: str = ""
+    api_key: str = ""
+    min_lines: int = 5
+    kinds: list[str] = field(default_factory=lambda: ["function", "method"])
+    extensions: list[str] = field(default_factory=list)
+    confidence: float = 0.7
+    max_context_callers: int = 3
+    max_context_callees: int = 5
+    rules: list[AnalyzerRule] = field(default_factory=list)
+
+
+@dataclass
 class Coordinator:
     port: int = 0
 
@@ -112,6 +135,7 @@ class Lint:
 @dataclass
 class Config:
     secrets_file: str = ""
+    analyzers_file: str = ""
     db: DB = field(default_factory=DB)
     watch: Watch = field(default_factory=Watch)
     symbolizer: Symbolizer = field(default_factory=Symbolizer)
@@ -128,6 +152,7 @@ class Config:
 def defaults() -> Config:
     return Config(
         secrets_file="~/.blerk/secrets.toml",
+        analyzers_file="~/.blerk/analyzers.toml",
         db=DB(path="~/.blerk/blerk.db"),
         watch=Watch(debounce_ms=100, ignore_file="~/.blerk/ignore"),
         symbolizer=Symbolizer(
@@ -217,6 +242,7 @@ def load(path: str) -> Config:
     _merge(cfg, data)
 
     cfg.db.path = expand_home(cfg.db.path)
+    cfg.analyzers_file = expand_home(cfg.analyzers_file)
     cfg.watch.folders = [expand_home(p) for p in cfg.watch.folders]
     cfg.watch.ignore_file = expand_home(cfg.watch.ignore_file)
 
@@ -237,3 +263,37 @@ def load(path: str) -> Config:
         pass
 
     return cfg
+
+
+def load_analyzers_file(path: str) -> list[Analyzer]:
+    path = expand_home(path)
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        return []
+    result: list[Analyzer] = []
+    for a in data.get("analyzers", []):
+        rules = [
+            AnalyzerRule(
+                name=r.get("name", ""),
+                severity=r.get("severity", "warning"),
+                description=r.get("description", ""),
+            )
+            for r in a.get("rules", [])
+        ]
+        result.append(Analyzer(
+            name=a.get("name", ""),
+            description=a.get("description", ""),
+            endpoint=a.get("endpoint", ""),
+            model=a.get("model", ""),
+            api_key=a.get("api_key", ""),
+            min_lines=a.get("min_lines", 5),
+            kinds=a.get("kinds", ["function", "method"]),
+            extensions=a.get("extensions", []),
+            confidence=a.get("confidence", 0.7),
+            max_context_callers=a.get("max_context_callers", 3),
+            max_context_callees=a.get("max_context_callees", 5),
+            rules=rules,
+        ))
+    return result

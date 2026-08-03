@@ -19,7 +19,7 @@ log = logging.getLogger("git-enricher")
 
 
 def find_git_root(directory: str) -> str | None:
-    directory = os.path.abspath(directory)
+    directory = os.path.realpath(directory)
     while True:
         if os.path.exists(os.path.join(directory, ".git")):
             return directory

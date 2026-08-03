@@ -2,6 +2,72 @@
 
 ## [Unreleased]
 
+### blerk findings
+
+A new `blerk findings` command reads stored findings from the database and prints them.
+It replaces having to re-run `blerk analyze` to see results, since `blerk analyze` skips already-analyzed symbols.
+
+**Flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dir PATH` | cwd | Restrict to a path substring. |
+| `--ext EXT` | (all) | Filter by file extension. Repeatable. |
+| `--exclude PATTERN` | (none) | Exclude paths matching a glob pattern. Repeatable. |
+| `--analyzer NAME` | (all) | Filter by analyzer name. Repeatable. |
+| `--rule RULE` | (all) | Filter by rule name. Repeatable. |
+| `--severity error\|warning\|info` | (all) | Filter by severity. |
+| `--min-confidence FLOAT` | 0.0 | Minimum confidence threshold. |
+| `--output text\|json` | text | Output format. |
+
+### Path normalization: symlink resolution
+
+All commands that accept a `--dir` argument now resolve symlinks via `os.path.realpath` before using the path as a filter.
+The watcher also resolves symlinks when storing file paths in the database.
+This ensures that paths accessed through a symlinked directory match stored paths correctly.
+
+### blerk analyze
+
+A new `blerk analyze` command runs configurable LLM rule checks against indexed symbols.
+Rules are plain text descriptions stored in `~/.blerk/analyzers.toml`.
+The LLM checks each symbol against every rule in the analyzer and returns findings with a severity, a message, and a confidence score.
+
+Findings are stored in a new `findings` table, keyed by `(symbol_id, rule_id)`.
+Repeated runs skip symbols that already have a finding for the active rules.
+Use `--reset` to delete existing findings and re-run from scratch.
+
+Two new tables, `analyzers` and `analyzer_rules`, store the rule definitions.
+`blerk analyze` upserts from the config file on each run.
+Rules removed from the config file stay in the database as orphans until you delete them explicitly.
+Renaming a rule creates a new `rule_id` and leaves old findings intact.
+
+If you change a rule's description in the config file, the database row updates on the next run.
+Existing findings were produced by the old description and are not marked stale.
+Run `blerk analyze --reset --analyzer <name>` after changing a rule to get a consistent set of findings.
+
+**Flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--analyzer NAME` | all | Run only this analyzer. Repeatable. |
+| `--dir PATH` | (all) | Restrict to a path substring. |
+| `--ext EXT` | (all) | Filter by file extension. Repeatable. |
+| `--rule RULE` | (all) | Run only this rule. Repeatable. |
+| `--min-confidence FLOAT` | from config | Override the minimum confidence to record. |
+| `--limit N` | 0 (all) | Check at most N symbols. |
+| `--output text\|json` | text | Output format. |
+| `--no-save` | off | Print findings but do not write to the database. |
+| `--reset` | off | Delete existing findings for selected analyzers, then exit. |
+
+### antislop: migrated to findings table
+
+`blerk antislop` now stores results in the `findings` table instead of `symbol_tags`.
+The schema migration removes all existing `confusing` and `confusing_reason` tags.
+Run `blerk antislop` again to re-populate findings after the upgrade.
+
+The `--reset` flag now deletes findings rows for the antislop rule instead of deleting tags.
+The output and behavior are otherwise unchanged.
+
 ### antislop: priority ordering
 
 `blerk antislop` now processes symbols in order of importance. Symbols with the most inbound callers go first, with function size (line count) as the tiebreaker. This ensures the `-n` budget is spent on the most-used code rather than arbitrary insertion order.

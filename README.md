@@ -2,12 +2,13 @@
 
 blerk indexes source code into a local SQLite database and lets you search it with natural language. It watches folders, extracts symbols, adds git metadata, generates LLM descriptions, and stores vector embeddings for semantic search.
 
-It also provides tools to counter slop: AI coding assistants generate code quickly, but that code can be long, repetitive, deeply nested, or just confusing without additional context. blerk gives you two tools to find and track these problems before they accumulate.
+It also provides tools to find code quality problems before they accumulate.
 
 - **`blerk lint`** checks every indexed function against structural rules: line count, parameter count, nesting depth, duplicate detection, and several design hints. It uses a per-directory `.blerk` config file to suppress known false positives.
-- **`blerk antislop`** asks an LLM whether each function looks confusing or pointless without extra context. It tags results in the index so you can query or filter on them later.
+- **`blerk antislop`** asks an LLM whether each function looks confusing or pointless without extra context. It stores results in the index so you can query or filter on them later.
+- **`blerk analyze`** runs configurable LLM rule checks against indexed symbols. You define rules as plain text descriptions in `~/.blerk/analyzers.toml`. Results are stored as findings with severity, message, and confidence scores.
 
-Run both regularly as you accept AI-generated code to keep the codebase from drifting toward unmaintainable complexity.
+Run these regularly as you accept AI-generated code to keep the codebase from drifting toward unmaintainable complexity.
 
 ## Why blerk exists
 
@@ -25,6 +26,7 @@ The MCP tools blerk exposes are:
 - `browse` - lists all symbols in a directory with their signatures and line ranges. Useful for orienting in an unfamiliar package before doing targeted searches.
 - `lint` - runs lint rules against the indexed codebase and returns violations.
 - `antislop` - tags functions that look confusing or pointless.
+- `analyze` - runs configurable LLM rule checks and returns findings.
 
 
 ## Requirements
@@ -67,7 +69,8 @@ Run `blerk` once with no config to generate a default file, or copy and edit the
 ### Full example config
 
 ```toml
-secrets_file = "~/.blerk/secrets.toml"
+secrets_file    = "~/.blerk/secrets.toml"
+analyzers_file  = "~/.blerk/analyzers.toml"
 
 [db]
 path = "~/.blerk/blerk.db"

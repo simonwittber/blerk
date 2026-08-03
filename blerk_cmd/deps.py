@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
                         metavar="DIR", help="restrict to directory (default: cwd)")
     args = parser.parse_args(argv)
 
-    directory = os.path.abspath(args.directory) if args.directory else os.getcwd()
+    directory = os.path.realpath(args.directory or ".")
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
     print(deps(conn, directory))

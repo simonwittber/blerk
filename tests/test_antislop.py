@@ -1,30 +1,30 @@
 from __future__ import annotations
 
-import io
-import sys
-
 import pytest
 
-from blerk import config
+from blerk import config, db
 from blerk_cmd import antislop
-from blerk_cmd.antislop import Scope, _fetch_symbols, _parse_response, reset_tags, sweep
+from blerk_cmd.antislop import Scope, _fetch_symbols, _parse_response, reset_findings, sweep
+
+_RULE_DESC = "The function looks confusing or pointless without additional context."
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _make_cfg(min_lines: int = 3) -> config.Config:
+def _make_cfg() -> config.Config:
     cfg = config.defaults()
-    cfg.symbolizer.min_describe_lines = min_lines
     cfg.antislop.endpoint = "http://localhost:11434"
     cfg.antislop.model = "llama3.2"
     return cfg
 
 
-def _insert_symbol(conn, tmp_path, name: str, kind: str = "function",
-                   snippet: str = "def foo():\n    pass\n    pass\n    pass\n",
-                   params: str = "", end_line: int = 10) -> int:
+def _insert_symbol(
+    conn,
+    tmp_path,
+    name: str,
+    kind: str = "function",
+    snippet: str = "def foo():\n    pass\n    pass\n    pass\n",
+    params: str = "",
+    end_line: int = 10,
+) -> int:
     p = str(tmp_path / f"{name}.py")
     cur = conn.execute(
         "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
@@ -32,24 +32,39 @@ def _insert_symbol(conn, tmp_path, name: str, kind: str = "function",
     )
     fid = int(cur.lastrowid)
     cur = conn.execute(
-        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, params) VALUES(?,?,?,?,?,?,?)",
+        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, params)"
+        " VALUES(?,?,?,?,?,?,?)",
         (fid, name, kind, 1, end_line, snippet, params),
     )
     return int(cur.lastrowid)
 
 
-def _tag(conn, sid: int, key: str, value: str) -> None:
+def _insert_ref(conn, caller_id: int, callee_id: int) -> None:
     conn.execute(
-        "INSERT OR REPLACE INTO symbol_tags(symbol_id, key, value) VALUES(?,?,?)",
-        (sid, key, value),
+        "INSERT OR IGNORE INTO symbol_refs(caller_id, callee_id) VALUES(?,?)",
+        (caller_id, callee_id),
     )
 
 
-def _get_tags(conn, sid: int) -> dict[str, str]:
-    rows = conn.execute(
-        "SELECT key, value FROM symbol_tags WHERE symbol_id=?", (sid,)
-    ).fetchall()
-    return {k: v for k, v in rows}
+def _rule_id(conn) -> int:
+    return db.get_or_create_rule(conn, "antislop", "confusing", "warning", _RULE_DESC)
+
+
+def _set_finding(conn, sid: int, rid: int, message: str, confidence: float) -> None:
+    with db._write_lock:
+        conn.execute(
+            "INSERT OR REPLACE INTO findings(symbol_id, rule_id, message, confidence)"
+            " VALUES(?,?,?,?)",
+            (sid, rid, message, confidence),
+        )
+
+
+def _get_finding(conn, sid: int, rid: int) -> tuple[str, float] | None:
+    row = conn.execute(
+        "SELECT message, confidence FROM findings WHERE symbol_id=? AND rule_id=?",
+        (sid, rid),
+    ).fetchone()
+    return (row[0], row[1]) if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -83,41 +98,31 @@ def test_parse_malformed():
 # _fetch_symbols ordering tests
 # ---------------------------------------------------------------------------
 
-def _insert_ref(conn, caller_id: int, callee_id: int) -> None:
-    conn.execute(
-        "INSERT OR IGNORE INTO symbol_refs(caller_id, callee_id) VALUES(?,?)",
-        (caller_id, callee_id),
-    )
-
-
 def test_fetch_symbols_ordered_by_callers_then_size(conn, tmp_path):
-    # popular: 3 callers, short body
+    rid = _rule_id(conn)
     popular = _insert_symbol(conn, tmp_path, "popular", snippet="def popular():\n    pass\n")
-    # obscure: 0 callers, long body
     obscure = _insert_symbol(conn, tmp_path, "obscure",
                              snippet="def obscure():\n" + "    x = 1\n" * 20)
-    # mid: 1 caller, short body
     mid = _insert_symbol(conn, tmp_path, "mid", snippet="def mid():\n    pass\n")
 
-    # Add callers for popular (3 distinct callers) and mid (1 caller).
     for i in range(3):
         caller = _insert_symbol(conn, tmp_path, f"caller_{i}")
         _insert_ref(conn, caller, popular)
     caller_mid = _insert_symbol(conn, tmp_path, "caller_mid")
     _insert_ref(conn, caller_mid, mid)
 
-    rows = _fetch_symbols(conn, 10, Scope())
+    rows = _fetch_symbols(conn, 10, rid, Scope())
     names = [r[1] for r in rows if r[1] in ("popular", "mid", "obscure")]
     assert names.index("popular") < names.index("mid")
     assert names.index("mid") < names.index("obscure")
 
 
 def test_fetch_symbols_size_breaks_caller_tie(conn, tmp_path):
-    # Both have 0 callers; big should come before small due to size (end_line - line).
-    big = _insert_symbol(conn, tmp_path, "big", end_line=50)
-    small = _insert_symbol(conn, tmp_path, "small", end_line=5)
+    rid = _rule_id(conn)
+    _insert_symbol(conn, tmp_path, "big", end_line=50)
+    _insert_symbol(conn, tmp_path, "small", end_line=5)
 
-    rows = _fetch_symbols(conn, 10, Scope())
+    rows = _fetch_symbols(conn, 10, rid, Scope())
     names = [r[1] for r in rows if r[1] in ("big", "small")]
     assert names.index("big") < names.index("small")
 
@@ -126,81 +131,85 @@ def test_fetch_symbols_size_breaks_caller_tie(conn, tmp_path):
 # sweep behaviour tests
 # ---------------------------------------------------------------------------
 
-def test_clear_response_stores_false_no_reason(conn, tmp_path, monkeypatch):
+def test_clear_response_stores_finding(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
+    rid = _rule_id(conn)
     sid = _insert_symbol(conn, tmp_path, "foo")
 
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "CLEAR")
+    sweep(conn, cfg, n=10, scope=Scope(), rule_id=rid)
 
-    sweep(conn, cfg, n=10, scope=Scope())
+    finding = _get_finding(conn, sid, rid)
+    assert finding is not None
+    assert finding[0] == ""
+    assert finding[1] == 0.0
 
-    tags = _get_tags(conn, sid)
-    assert tags.get("confusing") == "false"
-    assert "confusing_reason" not in tags
 
-
-def test_confusing_response_stores_true_and_reason(conn, tmp_path, monkeypatch):
+def test_confusing_response_stores_finding_with_reason(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
+    rid = _rule_id(conn)
     sid = _insert_symbol(conn, tmp_path, "bar")
 
     monkeypatch.setattr(
         antislop, "describe",
         lambda *a, **kw: "CONFUSING: This looks pointless.",
     )
+    sweep(conn, cfg, n=10, scope=Scope(), rule_id=rid)
 
-    sweep(conn, cfg, n=10, scope=Scope())
+    finding = _get_finding(conn, sid, rid)
+    assert finding is not None
+    assert finding[0] == "This looks pointless."
+    assert finding[1] == 1.0
 
-    tags = _get_tags(conn, sid)
-    assert tags.get("confusing") == "true"
-    assert tags.get("confusing_reason") == "This looks pointless."
 
-
-def test_already_tagged_symbols_are_skipped(conn, tmp_path, monkeypatch):
+def test_already_assessed_symbols_are_skipped(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
+    rid = _rule_id(conn)
     sid = _insert_symbol(conn, tmp_path, "already")
-    _tag(conn, sid, "confusing", "false")
+    _set_finding(conn, sid, rid, "", 0.0)
 
     calls = []
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
-
-    sweep(conn, cfg, n=10, scope=Scope())
+    sweep(conn, cfg, n=10, scope=Scope(), rule_id=rid)
 
     assert len(calls) == 0
 
 
 def test_symbols_without_snippet_are_skipped(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
+    rid = _rule_id(conn)
     p = str(tmp_path / "empty.py")
     cur = conn.execute("INSERT INTO files(path, mtime, hash) VALUES(?,?,?)", (p, 0, "h"))
     fid = int(cur.lastrowid)
     conn.execute(
-        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet) VALUES(?,?,?,?,?,?)",
+        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet)"
+        " VALUES(?,?,?,?,?,?)",
         (fid, "nosnipper", "function", 1, 5, ""),
     )
 
     calls = []
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
-
-    sweep(conn, cfg, n=10, scope=Scope())
+    sweep(conn, cfg, n=10, scope=Scope(), rule_id=rid)
 
     assert len(calls) == 0
 
 
 def test_n_limit_is_respected(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
+    rid = _rule_id(conn)
     for i in range(10):
         _insert_symbol(conn, tmp_path, f"sym{i}")
 
     calls = []
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
-
-    sweep(conn, cfg, n=3, scope=Scope())
+    sweep(conn, cfg, n=3, scope=Scope(), rule_id=rid)
 
     assert len(calls) == 3
 
 
 def test_dir_filter_works(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
+    rid = _rule_id(conn)
 
     sub = tmp_path / "subdir"
     sub.mkdir()
@@ -209,7 +218,8 @@ def test_dir_filter_works(conn, tmp_path, monkeypatch):
     cur = conn.execute("INSERT INTO files(path, mtime, hash) VALUES(?,?,?)", (p_in, 0, "h1"))
     fid_in = int(cur.lastrowid)
     conn.execute(
-        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet) VALUES(?,?,?,?,?,?)",
+        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet)"
+        " VALUES(?,?,?,?,?,?)",
         (fid_in, "inside_fn", "function", 1, 10, "def inside_fn():\n    x=1\n    y=2\n    z=3\n"),
     )
 
@@ -217,7 +227,8 @@ def test_dir_filter_works(conn, tmp_path, monkeypatch):
     cur = conn.execute("INSERT INTO files(path, mtime, hash) VALUES(?,?,?)", (p_out, 0, "h2"))
     fid_out = int(cur.lastrowid)
     conn.execute(
-        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet) VALUES(?,?,?,?,?,?)",
+        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet)"
+        " VALUES(?,?,?,?,?,?)",
         (fid_out, "outside_fn", "function", 1, 10, "def outside_fn():\n    x=1\n    y=2\n    z=3\n"),
     )
 
@@ -231,35 +242,33 @@ def test_dir_filter_works(conn, tmp_path, monkeypatch):
         return "CLEAR"
 
     monkeypatch.setattr(antislop, "describe", fake_describe)
-
-    sweep(conn, cfg, n=10, scope=Scope(directory=str(sub)))
+    sweep(conn, cfg, n=10, scope=Scope(directory=str(sub)), rule_id=rid)
 
     assert "inside_fn" in seen_names
     assert "outside_fn" not in seen_names
 
 
-def test_malformed_response_does_not_store_tag(conn, tmp_path, monkeypatch):
+def test_malformed_response_does_not_store_finding(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
+    rid = _rule_id(conn)
     sid = _insert_symbol(conn, tmp_path, "mystery")
 
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "DUNNO")
+    sweep(conn, cfg, n=10, scope=Scope(), rule_id=rid)
 
-    sweep(conn, cfg, n=10, scope=Scope())
-
-    tags = _get_tags(conn, sid)
-    assert "confusing" not in tags
+    assert _get_finding(conn, sid, rid) is None
 
 
 def test_output_contains_name_and_reason(conn, tmp_path, monkeypatch, capsys):
     cfg = _make_cfg()
+    rid = _rule_id(conn)
     _insert_symbol(conn, tmp_path, "weirdFunc")
 
     monkeypatch.setattr(
         antislop, "describe",
         lambda *a, **kw: "CONFUSING: This writes to a field that is never read.",
     )
-
-    sweep(conn, cfg, n=10, scope=Scope())
+    sweep(conn, cfg, n=10, scope=Scope(), rule_id=rid)
 
     captured = capsys.readouterr().out
     assert "weirdFunc" in captured
@@ -268,66 +277,65 @@ def test_output_contains_name_and_reason(conn, tmp_path, monkeypatch, capsys):
 
 def test_output_reports_assessed_and_skipped(conn, tmp_path, monkeypatch, capsys):
     cfg = _make_cfg()
+    rid = _rule_id(conn)
 
-    sid_tagged = _insert_symbol(conn, tmp_path, "already_done")
-    _tag(conn, sid_tagged, "confusing", "true")
-    _tag(conn, sid_tagged, "confusing_reason", "old reason")
+    sid_done = _insert_symbol(conn, tmp_path, "already_done")
+    _set_finding(conn, sid_done, rid, "old reason", 1.0)
 
     _insert_symbol(conn, tmp_path, "new_sym")
 
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "CLEAR")
-
-    sweep(conn, cfg, n=10, scope=Scope())
+    sweep(conn, cfg, n=10, scope=Scope(), rule_id=rid)
 
     out = capsys.readouterr().out
-    assert "1 already tagged" in out
+    assert "1 already assessed" in out
     assert "Assessed 1" in out
 
 
 def test_no_confusing_message_when_all_clear(conn, tmp_path, monkeypatch, capsys):
     cfg = _make_cfg()
+    rid = _rule_id(conn)
     _insert_symbol(conn, tmp_path, "cleanFunc")
 
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: "CLEAR")
-
-    sweep(conn, cfg, n=10, scope=Scope())
+    sweep(conn, cfg, n=10, scope=Scope(), rule_id=rid)
 
     out = capsys.readouterr().out
     assert "No confusing fragments found." in out
 
 
-def test_reset_clears_existing_tags(conn, tmp_path):
+def test_reset_clears_findings(conn, tmp_path):
+    rid = _rule_id(conn)
     sid = _insert_symbol(conn, tmp_path, "old_sym")
-    _tag(conn, sid, "confusing", "true")
-    _tag(conn, sid, "confusing_reason", "old reason")
+    _set_finding(conn, sid, rid, "old reason", 1.0)
 
-    reset_tags(conn, Scope())
+    reset_findings(conn, rid, Scope())
 
-    assert not _get_tags(conn, sid)
+    assert _get_finding(conn, sid, rid) is None
 
 
-def test_reset_false_skips_already_tagged(conn, tmp_path, monkeypatch):
+def test_reset_does_not_affect_other_rules(conn, tmp_path):
+    rid1 = _rule_id(conn)
+    rid2 = db.get_or_create_rule(conn, "other", "other_rule", "warning", "Another rule.")
+    sid = _insert_symbol(conn, tmp_path, "sym")
+    _set_finding(conn, sid, rid1, "antislop finding", 1.0)
+    _set_finding(conn, sid, rid2, "other finding", 0.9)
+
+    reset_findings(conn, rid1, Scope())
+
+    assert _get_finding(conn, sid, rid1) is None
+    assert _get_finding(conn, sid, rid2) is not None
+
+
+def test_already_assessed_skips_on_next_sweep(conn, tmp_path, monkeypatch):
     cfg = _make_cfg()
+    rid = _rule_id(conn)
     sid = _insert_symbol(conn, tmp_path, "old_sym")
-    _tag(conn, sid, "confusing", "true")
-    _tag(conn, sid, "confusing_reason", "old reason")
+    _set_finding(conn, sid, rid, "old reason", 1.0)
 
     calls = []
     monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
-
-    sweep(conn, cfg, n=10, scope=Scope())
+    sweep(conn, cfg, n=10, scope=Scope(), rule_id=rid)
 
     assert len(calls) == 0
-    assert _get_tags(conn, sid).get("confusing_reason") == "old reason"
-
-
-def test_short_snippet_is_assessed(conn, tmp_path, monkeypatch):
-    cfg = _make_cfg()
-    _insert_symbol(conn, tmp_path, "tiny", snippet="def tiny():\n    pass\n")
-
-    calls = []
-    monkeypatch.setattr(antislop, "describe", lambda *a, **kw: calls.append(1) or "CLEAR")
-
-    sweep(conn, cfg, n=10, scope=Scope())
-
-    assert len(calls) == 1
+    assert _get_finding(conn, sid, rid)[0] == "old reason"

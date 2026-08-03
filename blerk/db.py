@@ -158,6 +158,35 @@ CREATE TABLE IF NOT EXISTS external_refs (
 CREATE INDEX IF NOT EXISTS idx_external_refs_caller ON external_refs(caller_id);
 CREATE INDEX IF NOT EXISTS idx_external_refs_callee_name ON external_refs(callee_name);
 
+CREATE TABLE IF NOT EXISTS analyzers (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT    NOT NULL UNIQUE,
+    description TEXT,
+    created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS analyzer_rules (
+    id          INTEGER PRIMARY KEY,
+    analyzer_id INTEGER NOT NULL REFERENCES analyzers(id) ON DELETE CASCADE,
+    name        TEXT    NOT NULL,
+    severity    TEXT    NOT NULL,
+    description TEXT    NOT NULL,
+    UNIQUE (analyzer_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS findings (
+    id          INTEGER PRIMARY KEY,
+    symbol_id   INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    rule_id     INTEGER NOT NULL REFERENCES analyzer_rules(id) ON DELETE CASCADE,
+    message     TEXT    NOT NULL,
+    confidence  REAL    NOT NULL,
+    analyzed_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    UNIQUE (symbol_id, rule_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_findings_rule ON findings(rule_id);
+CREATE INDEX IF NOT EXISTS idx_findings_symbol ON findings(symbol_id);
+
 CREATE TRIGGER IF NOT EXISTS files_after_insert
 AFTER INSERT ON files BEGIN
     INSERT INTO symbol_queue(file_id) VALUES (NEW.id);
@@ -272,7 +301,7 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
-_CURRENT_VERSION = 4
+_CURRENT_VERSION = 5
 
 
 def _get_version(conn: sqlite3.Connection) -> int:
@@ -339,11 +368,16 @@ def _migrate_4(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_5(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM symbol_tags WHERE key IN ('confusing', 'confusing_reason')")
+
+
 _MIGRATIONS: dict[int, object] = {
     1: _migrate_1,
     2: _migrate_2,
     3: _migrate_3,
     4: _migrate_4,
+    5: _migrate_5,
 }
 
 
@@ -409,6 +443,63 @@ def format_eta(seconds: int) -> str:
     if seconds < 86400:
         return f"{seconds // 3600}h"
     return f"{seconds // 86400}d"
+
+
+def get_or_create_rule(
+    conn: sqlite3.Connection,
+    analyzer_name: str,
+    rule_name: str,
+    severity: str,
+    description: str,
+) -> int:
+    with _write_lock:
+        conn.execute(
+            "INSERT INTO analyzers(name) VALUES(?) ON CONFLICT(name) DO NOTHING",
+            (analyzer_name,),
+        )
+        row = conn.execute("SELECT id FROM analyzers WHERE name=?", (analyzer_name,)).fetchone()
+        analyzer_id = row[0]
+        conn.execute(
+            "INSERT INTO analyzer_rules(analyzer_id, name, severity, description)"
+            " VALUES(?, ?, ?, ?)"
+            " ON CONFLICT(analyzer_id, name) DO UPDATE SET"
+            " severity=excluded.severity, description=excluded.description",
+            (analyzer_id, rule_name, severity, description),
+        )
+        row = conn.execute(
+            "SELECT id FROM analyzer_rules WHERE analyzer_id=? AND name=?",
+            (analyzer_id, rule_name),
+        ).fetchone()
+        return row[0]
+
+
+def ensure_analyzers(conn: sqlite3.Connection, analyzers) -> dict[str, dict[str, int]]:
+    """Upsert analyzers and their rules. Returns {analyzer_name: {rule_name: rule_id}}."""
+    result: dict[str, dict[str, int]] = {}
+    with _write_lock:
+        for analyzer in analyzers:
+            conn.execute(
+                "INSERT INTO analyzers(name, description) VALUES(?, ?)"
+                " ON CONFLICT(name) DO UPDATE SET description=excluded.description",
+                (analyzer.name, getattr(analyzer, "description", "") or ""),
+            )
+            row = conn.execute("SELECT id FROM analyzers WHERE name=?", (analyzer.name,)).fetchone()
+            analyzer_id = row[0]
+            result[analyzer.name] = {}
+            for rule in analyzer.rules:
+                conn.execute(
+                    "INSERT INTO analyzer_rules(analyzer_id, name, severity, description)"
+                    " VALUES(?, ?, ?, ?)"
+                    " ON CONFLICT(analyzer_id, name) DO UPDATE SET"
+                    " severity=excluded.severity, description=excluded.description",
+                    (analyzer_id, rule.name, rule.severity, rule.description),
+                )
+                row = conn.execute(
+                    "SELECT id FROM analyzer_rules WHERE analyzer_id=? AND name=?",
+                    (analyzer_id, rule.name),
+                ).fetchone()
+                result[analyzer.name][rule.name] = row[0]
+    return result
 
 
 def write_heartbeat(conn: sqlite3.Connection, hb: Heartbeat) -> None:

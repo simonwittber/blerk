@@ -8,6 +8,10 @@ from dataclasses import dataclass, field
 from blerk import config, db
 from blerk_cmd.llm_describer import describe
 
+_ANTISLOP_RULE_DESCRIPTION = (
+    "The function looks confusing, pointless, or misleading without additional context."
+)
+
 
 @dataclass
 class Scope:
@@ -40,13 +44,13 @@ def _build_path_filters(scope: Scope) -> tuple[list[str], list]:
     return filters, params
 
 
-def _fetch_symbols(conn, n: int, scope: Scope) -> list[tuple]:
-    path_filters, params = _build_path_filters(scope)
+def _fetch_symbols(conn, n: int, rule_id: int, scope: Scope) -> list[tuple]:
+    path_filters, path_params = _build_path_filters(scope)
     filters = [
         "s.kind IN ('function', 'method')",
         "s.snippet IS NOT NULL",
         "s.snippet != ''",
-        "NOT EXISTS (SELECT 1 FROM symbol_tags st WHERE st.symbol_id = s.id AND st.key = 'confusing')",
+        "NOT EXISTS (SELECT 1 FROM findings fn WHERE fn.symbol_id = s.id AND fn.rule_id = ?)",
     ] + path_filters
 
     where = " AND ".join(filters)
@@ -61,24 +65,24 @@ def _fetch_symbols(conn, n: int, scope: Scope) -> list[tuple]:
         ORDER BY COUNT(sr.caller_id) DESC, (COALESCE(s.end_line, s.line) - s.line) DESC
         LIMIT ?
         """,
-        params + [n],
+        [rule_id] + path_params + [n],
     ).fetchall()
 
     return [(sid, name, kind, path, params_str, snippet)
             for sid, name, kind, path, params_str, snippet in rows]
 
 
-def _count_already_tagged(conn, scope: Scope) -> int:
-    path_filters, params = _build_path_filters(scope)
+def _count_already_assessed(conn, rule_id: int, scope: Scope) -> int:
+    path_filters, path_params = _build_path_filters(scope)
     filters = [
         "s.kind IN ('function', 'method')",
-        "EXISTS (SELECT 1 FROM symbol_tags st WHERE st.symbol_id = s.id AND st.key = 'confusing')",
+        "EXISTS (SELECT 1 FROM findings fn WHERE fn.symbol_id = s.id AND fn.rule_id = ?)",
     ] + path_filters
 
     where = " AND ".join(filters)
     row = conn.execute(
         f"SELECT COUNT(*) FROM symbols s JOIN files f ON f.id = s.file_id WHERE {where}",
-        params,
+        [rule_id] + path_params,
     ).fetchone()
     return row[0] if row else 0
 
@@ -93,34 +97,34 @@ def _parse_response(text: str) -> tuple[bool | None, str]:
     return None, ""
 
 
-def reset_tags(conn, scope: Scope) -> int:
-    path_filters, params = _build_path_filters(scope)
+def reset_findings(conn, rule_id: int, scope: Scope) -> int:
+    path_filters, path_params = _build_path_filters(scope)
     filters = ["s.kind IN ('function', 'method')"] + path_filters
     where = " AND ".join(filters)
     result = conn.execute(
         f"""
-        DELETE FROM symbol_tags
-        WHERE key IN ('confusing', 'confusing_reason')
+        DELETE FROM findings
+        WHERE rule_id = ?
           AND symbol_id IN (
             SELECT s.id FROM symbols s
             JOIN files f ON f.id = s.file_id
             WHERE {where}
           )
         """,
-        params,
+        [rule_id] + path_params,
     )
     return result.rowcount
 
 
-def sweep(conn, cfg: config.Config, n: int, scope: Scope) -> None:
+def sweep(conn, cfg: config.Config, n: int, scope: Scope, rule_id: int) -> None:
     c = cfg.antislop
     if not c.endpoint or not c.model:
         raise RuntimeError(
             "No [antislop] config found. Add endpoint and model to ~/.blerk/config.toml."
         )
     prompt_template = c.prompt
-    already_tagged = _count_already_tagged(conn, scope)
-    candidates = _fetch_symbols(conn, n, scope)
+    already_assessed = _count_already_assessed(conn, rule_id, scope)
+    candidates = _fetch_symbols(conn, n, rule_id, scope)
 
     assessed = 0
     confusing: list[tuple[str, str, str]] = []
@@ -148,21 +152,19 @@ def sweep(conn, cfg: config.Config, n: int, scope: Scope) -> None:
             continue
 
         assessed += 1
+        msg = reason if is_confusing else ""
+        confidence = 1.0 if is_confusing else 0.0
         with db._write_lock:
             conn.execute(
-                "INSERT OR REPLACE INTO symbol_tags(symbol_id, key, value) VALUES (?, 'confusing', ?)",
-                (sid, "true" if is_confusing else "false"),
+                "INSERT OR REPLACE INTO findings(symbol_id, rule_id, message, confidence)"
+                " VALUES(?, ?, ?, ?)",
+                (sid, rule_id, msg, confidence),
             )
-            if is_confusing:
-                conn.execute(
-                    "INSERT OR REPLACE INTO symbol_tags(symbol_id, key, value) VALUES (?, 'confusing_reason', ?)",
-                    (sid, reason),
-                )
 
         if is_confusing:
             confusing.append((name, path, reason))
 
-    print(f"Assessed {assessed} symbols ({already_tagged} already tagged, skipped).")
+    print(f"Assessed {assessed} symbols ({already_assessed} already assessed, skipped).")
     if confusing:
         print(f"{len(confusing)} confusing fragment{'s' if len(confusing) != 1 else ''}:\n")
         for name, path, reason in confusing:
@@ -181,18 +183,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--exclude", action="append", dest="excludes", default=[], metavar="PATTERN",
                         help="exclude paths matching glob pattern (repeatable)")
     parser.add_argument("-n", type=int, default=50, metavar="N")
-    parser.add_argument("--reset", action="store_true", help="clear existing confusing tags before sweeping")
+    parser.add_argument("--reset", action="store_true", help="clear existing antislop findings before sweeping")
     args = parser.parse_args(argv)
-    args.directory = os.path.abspath(args.directory) if args.directory else os.getcwd()
+    args.directory = os.path.realpath(args.directory or ".")
 
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
     try:
+        rule_id = db.get_or_create_rule(
+            conn,
+            "antislop",
+            "confusing",
+            "warning",
+            _ANTISLOP_RULE_DESCRIPTION,
+        )
         if args.reset:
-            reset_tags(conn, Scope(directory=args.directory))
-            print("All antislop tags removed.")
+            n = reset_findings(conn, rule_id, Scope(directory=args.directory))
+            print(f"Removed {n} antislop findings.")
             return 0
-        sweep(conn, cfg, args.n, Scope(directory=args.directory, exts=args.exts, excludes=args.excludes))
+        sweep(conn, cfg, args.n, Scope(directory=args.directory, exts=args.exts, excludes=args.excludes), rule_id)
     finally:
         conn.close()
     return 0
