@@ -72,26 +72,6 @@ class Reranker:
     prompt: str = _DEFAULT_RERANKER_PROMPT
 
 
-_DEFAULT_ANTISLOP_PROMPT = """\
-Does this {kind} look confusing, pointless, or misleading without additional context?
-
-{kind}: {name}({params})
-File: {path}
-Snippet:
-{snippet}
-
-Reply with exactly one of:
-CLEAR
-CONFUSING: <one sentence why>"""
-
-
-@dataclass
-class Antislop:
-    endpoint: str = ""
-    model: str = ""
-    api_key: str = ""
-    prompt: str = _DEFAULT_ANTISLOP_PROMPT
-
 
 @dataclass
 class AnalyzerRule:
@@ -143,7 +123,6 @@ class Config:
     llm: list[LLM] = field(default_factory=list)
     embedder: Embedder = field(default_factory=Embedder)
     reranker: Reranker = field(default_factory=Reranker)
-    antislop: Antislop = field(default_factory=Antislop)
     coordinator: Coordinator = field(default_factory=Coordinator)
     lint: Lint = field(default_factory=Lint)
     silent: bool = False
@@ -257,8 +236,6 @@ def load(path: str) -> Config:
                     llm.api_key = api_key
             if not cfg.reranker.api_key:
                 cfg.reranker.api_key = api_key
-            if not cfg.antislop.api_key:
-                cfg.antislop.api_key = api_key
     except (FileNotFoundError, tomllib.TOMLDecodeError):
         pass
 

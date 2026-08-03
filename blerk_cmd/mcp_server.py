@@ -84,7 +84,6 @@ _TOOLS = [
                 "directory": {"type": "string"},
                 "file_extensions": {"type": "array", "items": {"type": "string"}},
                 "exclude": {"type": "array", "items": {"type": "string"}},
-                "n": {"type": "integer"},
                 "reset": {"type": "boolean", "description": "Clear existing confusing tags before sweeping."},
             },
         },
@@ -162,15 +161,13 @@ def _call(name: str, args: dict) -> str:
         return _run(*cmd) or "No lint findings."
 
     if name == "antislop":
-        cmd = ["confusing"]
+        cmd = ["analyze", "--analyzer", "antislop"]
         if args.get("directory"):
             cmd += ["--dir", args["directory"]]
         for ext in args.get("file_extensions", []):
             cmd += ["--ext", ext]
         for pattern in args.get("exclude", []):
             cmd += ["--exclude", pattern]
-        if args.get("n") is not None:
-            cmd += ["-n", str(args["n"])]
         if args.get("reset"):
             cmd.append("--reset")
         return _run(*cmd) or "No confusing fragments found."

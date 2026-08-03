@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from blerk import config, db
 from blerk_cmd.lint_rules import RULES, Violation, build_scope
+from blerk_cmd.util import normalize_dir
 
 
 @dataclass

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from blerk import config, db
+from blerk_cmd.util import normalize_dir
 from blerk_cmd.query import _ext_sql, _tag_clause
 
 

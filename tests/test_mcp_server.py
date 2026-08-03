@@ -132,31 +132,19 @@ class TestCall:
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
         assert mcp_mod._call("lint", {}) == "No lint findings."
 
-    def test_antislop_calls_confusing_subcommand(self, monkeypatch):
+    def test_antislop_calls_analyze_subcommand(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
         mcp_mod._call("antislop", {})
-        assert calls[0][0] == "confusing"
+        assert calls[0][0] == "analyze"
+        assert "--analyzer" in calls[0]
+        assert "antislop" in calls[0]
 
     def test_antislop_reset_flag(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
         mcp_mod._call("antislop", {"reset": True})
         assert "--reset" in calls[0]
-
-    def test_antislop_n_passed(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("antislop", {"n": 5})
-        args = list(calls[0])
-        assert "-n" in args
-        assert "5" in args
-
-    def test_antislop_n_absent_when_not_set(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("antislop", {})
-        assert "-n" not in calls[0]
 
     def test_antislop_fallback(self, monkeypatch):
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")

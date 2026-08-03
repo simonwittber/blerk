@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### antislop: removed as a standalone command
+
+`blerk antislop` and its `confusing` alias are removed.
+The antislop rule is now a standard analyzer named `antislop` with a rule named `confusing`, defined in `~/.blerk/analyzers.toml`.
+
+Run `blerk analyze --analyzer antislop` to get the same results.
+Run `blerk findings --analyzer antislop` to read stored results without re-running the LLM.
+Reset with `blerk analyze --analyzer antislop --reset`.
+
+The `[antislop]` config section in `config.toml` is no longer used.
+Set `endpoint` and `model` directly in the `[[analyzers]]` block in `analyzers.toml`.
+
 ### blerk findings
 
 A new `blerk findings` command reads stored findings from the database and prints them.

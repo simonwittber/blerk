@@ -4,10 +4,11 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from blerk import config, db
 from blerk_cmd.llm_describer import describe
+from blerk_cmd.util import Scope, build_path_filters, normalize_dir, placeholders
 
 
 @dataclass
@@ -22,35 +23,7 @@ class Finding:
     line: int
 
 
-@dataclass
-class Scope:
-    directory: str = ""
-    exts: list[str] = field(default_factory=list)
-    excludes: list[str] = field(default_factory=list)
-
-
-def _build_path_filters(scope: Scope) -> tuple[list[str], list]:
-    filters: list[str] = []
-    params: list = []
-
-    if scope.directory:
-        fwd = scope.directory.replace("\\", "/").rstrip("/")
-        bwd = scope.directory.replace("/", "\\").rstrip("\\")
-        filters.append("(f.path LIKE ? OR f.path LIKE ? OR f.path LIKE ? OR f.path LIKE ?)")
-        params += [f"%{fwd}/%", f"%{fwd}", f"%{bwd}\\%", f"%{bwd}"]
-
-    if scope.exts:
-        ext_conds = " OR ".join("f.path LIKE ?" for _ in scope.exts)
-        filters.append(f"({ext_conds})")
-        for ext in scope.exts:
-            params.append(f"%{ext}")
-
-    for pat in scope.excludes:
-        sql = pat.replace("\\", "/").replace("*", "%").replace("?", "_")
-        filters.append("f.path NOT LIKE ?")
-        params.append(sql)
-
-    return filters, params
+_build_path_filters = build_path_filters
 
 
 def _fetch_symbols(
@@ -63,19 +36,16 @@ def _fetch_symbols(
 ) -> list[tuple]:
     path_filters, path_params = _build_path_filters(scope)
 
-    kind_placeholders = ",".join("?" * len(kinds))
-
     filters = [
-        f"s.kind IN ({kind_placeholders})",
+        f"s.kind IN ({placeholders(len(kinds))})",
         "s.snippet IS NOT NULL",
         "s.snippet != ''",
         f"(COALESCE(s.end_line, s.line) - s.line) >= {int(min_lines)}",
     ]
     if rule_ids:
-        rule_placeholders = ",".join("?" * len(rule_ids))
         filters.append(
             f"NOT EXISTS (SELECT 1 FROM findings fn"
-            f" WHERE fn.symbol_id = s.id AND fn.rule_id IN ({rule_placeholders}))"
+            f" WHERE fn.symbol_id = s.id AND fn.rule_id IN ({placeholders(len(rule_ids))}))"
         )
     filters += path_filters
 
@@ -346,7 +316,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reset", action="store_true",
                         help="delete existing findings for selected analyzers, then exit")
     args = parser.parse_args(argv)
-    args.directory = os.path.realpath(args.directory or ".")
+    args.directory = normalize_dir(args.directory)
     scope = Scope(directory=args.directory, exts=args.exts, excludes=args.excludes)
 
     cfg = config.load(args.config)

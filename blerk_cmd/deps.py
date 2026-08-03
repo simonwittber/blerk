@@ -5,6 +5,7 @@ import os
 import sys
 
 from blerk import config, db
+from blerk_cmd.util import normalize_dir
 
 
 def deps(conn, directory: str = "") -> str:

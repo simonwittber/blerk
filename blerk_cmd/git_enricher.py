@@ -9,6 +9,7 @@ import time
 from datetime import datetime
 
 from blerk import config, coordinator, daemon_util, db
+from blerk_cmd.util import normalize_dir
 
 
 QUEUE = "git_queue"
@@ -19,7 +20,7 @@ log = logging.getLogger("git-enricher")
 
 
 def find_git_root(directory: str) -> str | None:
-    directory = os.path.realpath(directory)
+    directory = normalize_dir(directory)
     while True:
         if os.path.exists(os.path.join(directory, ".git")):
             return directory

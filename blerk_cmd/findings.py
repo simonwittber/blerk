@@ -6,7 +6,7 @@ import os
 import sys
 
 from blerk import config, db
-from blerk_cmd.analyze import Finding, Scope, _build_path_filters
+from blerk_cmd.analyze import Finding\nfrom blerk_cmd.util import Scope, build_path_filters as _build_path_filters, normalize_dir
 
 
 def _fetch_findings(
