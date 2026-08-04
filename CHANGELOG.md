@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-04
+
+### Symbolizer removes missing files from the database
+
+When the symbolizer processes a queued file that no longer exists on disk, it deletes the file record from the database and moves on.
+Previously, deleted files stayed in the database until you ran `blerk purge` manually.
+
+### Path normalization uses os.path.realpath everywhere
+
+All commands that accept a directory argument now resolve the path through `os.path.realpath` before use.
+The config loader resolves `watch.folders` the same way at load time.
+This fixes path mismatches on systems where a directory is accessed through a junction or symlink.
+
+### Directory argument is required on all commands
+
+All CLI commands and MCP tools now require the directory argument.
+No command silently defaults to the current directory.
+
+### Edited files move to the front of the embedding queue
+
+When the symbolizer detects that a file has changed, it sets priority 2 on the embedding queue entries for changed and new symbols.
+New files still use the default priority 1.
+This means recent edits get embeddings before the background backlog.
+
 ### Add HLSL and GLSL shader language support
 
 The symbolizer now extracts functions, structs, and call references from HLSL and GLSL shader files.
