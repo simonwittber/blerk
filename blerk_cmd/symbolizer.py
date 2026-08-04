@@ -30,87 +30,164 @@ def process_symbols(
 ) -> None:
     conn.execute("BEGIN")
     try:
-        # Snapshot descriptions before delete so unchanged snippets can be carried forward.
-        old_descs: dict[tuple[str, str], tuple[str | None, int | None]] = {}
-        for r_name, r_kind, r_snippet, r_desc, r_at in conn.execute(
-            "SELECT name, kind, snippet, description, described_at FROM symbols WHERE file_id=?",
+        ext_key = os.path.splitext(path)[1].lower()
+
+        # Snapshot existing symbols keyed by (name, kind).
+        existing: dict[tuple[str, str], tuple[int, str | None]] = {}
+        for r in conn.execute(
+            "SELECT id, name, kind, snippet FROM symbols WHERE file_id=?",
             (row.target_id,),
         ).fetchall():
-            if r_desc is not None and r_snippet is not None:
-                old_descs[(r_name, r_kind)] = (r_snippet, r_desc, r_at)
+            existing[(r[1], r[2])] = (r[0], r[3])
 
-        # Snapshot refs whose callee_id points into this file.
-        # DELETE CASCADE will remove those symbol_refs rows; we rebuild them after re-insert.
-        pending_callee_restores: list[tuple[int, str]] = conn.execute(
-            "SELECT r.caller_id, s.name "
-            "FROM symbol_refs r JOIN symbols s ON s.id = r.callee_id "
-            "WHERE s.file_id=?",
-            (row.target_id,),
-        ).fetchall()
+        extracted_keys = {(sym.name, sym.kind) for sym in syms}
 
-        conn.execute("DELETE FROM symbols WHERE file_id=?", (row.target_id,))
+        unchanged: list[tuple[Symbol, int]] = []
+        changed: list[tuple[Symbol, int]] = []
+        new_syms: list[Symbol] = []
 
-        inserted_ids: list[int] = []
-        carried_ids: list[int] = []
         for sym in syms:
-            if sym.description:
-                desc: str | None = sym.description
-                desc_at: int | None = int(time.time())
+            key = (sym.name, sym.kind)
+            if key in existing:
+                old_id, old_snippet = existing[key]
+                if old_snippet == sym.snippet:
+                    unchanged.append((sym, old_id))
+                else:
+                    changed.append((sym, old_id))
             else:
-                old = old_descs.get((sym.name, sym.kind))
-                carry_desc: str | None = None
-                carry_at: int | None = None
-                if old is not None and old[0] == sym.snippet:
-                    carry_desc, carry_at = old[1], old[2]
-                desc = carry_desc
-                desc_at = carry_at
+                new_syms.append(sym)
 
+        # Unchanged: update position metadata only; description and queues untouched.
+        unchanged_ids: list[int] = []
+        for sym, old_id in unchanged:
+            conn.execute(
+                "UPDATE symbols SET line=?, end_line=?, params=?, nesting_depth=?, param_count=? WHERE id=?",
+                (sym.line, sym.end_line, sym.params or None, sym.nesting_depth, sym.param_count, old_id),
+            )
+            unchanged_ids.append(old_id)
+
+        # Remove stale queue entries for unchanged symbols that are already embedded/fingerprinted.
+        if unchanged_ids:
+            ph = ",".join("?" * len(unchanged_ids))
+            conn.execute(
+                f"DELETE FROM embedding_queue WHERE symbol_id IN ({ph})"
+                f" AND EXISTS (SELECT 1 FROM embeddings WHERE symbol_id = embedding_queue.symbol_id)",
+                unchanged_ids,
+            )
+            conn.execute(
+                f"DELETE FROM fingerprint_queue WHERE symbol_id IN ({ph})"
+                f" AND EXISTS (SELECT 1 FROM fingerprints WHERE symbol_id = fingerprint_queue.symbol_id)",
+                unchanged_ids,
+            )
+
+        # Changed: update all columns, clear description, re-queue for all pipelines.
+        changed_ids: list[int] = []
+        for sym, old_id in changed:
+            conn.execute(
+                "UPDATE symbols SET line=?, end_line=?, snippet=?, params=?, nesting_depth=?, param_count=?, "
+                "description=NULL, described_at=NULL, ext=? WHERE id=?",
+                (sym.line, sym.end_line, sym.snippet, sym.params or None,
+                 sym.nesting_depth, sym.param_count, ext_key, old_id),
+            )
+            changed_ids.append(old_id)
+
+        if changed_ids:
+            ph = ",".join("?" * len(changed_ids))
+            # Clear any existing pending queue entries before inserting fresh ones.
+            conn.execute(f"DELETE FROM description_queue WHERE symbol_id IN ({ph})", changed_ids)
+            conn.execute(f"DELETE FROM embedding_queue WHERE symbol_id IN ({ph})", changed_ids)
+            conn.execute(f"DELETE FROM fingerprint_queue WHERE symbol_id IN ({ph})", changed_ids)
+            conn.execute(
+                f"INSERT INTO description_queue(symbol_id, priority) "
+                f"SELECT id, 2 FROM symbols WHERE id IN ({ph}) AND kind IN ('function','method')",
+                changed_ids,
+            )
+            conn.execute(
+                f"INSERT INTO embedding_queue(symbol_id, priority) "
+                f"SELECT id, 2 FROM symbols WHERE id IN ({ph}) AND kind != 'heading'",
+                changed_ids,
+            )
+            conn.execute(
+                f"INSERT INTO fingerprint_queue(symbol_id, priority) "
+                f"SELECT id, 2 FROM symbols WHERE id IN ({ph}) AND kind IN ('function','method') AND snippet IS NOT NULL",
+                changed_ids,
+            )
+            # Clear caller refs and external_refs so they are rebuilt below.
+            conn.execute(f"DELETE FROM symbol_refs WHERE caller_id IN ({ph})", changed_ids)
+            conn.execute(f"DELETE FROM external_refs WHERE caller_id IN ({ph})", changed_ids)
+
+        # New: insert; triggers handle queue entries.
+        inserted_ids: list[int] = []
+        for sym in new_syms:
             cur = conn.execute(
-                "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, params, nesting_depth, param_count, description, described_at, ext) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
-                (row.target_id, sym.name, sym.kind, sym.line, sym.end_line, sym.snippet, sym.params or None, sym.nesting_depth, sym.param_count, desc, desc_at, os.path.splitext(path)[1].lower()),
+                "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, params, "
+                "nesting_depth, param_count, description, described_at, ext) "
+                "VALUES(?,?,?,?,?,?,?,?,?,NULL,NULL,?) RETURNING id",
+                (row.target_id, sym.name, sym.kind, sym.line, sym.end_line, sym.snippet,
+                 sym.params or None, sym.nesting_depth, sym.param_count, ext_key),
             )
             r = cur.fetchone()
             if r is None:
                 raise sqlite3.Error("insert symbols failed")
-            new_id = int(r[0])
-            inserted_ids.append(new_id)
-            if desc is not None:
-                carried_ids.append(new_id)
+            inserted_ids.append(int(r[0]))
 
-        if carried_ids:
-            placeholders = ",".join("?" * len(carried_ids))
+        # Bump new symbols to priority=2 when the file was previously known,
+        # so they are processed ahead of the initial-scan backlog.
+        if inserted_ids and existing:
+            ph = ",".join("?" * len(inserted_ids))
             conn.execute(
-                f"DELETE FROM description_queue WHERE symbol_id IN ({placeholders})",
-                carried_ids,
+                f"UPDATE embedding_queue SET priority=2 WHERE symbol_id IN ({ph}) AND status='pending'",
+                inserted_ids,
+            )
+            conn.execute(
+                f"UPDATE description_queue SET priority=2 WHERE symbol_id IN ({ph}) AND status='pending'",
+                inserted_ids,
+            )
+            conn.execute(
+                f"UPDATE fingerprint_queue SET priority=2 WHERE symbol_id IN ({ph}) AND status='pending'",
+                inserted_ids,
             )
 
+        # Delete removed symbols; CASCADE cleans up refs, embeddings, and queue entries.
+        removed_ids = [eid for (name, kind), (eid, _) in existing.items()
+                       if (name, kind) not in extracted_keys]
+        if removed_ids:
+            ph = ",".join("?" * len(removed_ids))
+            conn.execute(f"DELETE FROM symbols WHERE id IN ({ph})", removed_ids)
+
+        # Build combined name->id map for all surviving symbols.
+        all_syms_with_ids: list[tuple[Symbol, int]] = (
+            [(sym, old_id) for sym, old_id in unchanged]
+            + [(sym, old_id) for sym, old_id in changed]
+            + [(sym, new_id) for sym, new_id in zip(new_syms, inserted_ids)]
+        )
+        name_to_id: dict[str, int] = {sym.name: sid for sym, sid in all_syms_with_ids}
+
+        # Update tags for all surviving symbols.
         tag_rows: list[tuple[int, str, str]] = []
-        for sym, sym_id in zip(syms, inserted_ids):
+        for sym, sid in all_syms_with_ids:
             for k, v in sym.tags.items():
-                tag_rows.append((sym_id, k, v))
+                tag_rows.append((sid, k, v))
         if tag_rows:
             conn.executemany(
                 "INSERT OR REPLACE INTO symbol_tags(symbol_id, key, value) VALUES(?,?,?)",
                 tag_rows,
             )
 
-        if refs:
-            name_to_id: dict[str, int] = {}
-            for i, sym in enumerate(syms):
-                if i < len(inserted_ids):
-                    name_to_id[sym.name] = inserted_ids[i]
+        # Rebuild refs for changed and new symbols only.
+        active_caller_ids = set(changed_ids) | set(inserted_ids)
+        if refs and active_caller_ids:
             for ref in refs:
                 caller_id = name_to_id.get(ref.caller_name)
-                if caller_id is None:
+                if caller_id is None or caller_id not in active_caller_ids:
                     continue
                 callee_id = name_to_id.get(ref.callee_name)
                 if callee_id is None:
-                    cur = conn.execute(
-                        "SELECT id FROM symbols WHERE (name=? OR name LIKE ?) AND kind IN ('function','method') LIMIT 1",
+                    r = conn.execute(
+                        "SELECT id FROM symbols WHERE (name=? OR name LIKE ?) "
+                        "AND kind IN ('function','method') LIMIT 1",
                         (ref.callee_name, f"%.{ref.callee_name}"),
-                    )
-                    r = cur.fetchone()
+                    ).fetchone()
                     if r is not None:
                         callee_id = int(r[0])
                 if callee_id is not None and caller_id != callee_id:
@@ -131,44 +208,29 @@ def process_symbols(
                         log.warning("insert external_ref %d->%s: %s", caller_id, ref.callee_name, e)
 
         # Promote external_refs that now resolve to newly inserted symbols.
-        name_to_new_id: dict[str, int] = {syms[i].name: inserted_ids[i] for i in range(min(len(syms), len(inserted_ids)))}
-        short_to_new_id: dict[str, int] = {
-            (syms[i].short_name or syms[i].name.split(".")[-1]): inserted_ids[i]
-            for i in range(min(len(syms), len(inserted_ids)))
-        }
-        all_callee_ids = {**short_to_new_id, **name_to_new_id}
-        for sym_name, new_callee_id in all_callee_ids.items():
-            ext_rows = conn.execute(
-                "SELECT id, caller_id FROM external_refs WHERE callee_name=?",
-                (sym_name,),
-            ).fetchall()
-            for ext_id, ext_caller_id in ext_rows:
-                if ext_caller_id != new_callee_id:
-                    try:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO symbol_refs(caller_id, callee_id) VALUES(?,?)",
-                            (ext_caller_id, new_callee_id),
-                        )
-                    except sqlite3.Error as e:
-                        log.warning("promote external_ref %d->%d: %s", ext_caller_id, new_callee_id, e)
-                conn.execute("DELETE FROM external_refs WHERE id=?", (ext_id,))
-
-        # Rebuild symbol_refs whose callee was CASCADE-deleted when this file's symbols were replaced.
-        # During bulk rescans, the caller may have already been re-processed and its ID replaced;
-        # skip silently in that case since its refs will have been rebuilt when it was processed.
-        for caller_id, callee_name in pending_callee_restores:
-            new_callee_id = name_to_new_id.get(callee_name)
-            if new_callee_id is not None and caller_id != new_callee_id:
-                if not conn.execute("SELECT 1 FROM symbols WHERE id=?", (caller_id,)).fetchone():
+        if inserted_ids:
+            new_set = set(inserted_ids)
+            for sym, sid in all_syms_with_ids:
+                if sid not in new_set:
                     continue
-                try:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO symbol_refs(caller_id, callee_id) VALUES(?,?)",
-                        (caller_id, new_callee_id),
-                    )
-                except sqlite3.Error as e:
-                    log.warning("restore symbol_ref %d->%d: %s", caller_id, new_callee_id, e)
+                short = sym.short_name or sym.name.split(".")[-1]
+                for lookup in {sym.name, short}:
+                    ext_rows = conn.execute(
+                        "SELECT id, caller_id FROM external_refs WHERE callee_name=?",
+                        (lookup,),
+                    ).fetchall()
+                    for ext_id, ext_caller_id in ext_rows:
+                        if ext_caller_id != sid:
+                            try:
+                                conn.execute(
+                                    "INSERT OR IGNORE INTO symbol_refs(caller_id, callee_id) VALUES(?,?)",
+                                    (ext_caller_id, sid),
+                                )
+                            except sqlite3.Error as e:
+                                log.warning("promote external_ref %d->%d: %s", ext_caller_id, sid, e)
+                        conn.execute("DELETE FROM external_refs WHERE id=?", (ext_id,))
 
+        # Apply min_describe_lines filter.
         min_lines = cfg.symbolizer.min_describe_lines
         if min_lines > 0:
             try:

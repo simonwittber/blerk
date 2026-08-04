@@ -1,25 +1,24 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 from blerk import config, db
-from blerk_cmd.util import normalize_dir
 from blerk_cmd.query import _ext_sql, _tag_clause
+from blerk_cmd.util import normalize_dir
 
 
 def _unindexed_subdirs(conn, directory: str) -> list[str]:
-    root = Path(directory.replace("\\", "/"))
+    root = Path(normalize_dir(directory))
     if not root.is_dir():
         return []
-    norm = str(root).replace("\\", "/").rstrip("/")
+    norm = normalize_dir(str(root)).rstrip("/")
     unindexed: list[str] = []
     for child in sorted(root.iterdir()):
         if not child.is_dir():
             continue
-        child_norm = str(child).replace("\\", "/")
+        child_norm = normalize_dir(str(child))
         row = conn.execute(
             "SELECT 1 FROM files WHERE path LIKE ? LIMIT 1",
             (f"{child_norm}/%",),
@@ -43,7 +42,7 @@ def browse(
     dir_sql = ""
     dir_params: list[str] = []
     if directory:
-        norm = directory.replace("\\", "/").rstrip("/")
+        norm = normalize_dir(directory).rstrip("/")
         dir_sql = "AND (f.path LIKE ? OR f.path LIKE ?)"
         dir_params = [f"%{norm}/%", f"%{norm}"]
 
@@ -125,8 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=config.default_path())
     parser.add_argument("--ext", action="append", default=[], dest="exts",
                         metavar="EXT", help="restrict to file extension, e.g. .py (repeatable)")
-    parser.add_argument("--dir", default="", dest="directory",
-                        metavar="DIR", help="restrict to directory (default: cwd)")
+    parser.add_argument("directory", help="restrict to this directory")
     parser.add_argument("--symbols", action="store_true",
                         help="show the full indented symbol tree instead of filenames only")
     parser.add_argument("--tag", action="append", default=[], dest="tags",
@@ -139,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
             k, v = t.split("=", 1)
             tag_filter[k.strip()] = v.strip()
 
-    directory = os.path.realpath(args.directory or ".")
+    directory = normalize_dir(args.directory)
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
     print(browse(conn, directory, args.exts, symbols=args.symbols, tags=tag_filter or None))

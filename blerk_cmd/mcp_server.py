@@ -16,7 +16,7 @@ _TOOLS = [
                 "file_extensions": {"type": "array", "items": {"type": "string"}},
                 "n": {"type": "integer"},
             },
-            "required": ["query"],
+            "required": ["query", "directory"],
         },
     },
     {
@@ -29,6 +29,7 @@ _TOOLS = [
                 "file_extensions": {"type": "array", "items": {"type": "string"}},
                 "symbols": {"type": "boolean"},
             },
+            "required": ["directory"],
         },
     },
     {
@@ -51,6 +52,7 @@ _TOOLS = [
             "properties": {
                 "directory": {"type": "string"},
             },
+            "required": ["directory"],
         },
     },
     {
@@ -73,6 +75,7 @@ _TOOLS = [
                 "max_methods": {"type": "integer"},
                 "max_deps": {"type": "integer"},
             },
+            "required": ["directory"],
         },
     },
     {
@@ -86,6 +89,7 @@ _TOOLS = [
                 "exclude": {"type": "array", "items": {"type": "string"}},
                 "reset": {"type": "boolean", "description": "Clear existing confusing tags before sweeping."},
             },
+            "required": ["directory"],
         },
     },
 ]
@@ -109,20 +113,18 @@ def _call(name: str, args: dict) -> str:
     if name == "search":
         n = max(1, min(int(args.get("n", 10)), 50))
         cmd = ["query", args["query"], "-n", str(n)]
-        if args.get("directory"):
-            cmd += ["--dir", args["directory"]]
         for ext in args.get("file_extensions", []):
             cmd += ["--ext", ext]
+        cmd.append(args["directory"])
         return _run(*cmd) or "No results found."
 
     if name == "browse":
         cmd = ["browse"]
-        if args.get("directory"):
-            cmd += ["--dir", args["directory"]]
         for ext in args.get("file_extensions", []):
             cmd += ["--ext", ext]
         if args.get("symbols"):
             cmd.append("--symbols")
+        cmd.append(args["directory"])
         return _run(*cmd) or "No indexed files found."
 
     if name == "detail":
@@ -132,15 +134,11 @@ def _call(name: str, args: dict) -> str:
         return _run(*cmd)
 
     if name == "deps":
-        cmd = ["deps"]
-        if args.get("directory"):
-            cmd += ["--dir", args["directory"]]
+        cmd = ["deps", args["directory"]]
         return _run(*cmd) or "No dependencies found."
 
     if name == "lint":
-        cmd = ["lint"]
-        if args.get("directory"):
-            cmd += ["--dir", args["directory"]]
+        cmd = ["lint", args["directory"]]
         for pattern in args.get("exclude", []):
             cmd += ["--exclude", pattern]
         cmd += [
@@ -162,10 +160,9 @@ def _call(name: str, args: dict) -> str:
 
     if name == "antislop":
         cmd = ["analyze", "--analyzer", "antislop"]
-        if args.get("directory"):
-            cmd += ["--dir", args["directory"]]
         for ext in args.get("file_extensions", []):
             cmd += ["--ext", ext]
+        cmd.append(args["directory"])
         for pattern in args.get("exclude", []):
             cmd += ["--exclude", pattern]
         if args.get("reset"):

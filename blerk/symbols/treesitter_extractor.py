@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -7,7 +8,9 @@ from typing import Any
 import tree_sitter_c
 import tree_sitter_c_sharp
 import tree_sitter_cpp
+import tree_sitter_glsl
 import tree_sitter_go
+import tree_sitter_hlsl
 import tree_sitter_javascript
 import tree_sitter_python
 from tree_sitter import Language, Parser, Query
@@ -22,12 +25,24 @@ except ImportError:
     _QueryCursor = None
 
 
+def _legacy_language(mod) -> Language:
+    # tree-sitter-hlsl and tree-sitter-glsl return a raw int pointer (old 0.22
+    # ABI) rather than a PyCapsule. Wrap the pointer so tree-sitter 0.23+ accepts it.
+    ptr = mod.language()
+    api = ctypes.pythonapi
+    api.PyCapsule_New.restype = ctypes.py_object
+    api.PyCapsule_New.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
+    return Language(api.PyCapsule_New(ptr, b"tree_sitter.Language", None))
+
+
 GO_LANG = Language(tree_sitter_go.language())
 PY_LANG = Language(tree_sitter_python.language())
 JS_LANG = Language(tree_sitter_javascript.language())
 C_LANG = Language(tree_sitter_c.language())
 CPP_LANG = Language(tree_sitter_cpp.language())
 CS_LANG = Language(tree_sitter_c_sharp.language())
+HLSL_LANG = _legacy_language(tree_sitter_hlsl)
+GLSL_LANG = _legacy_language(tree_sitter_glsl)
 
 
 @dataclass
@@ -40,12 +55,14 @@ class LangDef:
 
 
 LANG_DEFS: list[LangDef] = [
-    LangDef("go", GO_LANG, queries.GO_DECL, queries.GO_CALL, queries.BODY_TYPES["go"]),
-    LangDef("py", PY_LANG, queries.PY_DECL, queries.PY_CALL, queries.BODY_TYPES["py"]),
-    LangDef("js", JS_LANG, queries.JS_DECL, queries.JS_CALL, queries.BODY_TYPES["js"]),
-    LangDef("c", C_LANG, queries.C_DECL, queries.C_CALL, queries.BODY_TYPES["c"]),
-    LangDef("cpp", CPP_LANG, queries.CPP_DECL, queries.CPP_CALL, queries.BODY_TYPES["cpp"]),
-    LangDef("cs", CS_LANG, queries.CS_DECL, queries.CS_CALL, queries.BODY_TYPES["cs"]),
+    LangDef("go",   GO_LANG,   queries.GO_DECL,   queries.GO_CALL,   queries.BODY_TYPES["go"]),
+    LangDef("py",   PY_LANG,   queries.PY_DECL,   queries.PY_CALL,   queries.BODY_TYPES["py"]),
+    LangDef("js",   JS_LANG,   queries.JS_DECL,   queries.JS_CALL,   queries.BODY_TYPES["js"]),
+    LangDef("c",    C_LANG,    queries.C_DECL,    queries.C_CALL,    queries.BODY_TYPES["c"]),
+    LangDef("cpp",  CPP_LANG,  queries.CPP_DECL,  queries.CPP_CALL,  queries.BODY_TYPES["cpp"]),
+    LangDef("cs",   CS_LANG,   queries.CS_DECL,   queries.CS_CALL,   queries.BODY_TYPES["cs"]),
+    LangDef("hlsl", HLSL_LANG, queries.HLSL_DECL, queries.HLSL_CALL, queries.BODY_TYPES["hlsl"]),
+    LangDef("glsl", GLSL_LANG, queries.GLSL_DECL, queries.GLSL_CALL, queries.BODY_TYPES["glsl"]),
 ]
 
 
@@ -70,6 +87,19 @@ for _d in LANG_DEFS:
         _EXT_TO_LANG[".hpp"] = _d
     elif _d.key == "cs":
         _EXT_TO_LANG[".cs"] = _d
+    elif _d.key == "hlsl":
+        _EXT_TO_LANG[".hlsl"] = _d
+        _EXT_TO_LANG[".fx"] = _d
+        _EXT_TO_LANG[".fxh"] = _d
+        _EXT_TO_LANG[".hlsli"] = _d
+    elif _d.key == "glsl":
+        _EXT_TO_LANG[".glsl"] = _d
+        _EXT_TO_LANG[".vert"] = _d
+        _EXT_TO_LANG[".frag"] = _d
+        _EXT_TO_LANG[".geom"] = _d
+        _EXT_TO_LANG[".comp"] = _d
+        _EXT_TO_LANG[".tese"] = _d
+        _EXT_TO_LANG[".tesc"] = _d
 
 
 _CONTAINER_TYPES = frozenset({
@@ -88,12 +118,14 @@ _CONTAINER_TYPES = frozenset({
 })
 
 _CLASS_NODE_TYPES: dict[str, frozenset[str]] = {
-    "cs":  frozenset({"class_declaration", "struct_declaration", "interface_declaration"}),
-    "py":  frozenset({"class_definition"}),
-    "js":  frozenset({"class_declaration"}),
-    "cpp": frozenset({"class_specifier", "struct_specifier"}),
-    "c":   frozenset({"struct_specifier"}),
-    "go":  frozenset(),
+    "cs":   frozenset({"class_declaration", "struct_declaration", "interface_declaration"}),
+    "py":   frozenset({"class_definition"}),
+    "js":   frozenset({"class_declaration"}),
+    "cpp":  frozenset({"class_specifier", "struct_specifier"}),
+    "c":    frozenset({"struct_specifier"}),
+    "go":   frozenset(),
+    "hlsl": frozenset({"struct_specifier"}),
+    "glsl": frozenset({"struct_specifier"}),
 }
 
 

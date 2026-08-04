@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
 from blerk import config, db
@@ -56,11 +55,10 @@ def deps(conn, directory: str = "") -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Show file-level dependency graph.")
     parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("--dir", default="", dest="directory",
-                        metavar="DIR", help="restrict to directory (default: cwd)")
+    parser.add_argument("directory", help="restrict to this directory")
     args = parser.parse_args(argv)
 
-    directory = os.path.realpath(args.directory or ".")
+    directory = normalize_dir(args.directory)
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
     print(deps(conn, directory))

@@ -146,6 +146,9 @@ def _parse_response(
     except json.JSONDecodeError:
         return []
 
+    if not isinstance(items, list):
+        return []
+
     results = []
     for item in items:
         rule_name = item.get("rule", "")
@@ -303,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=config.default_path())
     parser.add_argument("--analyzer", action="append", dest="analyzers", default=[], metavar="NAME",
                         help="run only this analyzer (repeatable; default: all)")
-    parser.add_argument("--dir", default="", dest="directory", metavar="DIR")
+    parser.add_argument("directory", help="restrict to this directory")
     parser.add_argument("--ext", action="append", dest="exts", default=[], metavar="EXT")
     parser.add_argument("--exclude", action="append", dest="excludes", default=[], metavar="PATTERN",
                         help="exclude paths matching glob pattern (repeatable)")

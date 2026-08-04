@@ -121,8 +121,7 @@ def print_results(directory: str, violations: list[Violation], symbol_count: int
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lint code using the blerk index.")
     parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("--dir", default="", dest="directory", metavar="DIR",
-                        help="directory to lint (default: cwd)")
+    parser.add_argument("directory", help="directory to lint")
     parser.add_argument("--exclude", action="append", dest="excludes", default=[], metavar="PATTERN",
                         help="exclude paths matching glob pattern (repeatable)")
     parser.add_argument("--timing", action="store_true", help="print per-rule timing to stderr")
@@ -144,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         val = getattr(args, attr)
         thresholds[rule.name] = 0 if (rule.default < 0 and val) else (-1 if rule.default < 0 else val)
 
-    directory = os.path.realpath(args.directory or ".")
+    directory = normalize_dir(args.directory)
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
 

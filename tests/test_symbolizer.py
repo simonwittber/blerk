@@ -163,6 +163,131 @@ def test_new_symbol_queues_while_described_unchanged_does_not(conn):
     assert "foo" not in queued
 
 
+def test_unchanged_symbol_id_is_stable(conn):
+    cfg = _cfg()
+    fid = _insert_file(conn)
+    row = db.QueueRow(id=1, target_id=fid)
+    syms = [Symbol(name="foo", kind="function", line=1, end_line=10, snippet="def foo(): pass")]
+
+    process_symbols(conn, cfg, row, "a/b.py", syms, [])
+    sid_before = conn.execute("SELECT id FROM symbols WHERE file_id=?", (fid,)).fetchone()[0]
+
+    process_symbols(conn, cfg, row, "a/b.py", syms, [])
+    sid_after = conn.execute("SELECT id FROM symbols WHERE file_id=?", (fid,)).fetchone()[0]
+
+    assert sid_before == sid_after
+
+
+def test_changed_symbol_id_is_stable(conn):
+    cfg = _cfg()
+    fid = _insert_file(conn)
+    row = db.QueueRow(id=1, target_id=fid)
+
+    process_symbols(conn, cfg, row, "a/b.py",
+                    [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="def foo(): pass")], [])
+    sid_before = conn.execute("SELECT id FROM symbols WHERE file_id=?", (fid,)).fetchone()[0]
+
+    process_symbols(conn, cfg, row, "a/b.py",
+                    [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="def foo(): return 1")], [])
+    sid_after = conn.execute("SELECT id FROM symbols WHERE file_id=?", (fid,)).fetchone()[0]
+
+    assert sid_before == sid_after
+
+
+def test_removed_symbol_is_deleted(conn):
+    cfg = _cfg()
+    fid = _insert_file(conn)
+    row = db.QueueRow(id=1, target_id=fid)
+
+    process_symbols(conn, cfg, row, "a/b.py",
+                    [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="s")], [])
+    process_symbols(conn, cfg, row, "a/b.py", [], [])
+
+    count = conn.execute("SELECT COUNT(*) FROM symbols WHERE file_id=?", (fid,)).fetchone()[0]
+    assert count == 0
+
+
+def test_unchanged_symbol_not_in_embedding_queue(conn):
+    cfg = _cfg()
+    fid = _insert_file(conn)
+    row = db.QueueRow(id=1, target_id=fid)
+    syms = [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="def foo(): pass")]
+
+    process_symbols(conn, cfg, row, "a/b.py", syms, [])
+    conn.execute("DELETE FROM embedding_queue")
+
+    process_symbols(conn, cfg, row, "a/b.py", syms, [])
+
+    count = conn.execute("SELECT COUNT(*) FROM embedding_queue").fetchone()[0]
+    assert count == 0
+
+
+def test_changed_symbol_queues_embedding_and_fingerprint(conn):
+    cfg = _cfg()
+    fid = _insert_file(conn)
+    row = db.QueueRow(id=1, target_id=fid)
+
+    process_symbols(conn, cfg, row, "a/b.py",
+                    [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="def foo(): pass")], [])
+    conn.execute("DELETE FROM embedding_queue")
+    conn.execute("DELETE FROM fingerprint_queue")
+
+    process_symbols(conn, cfg, row, "a/b.py",
+                    [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="def foo(): return 1")], [])
+
+    embed_count = conn.execute("SELECT COUNT(*) FROM embedding_queue").fetchone()[0]
+    fp_count = conn.execute("SELECT COUNT(*) FROM fingerprint_queue").fetchone()[0]
+    assert embed_count == 1
+    assert fp_count == 1
+
+
+def test_changed_symbol_gets_priority_2(conn):
+    cfg = _cfg()
+    fid = _insert_file(conn)
+    row = db.QueueRow(id=1, target_id=fid)
+
+    process_symbols(conn, cfg, row, "a/b.py",
+                    [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="v1")], [])
+    conn.execute("DELETE FROM embedding_queue")
+    conn.execute("DELETE FROM fingerprint_queue")
+    conn.execute("DELETE FROM description_queue")
+
+    process_symbols(conn, cfg, row, "a/b.py",
+                    [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="v2")], [])
+
+    prio = conn.execute("SELECT priority FROM embedding_queue").fetchone()[0]
+    assert prio == 2
+
+
+def test_new_symbol_in_known_file_gets_priority_2(conn):
+    cfg = _cfg()
+    fid = _insert_file(conn)
+    row = db.QueueRow(id=1, target_id=fid)
+
+    process_symbols(conn, cfg, row, "a/b.py",
+                    [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="v1")], [])
+    conn.execute("DELETE FROM embedding_queue")
+
+    process_symbols(conn, cfg, row, "a/b.py",
+                    [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="v1"),
+                     Symbol(name="bar", kind="function", line=10, end_line=15, snippet="v1")], [])
+
+    rows = conn.execute("SELECT priority FROM embedding_queue ORDER BY symbol_id").fetchall()
+    assert all(r[0] == 2 for r in rows)
+
+
+def test_new_file_initial_index_gets_priority_1(conn):
+    cfg = _cfg()
+    fid = _insert_file(conn)
+    row = db.QueueRow(id=1, target_id=fid)
+
+    process_symbols(conn, cfg, row, "a/b.py",
+                    [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="v1")], [])
+
+    prio = conn.execute("SELECT priority FROM embedding_queue").fetchone()[0]
+    assert prio == 1
+
+
 def test_min_describe_lines_removes_short_symbols(conn):
     cfg = _cfg(min_lines=5)
     fid = _insert_file(conn)

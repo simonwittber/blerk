@@ -30,56 +30,56 @@ class TestCall:
     def test_search_calls_query(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("search", {"query": "foo bar"})
+        mcp_mod._call("search", {"query": "foo bar", "directory": "."})
         assert calls[0][0] == "query"
         assert "foo bar" in calls[0]
 
     def test_search_n_clamped_to_50(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("search", {"query": "x", "n": 999})
+        mcp_mod._call("search", {"query": "x", "n": 999, "directory": "."})
         args = list(calls[0])
         assert int(args[args.index("-n") + 1]) == 50
 
     def test_search_n_minimum_1(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("search", {"query": "x", "n": -5})
+        mcp_mod._call("search", {"query": "x", "n": -5, "directory": "."})
         args = list(calls[0])
         assert int(args[args.index("-n") + 1]) == 1
 
     def test_search_empty_result_fallback(self, monkeypatch):
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
-        assert mcp_mod._call("search", {"query": "x"}) == "No results found."
+        assert mcp_mod._call("search", {"query": "x", "directory": "."}) == "No results found."
 
     def test_search_directory_passed(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
         mcp_mod._call("search", {"query": "x", "directory": "src/core"})
-        assert "--dir" in calls[0]
+        assert "--dir" not in calls[0]
         assert "src/core" in calls[0]
 
     def test_search_extensions_passed(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("search", {"query": "x", "file_extensions": [".py", ".cs"]})
+        mcp_mod._call("search", {"query": "x", "file_extensions": [".py", ".cs"], "directory": "."})
         args = list(calls[0])
         assert args.count("--ext") == 2
 
     def test_browse_fallback(self, monkeypatch):
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
-        assert mcp_mod._call("browse", {}) == "No indexed files found."
+        assert mcp_mod._call("browse", {"directory": "."}) == "No indexed files found."
 
     def test_browse_symbols_flag_added(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("browse", {"symbols": True})
+        mcp_mod._call("browse", {"symbols": True, "directory": "."})
         assert "--symbols" in calls[0]
 
     def test_browse_symbols_flag_omitted(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("browse", {"symbols": False})
+        mcp_mod._call("browse", {"symbols": False, "directory": "."})
         assert "--symbols" not in calls[0]
 
     def test_detail_passes_name(self, monkeypatch):
@@ -98,18 +98,19 @@ class TestCall:
 
     def test_deps_fallback(self, monkeypatch):
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
-        assert mcp_mod._call("deps", {}) == "No dependencies found."
+        assert mcp_mod._call("deps", {"directory": "."}) == "No dependencies found."
 
     def test_deps_directory_passed(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
         mcp_mod._call("deps", {"directory": "src"})
-        assert "--dir" in calls[0]
+        assert "--dir" not in calls[0]
+        assert "src" in calls[0]
 
     def test_lint_default_flags_present(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("lint", {})
+        mcp_mod._call("lint", {"directory": "."})
         args = list(calls[0])
         for flag in ("--max-lines", "--max-symbols", "--max-callees",
                      "--max-params", "--max-nesting", "--dip-threshold",
@@ -119,23 +120,23 @@ class TestCall:
     def test_lint_unused_flag(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("lint", {"unused": True})
+        mcp_mod._call("lint", {"unused": True, "directory": "."})
         assert "--unused" in calls[0]
 
     def test_lint_statics_flag(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("lint", {"statics": True})
+        mcp_mod._call("lint", {"statics": True, "directory": "."})
         assert "--statics" in calls[0]
 
     def test_lint_fallback(self, monkeypatch):
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
-        assert mcp_mod._call("lint", {}) == "No lint findings."
+        assert mcp_mod._call("lint", {"directory": "."}) == "No lint findings."
 
     def test_antislop_calls_analyze_subcommand(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("antislop", {})
+        mcp_mod._call("antislop", {"directory": "."})
         assert calls[0][0] == "analyze"
         assert "--analyzer" in calls[0]
         assert "antislop" in calls[0]
@@ -143,12 +144,12 @@ class TestCall:
     def test_antislop_reset_flag(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("antislop", {"reset": True})
+        mcp_mod._call("antislop", {"reset": True, "directory": "."})
         assert "--reset" in calls[0]
 
     def test_antislop_fallback(self, monkeypatch):
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
-        assert mcp_mod._call("antislop", {}) == "No confusing fragments found."
+        assert mcp_mod._call("antislop", {"directory": "."}) == "No confusing fragments found."
 
     def test_unknown_tool_returns_error_message(self, monkeypatch):
         result = mcp_mod._call("does_not_exist", {})
@@ -181,7 +182,7 @@ class TestMain:
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "search result")
         responses = _drive(monkeypatch, [
             {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-             "params": {"name": "search", "arguments": {"query": "foo"}}}
+             "params": {"name": "search", "arguments": {"query": "foo", "directory": "."}}}
         ])
         content = responses[0]["result"]["content"]
         assert content[0]["type"] == "text"
@@ -191,7 +192,7 @@ class TestMain:
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
         responses = _drive(monkeypatch, [
             {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
-             "params": {"name": "browse", "arguments": {}}}
+             "params": {"name": "browse", "arguments": {"directory": "."}}}
         ])
         assert responses[0]["result"]["content"][0]["text"] == "No indexed files found."
 

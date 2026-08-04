@@ -282,7 +282,7 @@ def test_main_empty_db_prints_nothing(tmp_path, capsys, monkeypatch):
     cfg_path = _write_config(tmp_path, db_path)
     monkeypatch.setattr(query, "embed", lambda *a: [1.0, 0.0, 0.0])
 
-    assert query.main(["--config", str(cfg_path), "hello"]) == 0
+    assert query.main(["--config", str(cfg_path), "hello", "."]) == 0
     assert capsys.readouterr().out == ""
 
 
@@ -299,7 +299,7 @@ def test_main_end_to_end(tmp_path, capsys, monkeypatch):
     cfg_path = _write_config(tmp_path, db_path)
     monkeypatch.setattr(query, "embed", lambda *a: [1.0, 0.0, 0.0])
 
-    assert query.main(["--config", str(cfg_path), "-n", "1", "--verbose", "alpha"]) == 0
+    assert query.main(["--config", str(cfg_path), "-n", "1", "--verbose", "alpha", "src"]) == 0
     out = capsys.readouterr().out
     assert "[1] function alpha" in out
     assert "bravo" not in out
@@ -319,7 +319,7 @@ def test_main_ext_flag(tmp_path, capsys, monkeypatch):
     cfg_path = _write_config(tmp_path, db_path)
     monkeypatch.setattr(query, "embed", lambda *a: [1.0, 0.0, 0.0])
 
-    assert query.main(["--config", str(cfg_path), "--ext", ".py", "alpha"]) == 0
+    assert query.main(["--config", str(cfg_path), "--ext", ".py", "alpha", "src"]) == 0
     out = capsys.readouterr().out
     assert "alpha_py" in out
     assert "alpha_cs" not in out

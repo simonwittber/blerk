@@ -4,6 +4,7 @@ import argparse
 import sys
 
 from blerk import config, db
+from blerk_cmd.util import normalize_dir
 
 
 def rescan(conn, directory: str = "", exts: list[str] | None = None) -> int:
@@ -11,9 +12,9 @@ def rescan(conn, directory: str = "", exts: list[str] | None = None) -> int:
     params: list[str] = []
 
     if directory:
-        norm = directory.replace("\\", "/").rstrip("/")
-        conditions.append("path LIKE ?")
-        params.append(f"{norm}/%")
+        norm = normalize_dir(directory).rstrip("/")
+        conditions.append("(path LIKE ? OR path LIKE ?)")
+        params += [f"%{norm}/%", f"%{norm}"]
 
     for ext in (exts or []):
         conditions.append("path LIKE ?")
@@ -41,7 +42,7 @@ def rescan(conn, directory: str = "", exts: list[str] | None = None) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Re-queue files for symbolization.")
     parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("path", nargs="?", default="", help="directory to rescan (default: all indexed files)")
+    parser.add_argument("path", help="directory to rescan")
     parser.add_argument("--ext", action="append", default=[], dest="exts",
                         metavar="EXT", help="restrict to file extension, e.g. .cs (repeatable)")
     args = parser.parse_args(argv)

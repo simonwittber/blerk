@@ -4,13 +4,14 @@ import argparse
 import sys
 
 from blerk import config, db
+from blerk_cmd.util import normalize_dir
 
 
 def detail(conn, name: str, path_filter: str = "") -> str:
     params: list = [name]
     path_sql = ""
     if path_filter:
-        norm = path_filter.replace("\\", "/")
+        norm = normalize_dir(path_filter)
         path_sql = "AND f.path LIKE ?"
         params.append(f"%{norm}%")
 

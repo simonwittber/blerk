@@ -5,6 +5,7 @@ import sys
 
 from blerk import config, db
 from blerk_cmd.query import _ext_sql
+from blerk_cmd.util import normalize_dir
 
 
 def list_tags(conn, directory: str = "", exts: list[str] | None = None) -> str:
@@ -13,7 +14,7 @@ def list_tags(conn, directory: str = "", exts: list[str] | None = None) -> str:
     dir_sql = ""
     dir_params: list[str] = []
     if directory:
-        norm = directory.replace("\\", "/").rstrip("/")
+        norm = normalize_dir(directory).rstrip("/")
         dir_sql = "AND (f.path LIKE ? OR f.path LIKE ?)"
         dir_params = [f"%{norm}/%", f"%{norm}"]
 
@@ -45,15 +46,14 @@ def list_tags(conn, directory: str = "", exts: list[str] | None = None) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="List all tag keys and values in the index.")
     parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("--dir", default="", dest="directory",
-                        metavar="DIR", help="restrict to a directory")
+    parser.add_argument("directory", help="restrict to this directory")
     parser.add_argument("--ext", action="append", default=[], dest="exts",
                         metavar="EXT", help="restrict to file extension, e.g. .cs (repeatable)")
     args = parser.parse_args(argv)
 
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
-    print(list_tags(conn, args.directory, args.exts))
+    print(list_tags(conn, normalize_dir(args.directory), args.exts))
     conn.close()
     return 0
 

@@ -5,7 +5,14 @@ from dataclasses import dataclass, field
 
 
 def normalize_dir(path: str) -> str:
-    return os.path.realpath(path or ".")
+    if not path:
+        return ""
+    real = os.path.realpath(path)
+    # Only use the resolved absolute path if it exists on disk.
+    # A non-existent path is treated as a substring filter (e.g. "module-games").
+    if os.path.exists(real):
+        return real.replace("\\", "/")
+    return path.replace("\\", "/")
 
 
 def placeholders(n: int) -> str:

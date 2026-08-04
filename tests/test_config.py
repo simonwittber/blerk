@@ -131,8 +131,8 @@ folders = ["~/x", "~/y/z"]
 """
     cfg = config.load(write_cfg(tmp_path, toml))
     home = Path.home()
-    assert cfg.watch.folders[0] == str(home / "x")
-    assert cfg.watch.folders[1] == str(home / "y" / "z")
+    assert cfg.watch.folders[0] == str(home / "x").replace("\\", "/")
+    assert cfg.watch.folders[1] == str(home / "y" / "z").replace("\\", "/")
 
 
 def test_load_expand_home_absolute_unchanged(tmp_path: Path) -> None:

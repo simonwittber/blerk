@@ -109,12 +109,20 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
             status = "running"
             for row in rows:
                 sym_row = conn.execute(
-                    "SELECT s.name, s.kind, f.path, COALESCE(s.line, 0), COALESCE(s.end_line, 0) "
+                    "SELECT s.name, s.kind, f.path, COALESCE(s.line, 0), COALESCE(s.end_line, 0), s.description "
                     "FROM symbols s JOIN files f ON f.id = s.file_id "
                     "WHERE s.id=?",
                     (row.target_id,),
                 ).fetchone()
                 if not sym_row:
+                    try:
+                        db.mark_done(conn, QUEUE, row.id)
+                    except sqlite3.Error as e:
+                        log.warning("mark done %s %d: %s", QUEUE, row.id, e)
+                    continue
+
+                if sym_row[5] is not None:
+                    # Already described; skip LLM call.
                     try:
                         db.mark_done(conn, QUEUE, row.id)
                     except sqlite3.Error as e:

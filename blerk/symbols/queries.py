@@ -76,11 +76,32 @@ CS_CALL = """
 (invocation_expression function: (member_access_expression name: (identifier) @callee))
 """
 
+HLSL_DECL = """
+(function_definition declarator: (function_declarator declarator: (identifier) @name parameters: (parameter_list) @params)) @func
+(struct_specifier name: (type_identifier) @name body: (_)) @struct
+"""
+
+HLSL_CALL = """
+(call_expression function: (identifier) @callee)
+(call_expression function: (field_expression field: (field_identifier) @callee))
+"""
+
+GLSL_DECL = """
+(function_definition declarator: (function_declarator declarator: (identifier) @name parameters: (parameter_list) @params)) @func
+(struct_specifier name: (type_identifier) @name body: (_)) @struct
+"""
+
+GLSL_CALL = """
+(call_expression function: (identifier) @callee)
+"""
+
 BODY_TYPES: dict[str, list[str]] = {
-    "go": ["block"],
-    "py": ["block"],
-    "js": ["statement_block"],
-    "c": ["compound_statement"],
-    "cpp": ["compound_statement"],
-    "cs": ["block"],
+    "go":   ["block"],
+    "py":   ["block"],
+    "js":   ["statement_block"],
+    "c":    ["compound_statement"],
+    "cpp":  ["compound_statement"],
+    "cs":   ["block"],
+    "hlsl": ["compound_statement"],
+    "glsl": ["compound_statement"],
 }

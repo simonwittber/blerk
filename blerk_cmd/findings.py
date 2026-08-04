@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 
 from blerk import config, db
@@ -106,7 +105,7 @@ def _print_json(findings: list[Finding]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Show stored analyzer findings.")
     parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("--dir", default="", dest="directory", metavar="DIR")
+    parser.add_argument("directory", help="restrict to this directory")
     parser.add_argument("--ext", action="append", dest="exts", default=[], metavar="EXT")
     parser.add_argument("--exclude", action="append", dest="excludes", default=[], metavar="PATTERN")
     parser.add_argument("--analyzer", action="append", dest="analyzers", default=[], metavar="NAME")
@@ -116,8 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", choices=["text", "json"], default="text")
     args = parser.parse_args(argv)
 
-    directory = os.path.realpath(args.directory or ".")
-    scope = Scope(directory=directory, exts=args.exts, excludes=args.excludes)
+    scope = Scope(directory=normalize_dir(args.directory), exts=args.exts, excludes=args.excludes)
 
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)

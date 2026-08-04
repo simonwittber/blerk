@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Add HLSL and GLSL shader language support
+
+The symbolizer now extracts functions, structs, and call references from HLSL and GLSL shader files.
+
+Two new packages are required: `tree-sitter-hlsl` and `tree-sitter-glsl`.
+
+HLSL extensions indexed: `.hlsl`, `.fx`, `.fxh`, `.hlsli`
+
+GLSL extensions indexed: `.glsl`, `.vert`, `.frag`, `.geom`, `.comp`, `.tese`, `.tesc`
+
+Both grammars use the old tree-sitter 0.22 binary ABI. A small `ctypes` wrapper in `treesitter_extractor.py` converts the raw pointer to a PyCapsule so tree-sitter 0.23+ can accept it. This wrapper can be removed once the upstream packages publish 0.23-compatible wheels.
+
 ### antislop: removed as a standalone command
 
 `blerk antislop` and its `confusing` alias are removed.

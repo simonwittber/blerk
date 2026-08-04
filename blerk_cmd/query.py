@@ -10,6 +10,7 @@ from typing import NamedTuple
 import httpx
 
 from blerk import config, db
+from blerk_cmd.util import normalize_dir
 
 
 @dataclass
@@ -59,7 +60,7 @@ def _ext_sql(exts: list[str]) -> tuple[str, list[str]]:
 def _dir_clause(directory: str) -> tuple[str, list[str]]:
     if not directory:
         return "", []
-    norm = directory.replace("\\", "/")
+    norm = normalize_dir(directory)
     return "AND f.path LIKE ?", [f"%{norm}%"]
 
 
@@ -336,11 +337,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--refs", action="store_true", help="show callers and callees for each result (implies --verbose)")
     parser.add_argument("--ext", action="append", default=[], dest="exts",
                         metavar="EXT", help="restrict to file extension, e.g. .py (repeatable)")
-    parser.add_argument("--dir", default="", dest="directory",
-                        metavar="PATH", help="restrict to a directory path substring")
     parser.add_argument("--tag", action="append", default=[], dest="tags",
                         metavar="KEY=VALUE", help="filter by symbol tag, e.g. visibility=public (repeatable)")
     parser.add_argument("query", help="query text")
+    parser.add_argument("directory", help="restrict to this directory path substring")
     args = parser.parse_args(argv)
 
     cfg = config.load(args.config)
@@ -359,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
         n=args.n,
         exts=args.exts or None,
         reranker=cfg.reranker if cfg.reranker.enabled else None,
-        directory=args.directory,
+        directory=normalize_dir(args.directory),
         verbose=args.verbose or args.refs,
         refs=args.refs,
         tags=tag_filter or None,

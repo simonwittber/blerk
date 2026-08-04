@@ -123,6 +123,52 @@ def test_build_prompt_preserves_template_literal_braces(tmp_path):
     assert " x " in out
 
 
+def test_run_skips_already_described_symbol(tmp_path):
+    db_path = str(tmp_path / "test.db")
+    conn = db.open_db(db_path)
+    cur = conn.execute("INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
+                       (str(tmp_path / "a.py"), 0, "h"))
+    fid = int(cur.lastrowid)
+    cur = conn.execute(
+        "INSERT INTO symbols(file_id, name, kind, line, end_line, description) VALUES(?,?,?,?,?,?)",
+        (fid, "foo", "function", 1, 5, "already described"),
+    )
+    sid = int(cur.lastrowid)
+    conn.execute("INSERT INTO description_queue(symbol_id) VALUES (?)", (sid,))
+    conn.close()
+
+    call_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count[0] += 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": "new desc"}}]})
+
+    import threading
+    from blerk import config as blerk_config
+    from blerk_cmd.llm_describer import run as describer_run
+
+    original = _install_transport(handler)
+    try:
+        cfg = blerk_config.defaults()
+        cfg.db.path = db_path
+        llm = blerk_config.defaults().llm[0]
+        shutdown = threading.Event()
+
+        def _stop():
+            import time as _time
+            _time.sleep(0.05)
+            shutdown.set()
+
+        t = threading.Thread(target=_stop, daemon=True)
+        t.start()
+        describer_run(cfg, llm, shutdown)
+        t.join()
+    finally:
+        _restore_client(original)
+
+    assert call_count[0] == 0
+
+
 def test_description_write_enqueues_embedding(tmp_path):
     db_path = str(tmp_path / "test.db")
     conn = db.open_db(db_path)

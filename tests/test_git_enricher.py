@@ -18,7 +18,7 @@ def test_find_git_root_finds_parent(tmp_path):
     nested.mkdir(parents=True)
 
     result = find_git_root(str(nested))
-    assert result == str(repo.resolve())
+    assert result == str(repo.resolve()).replace("\\", "/")
 
 
 def test_find_git_root_returns_none_outside_repo(tmp_path):
