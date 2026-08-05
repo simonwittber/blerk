@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-05
+
+### blerk summary
+
+A new `blerk summary` command prints a project index snapshot: watch folders, file and symbol counts, embedding and description coverage, files modified in the last 7 days, and a finding count by severity.
+
+### MCP server instructions
+
+The MCP `initialize` response now includes an `instructions` field when the working directory is inside a watched folder.
+Claude Code injects this field into context at session start.
+The instruction directs Claude to run `blerk summary` for project details.
+
 ### blerk query: compact output format
 
 The compact and verbose output formats no longer include blank lines between results.
