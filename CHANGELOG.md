@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-05
+
+### blerk summary: directory argument required
+
+`blerk summary` now requires a directory argument and scopes all counts to that path, consistent with all other commands.
+
 ## [0.3.1] - 2026-08-05
 
 ### blerk summary
