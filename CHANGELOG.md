@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### blerk query: compact output format
+
+The compact and verbose output formats no longer include blank lines between results.
+Verbose mode packs all fields onto one header line: kind, name, path, line range, score, and description.
+Snippet lines follow the header, indented by two spaces.
+This reduces token usage when query output is passed to an LLM.
+
 ## [0.3.0] - 2026-08-04
 
 ### Symbolizer removes missing files from the database

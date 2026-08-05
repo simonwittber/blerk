@@ -149,11 +149,10 @@ def test_run_query_block_format(tmp_path, capsys):
     out = capsys.readouterr().out
 
     assert "[1] function alpha" in out
-    assert "path: src/main.py" in out
-    assert "lines: 10-25" in out
+    assert "src/main.py:10-25" in out
     assert "score:" in out
-    assert "desc: does alpha stuff" in out
-    assert "snippet:\n  def alpha(): pass" in out
+    assert "does alpha stuff" in out
+    assert "  def alpha(): pass" in out
 
 
 def test_run_query_no_description_or_snippet(tmp_path, capsys):

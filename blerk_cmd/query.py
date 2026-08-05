@@ -292,23 +292,20 @@ def format_verbose(conn, results: list[QueryResult], refs: bool = False) -> str:
     lines: list[str] = []
     for i, r in enumerate(results):
         sig = f"({r.params})" if r.params else ""
-        lines.append(f"[{i + 1}] {r.kind} {r.name}{sig}")
-        lines.append(f"path: {r.path}")
-        lines.append(f"lines: {r.line}-{r.end_line}")
-        lines.append(f"score: {r.score:.3f}")
+        header = f"[{i + 1}] {r.kind} {r.name}{sig}  {r.path}:{r.line}-{r.end_line}  score:{r.score:.3f}"
         if r.description:
-            lines.append(f"desc: {r.description}")
+            header += f"  {r.description}"
+        lines.append(header)
         if r.snippet:
-            indented = "\n".join("  " + l for l in r.snippet.splitlines())
-            lines.append(f"snippet:\n{indented}")
+            for l in r.snippet.splitlines():
+                lines.append("  " + l)
         if refs:
             import io, contextlib
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 print_refs(conn, r.id)
             lines.append(buf.getvalue().rstrip())
-        lines.append("")
-    return "\n".join(lines).rstrip()
+    return "\n".join(lines)
 
 
 def format_compact(results: list[QueryResult]) -> str:
@@ -316,8 +313,7 @@ def format_compact(results: list[QueryResult]) -> str:
     for r in results:
         sig = f"({r.params})" if r.params else ""
         lines.append(f"{r.kind} {r.name}{sig}  {r.path}:{r.line}-{r.end_line}")
-        lines.append("")
-    return "\n".join(lines).rstrip()
+    return "\n".join(lines)
 
 
 def run_query(conn, blob: bytes, query_text: str, opts: QueryOptions) -> None:

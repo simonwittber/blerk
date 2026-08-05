@@ -20,6 +20,7 @@ _DISPATCH = {
     "tags":      "blerk_cmd.tags",
     "analyze":   "blerk_cmd.analyze",
     "findings":  "blerk_cmd.findings",
+    "summary":   "blerk_cmd.summary",
 }
 
 _HELP = {
@@ -38,6 +39,7 @@ _HELP = {
     "tags":      "List all tag keys and values in the index",
     "analyze":   "Run LLM-based analyzers against indexed symbols",
     "findings":  "Show stored analyzer findings",
+    "summary":   "Print a project index snapshot",
     "add":    "Add a folder to the watch list",
     "remove": "Remove a folder from the watch list",
 }

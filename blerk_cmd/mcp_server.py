@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import subprocess
 import sys
 
@@ -172,12 +174,37 @@ def _call(name: str, args: dict) -> str:
     return f"Unknown tool: {name}"
 
 
+def _build_instructions(cfg_path: str) -> str:
+    try:
+        from blerk import config
+        from blerk_cmd.util import normalize_dir
+        from blerk_cmd.summary import summary
+        cfg = config.load(cfg_path)
+        cwd = normalize_dir(os.getcwd())
+        watched = any(
+            cwd.startswith(normalize_dir(f).rstrip("/"))
+            for f in cfg.watch.folders
+        )
+        if not watched:
+            return ""
+        return "This project is indexed by blerk. Run blerk summary for file counts, recent changes, and findings."
+    except Exception:
+        return ""
+
+
 def _send(obj: dict) -> None:
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=None)
+    args, _ = parser.parse_known_args()
+
+    from blerk import config as _config
+    cfg_path = args.config or _config.default_path()
+
     for raw in sys.stdin:
         raw = raw.strip()
         if not raw:
@@ -193,11 +220,15 @@ def main() -> None:
         params = req.get("params") or {}
 
         if method == "initialize":
-            _send({"jsonrpc": "2.0", "id": req_id, "result": {
+            result: dict = {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "blerk", "version": "0.1.0"},
-            }})
+                "serverInfo": {"name": "blerk", "version": "0.3.0"},
+            }
+            instructions = _build_instructions(cfg_path)
+            if instructions:
+                result["instructions"] = instructions
+            _send({"jsonrpc": "2.0", "id": req_id, "result": result})
 
         elif method == "tools/list":
             _send({"jsonrpc": "2.0", "id": req_id, "result": {"tools": _TOOLS}})
