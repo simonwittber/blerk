@@ -399,7 +399,7 @@ def static_symbol(conn, directory: str, threshold: int, excludes: list[str] = []
         """
         SELECT f.path, s.name, s.line, s.kind
         FROM symbols s JOIN _lint_files f ON f.file_id = s.file_id
-        WHERE s.is_static = 1
+        JOIN symbol_tags st ON st.symbol_id = s.id AND st.key = 'is_static' AND st.value = 'true'
         ORDER BY f.path, s.line
         """,
     ).fetchall()

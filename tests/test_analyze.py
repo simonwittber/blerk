@@ -42,11 +42,17 @@ def _insert_symbol(
 ) -> int:
     fid = _insert_file(conn, tmp_path, name)
     cur = conn.execute(
-        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, description)"
-        " VALUES(?,?,?,?,?,?,?)",
-        (fid, name, kind, 1, end_line, snippet, description),
+        "INSERT INTO symbols(file_id, name, kind, line, end_line, description)"
+        " VALUES(?,?,?,?,?,?)",
+        (fid, name, kind, 1, end_line, description),
     )
-    return int(cur.lastrowid)
+    sid = int(cur.lastrowid)
+    conn.execute(
+        "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line)"
+        " VALUES(?,?,?,?,?)",
+        (sid, 0, snippet, 1, end_line),
+    )
+    return sid
 
 
 def _insert_ref(conn, caller_id: int, callee_id: int) -> None:
@@ -338,20 +344,30 @@ def test_reset_findings_with_directory_filter(conn, tmp_path):
         (str(sub / "in.py"), 0, "h1"),
     ).lastrowid)
     sid_in = int(conn.execute(
-        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet)"
-        " VALUES(?,?,?,?,?,?)",
-        (fid_in, "sym_in", "function", 1, 5, "pass"),
+        "INSERT INTO symbols(file_id, name, kind, line, end_line)"
+        " VALUES(?,?,?,?,?)",
+        (fid_in, "sym_in", "function", 1, 5),
     ).lastrowid)
+    conn.execute(
+        "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line)"
+        " VALUES(?,?,?,?,?)",
+        (sid_in, 0, "pass", 1, 5),
+    )
 
     fid_out = int(conn.execute(
         "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
         (str(tmp_path / "out.py"), 0, "h2"),
     ).lastrowid)
     sid_out = int(conn.execute(
-        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet)"
-        " VALUES(?,?,?,?,?,?)",
-        (fid_out, "sym_out", "function", 1, 5, "pass"),
+        "INSERT INTO symbols(file_id, name, kind, line, end_line)"
+        " VALUES(?,?,?,?,?)",
+        (fid_out, "sym_out", "function", 1, 5),
     ).lastrowid)
+    conn.execute(
+        "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line)"
+        " VALUES(?,?,?,?,?)",
+        (sid_out, 0, "pass", 1, 5),
+    )
 
     with db._write_lock:
         conn.execute(

@@ -28,17 +28,27 @@ def _seed_symbol(
     snippet: str = "",
 ) -> int:
     cur = conn.execute(
-        "INSERT INTO symbols (file_id, name, kind, line, end_line, snippet, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (file_id, name, kind, line, end_line, snippet or None, description or None),
+        "INSERT INTO symbols (file_id, name, kind, line, end_line, description) VALUES (?, ?, ?, ?, ?, ?)",
+        (file_id, name, kind, line, end_line, description or None),
     )
-    return cur.lastrowid
+    sid = cur.lastrowid
+    conn.execute(
+        "INSERT INTO code_blocks (symbol_id, block_index, content, start_line, end_line)"
+        " VALUES (?, 0, ?, ?, ?)",
+        (sid, snippet or "", line, end_line),
+    )
+    return sid
 
 
 def _seed_embedding(conn, symbol_id: int, vec: list[float]) -> None:
     blob = struct.pack(f"<{len(vec)}f", *vec)
+    row = conn.execute(
+        "SELECT id FROM code_blocks WHERE symbol_id=? AND block_index=0", (symbol_id,)
+    ).fetchone()
+    block_id = row[0]
     conn.execute(
-        "INSERT INTO embeddings (symbol_id, model, vector, embedded_at) VALUES (?, 'm', ?, 0)",
-        (symbol_id, blob),
+        "INSERT INTO embeddings (block_id, model, vector, embedded_at) VALUES (?, 'm', ?, 0)",
+        (block_id, blob),
     )
 
 
@@ -102,15 +112,15 @@ def test_bm25_ranks_match(tmp_path):
     a = _seed_symbol(conn, file_id, "debouncer", snippet="class Debouncer: pass")
     b = _seed_symbol(conn, file_id, "unrelated", snippet="def foo(): pass")
 
-    ranks = query._bm25_positions(conn, "debouncer", 10, QueryOptions())
+    ranks = query._bm25_symbol_positions(conn, "debouncer", 10, QueryOptions())
     assert a in ranks
     assert ranks.get(a, 999) < ranks.get(b, 999)
 
 
 def test_bm25_ranks_empty_query(tmp_path):
     conn = _open(tmp_path)
-    assert query._bm25_positions(conn, "", 10, QueryOptions()) == {}
-    assert query._bm25_positions(conn, "   ", 10, QueryOptions()) == {}
+    assert query._bm25_symbol_positions(conn, "", 10, QueryOptions()) == {}
+    assert query._bm25_symbol_positions(conn, "   ", 10, QueryOptions()) == {}
 
 
 # --- RRF fusion ---

@@ -80,7 +80,10 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
             status = "running"
             for row in rows:
                 sym_row = conn.execute(
-                    "SELECT name, snippet FROM symbols WHERE id=?",
+                    "SELECT s.name, cb.content"
+                    " FROM symbols s"
+                    " JOIN code_blocks cb ON cb.symbol_id = s.id AND cb.block_index = 0"
+                    " WHERE s.id=?",
                     (row.target_id,),
                 ).fetchone()
 

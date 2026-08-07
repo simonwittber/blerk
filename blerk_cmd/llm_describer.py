@@ -15,8 +15,8 @@ from blerk import config, coordinator, daemon_util, db
 from blerk.symbols import types as symbols_types
 
 
-QUEUE = "description_queue"
-TARGET_COL = "symbol_id"
+QUEUE = "code_block_describe_queue"
+TARGET_COL = "block_id"
 DAEMON = "llm-describer"
 
 log = logging.getLogger("llm-describer")
@@ -108,21 +108,26 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
         if rows:
             status = "running"
             for row in rows:
-                sym_row = conn.execute(
-                    "SELECT s.name, s.kind, f.path, COALESCE(s.line, 0), COALESCE(s.end_line, 0), s.description "
-                    "FROM symbols s JOIN files f ON f.id = s.file_id "
-                    "WHERE s.id=?",
+                blk_row = conn.execute(
+                    "SELECT cb.description, cb.block_index,"
+                    " s.id, s.name, s.kind, f.path,"
+                    " COALESCE(cb.start_line, s.line), COALESCE(cb.end_line, s.end_line, s.line)"
+                    " FROM code_blocks cb"
+                    " JOIN symbols s ON s.id = cb.symbol_id"
+                    " JOIN files f ON f.id = s.file_id"
+                    " WHERE cb.id=?",
                     (row.target_id,),
                 ).fetchone()
-                if not sym_row:
+                if not blk_row:
                     try:
                         db.mark_done(conn, QUEUE, row.id)
                     except sqlite3.Error as e:
                         log.warning("mark done %s %d: %s", QUEUE, row.id, e)
                     continue
 
-                if sym_row[5] is not None:
-                    # Already described; skip LLM call.
+                blk_desc, block_index, sym_id, sym_name, sym_kind, path, start_line, end_line = blk_row
+
+                if blk_desc is not None:
                     try:
                         db.mark_done(conn, QUEUE, row.id)
                     except sqlite3.Error as e:
@@ -130,12 +135,12 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
                     continue
 
                 sym = SymbolInfo(
-                    id=row.target_id,
-                    name=sym_row[0],
-                    kind=sym_row[1],
-                    path=sym_row[2],
-                    line=int(sym_row[3]),
-                    end_line=int(sym_row[4]),
+                    id=sym_id,
+                    name=sym_name,
+                    kind=sym_kind,
+                    path=path,
+                    line=int(start_line),
+                    end_line=int(end_line),
                 )
 
                 prompt = build_prompt(sym, llm.prompt_template, llm.max_context_chars)
@@ -144,7 +149,7 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
                 try:
                     desc = describe(llm.endpoint, llm.model, llm.api_key, prompt)
                 except Exception as e:
-                    log.warning("describe %s: %s", sym.name, e)
+                    log.warning("describe %s: %s", sym_name, e)
                     try:
                         failed = db.requeue(conn, QUEUE, row.id, str(e), llm.max_retries)
                     except sqlite3.Error as req_err:
@@ -157,9 +162,14 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
 
                 try:
                     conn.execute(
-                        "UPDATE symbols SET description=?, described_at=unixepoch() WHERE id=?",
-                        (desc, sym.id),
+                        "UPDATE code_blocks SET description=?, described_at=unixepoch() WHERE id=?",
+                        (desc, row.target_id),
                     )
+                    if block_index == 0:
+                        conn.execute(
+                            "UPDATE symbols SET description=?, described_at=unixepoch() WHERE id=?",
+                            (desc, sym_id),
+                        )
                 except sqlite3.Error as e:
                     try:
                         failed = db.requeue(conn, QUEUE, row.id, str(e), llm.max_retries)
@@ -177,7 +187,7 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
                     log.warning("mark done %s %d: %s", QUEUE, row.id, e)
 
                 if not silent:
-                    log.info("%s: %s, %s in %s", daemon_name, daemon_util.fmt_duration(time.monotonic() - t0), sym.name, sym.path)
+                    log.info("%s: %s, %s in %s", daemon_name, daemon_util.fmt_duration(time.monotonic() - t0), sym_name, path)
 
                 now = datetime.now()
                 if (now - day_start).total_seconds() >= 24 * 3600:
@@ -188,7 +198,7 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
                 rate_window.append(time.monotonic())
                 processed_today += 1
 
-            client.notify("embedding_queue")
+            client.notify("code_block_embed_queue")
 
         cutoff = time.monotonic() - 60.0
         while rate_window and rate_window[0] < cutoff:

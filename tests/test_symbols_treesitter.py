@@ -73,13 +73,13 @@ def test_line_numbers(write_temp):
     assert line_of.get("main.Second") == 5
 
 
-def test_snippet_cap(write_temp):
+def test_snippet_full_content(write_temp):
     body = "\n".join([f"    x{i} = {i}" for i in range(200)])
     src = f"def big():\n{body}\n"
     path = write_temp("big.py", src)
     syms, _ = Extractor().extract(path)
     big = next(s for s in syms if s.short_name == "big")
-    assert big.snippet.count("\n") + 1 <= 100
+    assert big.snippet.count("\n") + 1 == 201
 
 
 def test_unsupported_ext_returns_empty(write_temp):

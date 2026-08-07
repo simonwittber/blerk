@@ -56,7 +56,7 @@ def status(conn, db_path: str = "") -> str:
         "SELECT COUNT(*) FROM symbols WHERE kind != 'heading'"
     ).fetchone()[0]
     embedded = conn.execute(
-        "SELECT COUNT(DISTINCT symbol_id) FROM embeddings"
+        "SELECT COUNT(DISTINCT cb.symbol_id) FROM embeddings e JOIN code_blocks cb ON cb.id = e.block_id"
     ).fetchone()[0]
     describable = conn.execute(
         "SELECT COUNT(*) FROM symbols WHERE kind IN ('function','method')"

@@ -179,7 +179,7 @@ Once connected, the assistant can call:
 
 - `search(query, directory="", file_extensions=[], n=10)` — find symbols by meaning
 - `browse(directory="", file_extensions=[], symbols=False)` — list files or symbols in a directory
-- `detail(name, file_path="")` — show description, snippet, callers, and callees for a named symbol
+- `detail(name, file_path="")` — show description, code blocks, callers, and callees for a named symbol
 - `deps(directory="")` — show the file-level dependency graph
 - `lint(directory="", ...)` — run lint rules and return violations
 - `antislop(directory="", n=50, reset=False, ...)` — tag confusing or pointless functions
@@ -201,7 +201,7 @@ Options:
 | `--ext EXT` | (all) | Restrict to a file extension, e.g. `--ext .py`. Repeatable. |
 | `--tag KEY=VALUE` | (all) | Filter by symbol tag, e.g. `--tag visibility=public`. Repeatable. |
 | `--refs` | off | Show callers and callees for each result |
-| `--verbose` | off | Show full output with snippets and scores |
+| `--verbose` | off | Show full output with code block content and scores |
 | `--config PATH` | `~/.blerk/config.toml` | Path to config file |
 
 ### Example output
@@ -211,7 +211,6 @@ Options:
 path: /home/user/git/myproject/watcher.py
 lines: 45-58
 score: 0.941
-snippet:
 def add(self, path, event):
     with self._lock:
         self._pending[path] = event

@@ -115,7 +115,8 @@ def _vector_positions(conn, blob: bytes, k: int, opts: QueryOptions) -> dict[int
         f"""
         SELECT s.id
         FROM embeddings e
-        JOIN symbols s ON s.id = e.symbol_id
+        JOIN code_blocks cb ON cb.id = e.block_id
+        JOIN symbols s ON s.id = cb.symbol_id
         JOIN files f ON f.id = s.file_id
         {tag_sql}
         WHERE 1=1 {heading_sql} {ext_sql} {dir_sql}
@@ -127,7 +128,8 @@ def _vector_positions(conn, blob: bytes, k: int, opts: QueryOptions) -> dict[int
     return {row[0]: rank for rank, row in enumerate(rows)}
 
 
-def _bm25_positions(conn, query_text: str, k: int, opts: QueryOptions) -> dict[int, int]:
+def _bm25_symbol_positions(conn, query_text: str, k: int, opts: QueryOptions) -> dict[int, int]:
+    """BM25 over symbol names and descriptions."""
     if not query_text.strip():
         return {}
     exts = opts.exts or []
@@ -155,6 +157,36 @@ def _bm25_positions(conn, query_text: str, k: int, opts: QueryOptions) -> dict[i
     return {row[0]: rank for rank, row in enumerate(rows)}
 
 
+def _bm25_content_positions(conn, query_text: str, k: int, opts: QueryOptions) -> dict[int, int]:
+    """BM25 over code block content."""
+    if not query_text.strip():
+        return {}
+    exts = opts.exts or []
+    ext_sql, ext_params = _ext_sql(exts)
+    dir_sql, dir_params = _dir_clause(opts.directory)
+    heading_sql = _no_headings_sql(exts)
+    tag_sql, tag_params = _tag_clause(opts.tags or {})
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT s.id
+            FROM code_blocks_fts
+            JOIN code_blocks cb ON cb.id = code_blocks_fts.rowid
+            JOIN symbols s ON s.id = cb.symbol_id
+            JOIN files f ON f.id = s.file_id
+            {tag_sql}
+            WHERE code_blocks_fts MATCH ?
+              {heading_sql} {ext_sql} {dir_sql}
+            ORDER BY code_blocks_fts.rank
+            LIMIT ?
+            """,
+            (*tag_params, query_text, *ext_params, *dir_params, k),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {row[0]: rank for rank, row in enumerate(rows)}
+
+
 def _rrf_score(rank: int) -> float:
     return 1.0 / (_RRF_K + rank + 1)
 
@@ -163,7 +195,7 @@ def _rerank(reranker: config.Reranker, query_text: str, rows: list) -> list:
     from blerk.config import _DEFAULT_RERANKER_PROMPT
     numbered = "\n".join(
         f"{i+1}. {kind} {name}({params}) in {path}" + (f"\n   {desc}" if desc else "")
-        for i, (_, name, kind, path, _, _, desc, snippet, params) in enumerate(rows)
+        for i, (_, name, kind, path, _, _, desc, params) in enumerate(rows)
     )
     prompt = (reranker.prompt or _DEFAULT_RERANKER_PROMPT).replace("{query_text}", query_text).replace("{numbered}", numbered)
     headers: dict[str, str] = {}
@@ -207,7 +239,7 @@ class QueryResult(NamedTuple):
     line: int
     end_line: int
     description: str
-    snippet: str
+    content: str
     params: str
     score: float
 
@@ -221,16 +253,19 @@ def query_symbols(
     k = opts.n * _OVERFETCH
 
     vector = _vector_positions(conn, blob, k, opts)
-    bm25 = _bm25_positions(conn, query_text, k, opts)
+    bm25_sym = _bm25_symbol_positions(conn, query_text, k, opts)
+    bm25_content = _bm25_content_positions(conn, query_text, k, opts)
 
-    all_ids = set(vector) | set(bm25)
+    all_ids = set(vector) | set(bm25_sym) | set(bm25_content)
     scores: dict[int, float] = {}
     for id_ in all_ids:
         score = 0.0
         if id_ in vector:
             score += _rrf_score(vector[id_])
-        if id_ in bm25:
-            score += _rrf_score(bm25[id_])
+        if id_ in bm25_sym:
+            score += _rrf_score(bm25_sym[id_])
+        if id_ in bm25_content:
+            score += _rrf_score(bm25_content[id_])
         scores[id_] = score
 
     if opts.min_score > 0.0:
@@ -251,7 +286,6 @@ def query_symbols(
             s.line,
             COALESCE(s.end_line, s.line),
             COALESCE(s.description, ''),
-            COALESCE(s.snippet, ''),
             COALESCE(s.params, '')
         FROM symbols s
         JOIN files f ON f.id = s.file_id
@@ -260,12 +294,23 @@ def query_symbols(
         top_ids,
     ).fetchall()
 
+    # Fetch block 0 content for each result.
+    block_content: dict[int, str] = {}
+    if rows:
+        id_ph = ",".join("?" * len(top_ids))
+        for bid, content in conn.execute(
+            f"SELECT symbol_id, content FROM code_blocks"
+            f" WHERE symbol_id IN ({id_ph}) AND block_index=0",
+            top_ids,
+        ).fetchall():
+            block_content[bid] = content
+
     # Ranking adjustments applied after row fetch.
     # Fields and variables are leaf data; downweight so semantic types surface first.
     # Test files are rarely the answer to a concept search.
     # AI-described symbols have already been judged meaningful; give them a boost.
     _TEST_MARKERS = ("/tests/", "/editmode/", "/playmode/", "/test/", "tests.cs", "test.cs")
-    for id_, name, kind, path, line, end_line, desc, snippet, params in rows:
+    for id_, name, kind, path, line, end_line, desc, params in rows:
         mult = 1.0
         if kind in ("field", "variable"):
             mult *= 0.5
@@ -283,8 +328,9 @@ def query_symbols(
         rows = _rerank(r, query_text, rows)
 
     return [
-        QueryResult(id_, name, kind, path, line, end_line, desc, snippet, params, scores[id_])
-        for id_, name, kind, path, line, end_line, desc, snippet, params in rows
+        QueryResult(id_, name, kind, path, line, end_line, desc,
+                    block_content.get(id_, ""), params, scores[id_])
+        for id_, name, kind, path, line, end_line, desc, params in rows
     ]
 
 
@@ -296,8 +342,8 @@ def format_verbose(conn, results: list[QueryResult], refs: bool = False) -> str:
         if r.description:
             header += f"  {r.description}"
         lines.append(header)
-        if r.snippet:
-            for l in r.snippet.splitlines():
+        if r.content:
+            for l in r.content.splitlines():
                 lines.append("  " + l)
         if refs:
             import io, contextlib

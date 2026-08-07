@@ -21,6 +21,7 @@ class Finding:
     symbol_name: str
     file_path: str
     line: int
+    stale: bool = False
 
 
 _build_path_filters = build_path_filters
@@ -38,8 +39,7 @@ def _fetch_symbols(
 
     filters = [
         f"s.kind IN ({placeholders(len(kinds))})",
-        "s.snippet IS NOT NULL",
-        "s.snippet != ''",
+        "EXISTS (SELECT 1 FROM code_blocks cb WHERE cb.symbol_id = s.id)",
         f"(COALESCE(s.end_line, s.line) - s.line) >= {int(min_lines)}",
     ]
     if rule_ids:
@@ -54,7 +54,9 @@ def _fetch_symbols(
 
     rows = conn.execute(
         f"""
-        SELECT s.id, s.name, s.kind, f.path, s.line, s.snippet, s.description
+        SELECT s.id, s.name, s.kind, f.path, s.line,
+               COALESCE((SELECT content FROM code_blocks WHERE symbol_id=s.id AND block_index=0), ''),
+               s.description
         FROM symbols s
         JOIN files f ON f.id = s.file_id
         WHERE {where}
@@ -164,9 +166,9 @@ def _parse_response(
     return results
 
 
-def _print_text(findings: list[Finding], checked: int) -> None:
+def _print_text(findings: list[Finding], checked: int, unit: str = "symbols") -> None:
     total = len(findings)
-    print(f"FINDINGS  ({checked} symbols checked, {total} findings)")
+    print(f"FINDINGS  ({checked} {unit} checked, {total} findings)")
     if not findings:
         return
     print()
@@ -301,6 +303,234 @@ def run(
     return all_findings, total
 
 
+_FILE_MODE_GUIDELINES = """\
+You are a code reviewer. Review the following source file and report issues.
+
+## Review Guidelines
+
+### Tone
+- Be humble.
+- Provide actionable feedback, not vague criticism.
+- Phrase findings as questions when uncertain, e.g. "Have you considered...?"
+
+### Response Style
+- Be concise but thorough.
+- Include a brief code suggestion in your message when helpful.
+- Only report genuine issues. Return an empty array if the code looks correct.
+
+### Severity
+- error: likely bug, security issue, or correctness problem
+- warning: maintainability issue, code smell, or unclear design
+- info: minor suggestion or improvement
+
+### Confidence
+Assign lower confidence when the issue is context-dependent or might be intentional.\
+"""
+
+_FILE_MODE_OUTPUT_FORMAT = """\
+Return a JSON array. Each element must have:
+  "rule"       - rule name from the list above
+  "symbol"     - name of the symbol being flagged (or "" for file-level issues)
+  "line"       - line number
+  "severity"   - "error", "warning", or "info"
+  "message"    - one sentence; phrase as a question if uncertain
+  "confidence" - 0.0 to 1.0
+
+Return [] if nothing is worth flagging.
+Return only JSON. No markdown fences.\
+"""
+
+_MAX_FILE_SNIPPET_CHARS = 600
+_MAX_FILE_PROMPT_CHARS = 12_000
+
+
+def _fetch_files_in_scope(conn, scope: Scope, exts: list[str]) -> list[tuple]:
+    effective = Scope(directory=scope.directory, exts=scope.exts or exts, excludes=scope.excludes)
+    path_filters, path_params = _build_path_filters(effective)
+    filters = ["EXISTS (SELECT 1 FROM code_blocks cb WHERE cb.symbol_id = s.id)"] + path_filters
+    where = " AND ".join(filters)
+    return conn.execute(
+        f"""
+        SELECT DISTINCT f.id, f.path
+        FROM files f
+        JOIN symbols s ON s.file_id = f.id
+        WHERE {where}
+        ORDER BY f.path
+        """,
+        path_params,
+    ).fetchall()
+
+
+def _fetch_file_symbols(conn, file_id: int, max_callers: int, max_callees: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT s.id, s.name, s.kind, s.line, s.end_line,"
+        " COALESCE((SELECT content FROM code_blocks WHERE symbol_id=s.id AND block_index=0), '') "
+        "FROM symbols s WHERE s.file_id=?"
+        " AND EXISTS (SELECT 1 FROM code_blocks cb WHERE cb.symbol_id = s.id)"
+        " ORDER BY s.line",
+        (file_id,),
+    ).fetchall()
+    result = []
+    for sid, name, kind, line, end_line, snippet in rows:
+        callers = [r[0] for r in conn.execute(
+            "SELECT s.name FROM symbol_refs r JOIN symbols s ON s.id = r.caller_id"
+            " WHERE r.callee_id=? LIMIT ?", (sid, max_callers),
+        ).fetchall()]
+        callees = [r[0] for r in conn.execute(
+            "SELECT s.name FROM symbol_refs r JOIN symbols s ON s.id = r.callee_id"
+            " WHERE r.caller_id=? LIMIT ?", (sid, max_callees),
+        ).fetchall()]
+        result.append({
+            "id": sid, "name": name, "kind": kind,
+            "line": line, "end_line": end_line or line,
+            "snippet": snippet,
+            "callers": callers, "callees": callees,
+        })
+    return result
+
+
+def _build_file_prompt(path: str, symbols: list[dict], rules) -> str:
+    rule_lines = "\n".join(
+        f"{i + 1}. {r.name}: {r.description.strip()}"
+        for i, r in enumerate(rules)
+    )
+    sym_parts = []
+    for sym in symbols:
+        caller_str = ", ".join(sym["callers"]) if sym["callers"] else "none"
+        callee_str = ", ".join(sym["callees"]) if sym["callees"] else "none"
+        snippet = sym["snippet"][:_MAX_FILE_SNIPPET_CHARS]
+        sym_parts.append(
+            f"### {sym['kind']} `{sym['name']}` (lines {sym['line']}–{sym['end_line']})\n"
+            f"Called by: {caller_str}  |  Calls: {callee_str}\n\n"
+            f"{snippet}"
+        )
+
+    sym_text = "\n\n".join(sym_parts)
+    overhead = len(_FILE_MODE_GUIDELINES) + len(rule_lines) + len(_FILE_MODE_OUTPUT_FORMAT) + 100
+    available = _MAX_FILE_PROMPT_CHARS - overhead
+    if len(sym_text) > available:
+        sym_text = sym_text[:available] + "\n... (truncated)"
+
+    return (
+        f"{_FILE_MODE_GUIDELINES}\n\n"
+        f"## File: {path}\n\n"
+        f"## Symbols\n\n{sym_text}\n\n"
+        f"## Rules\n\n{rule_lines}\n\n"
+        f"{_FILE_MODE_OUTPUT_FORMAT}"
+    )
+
+
+def _parse_file_response(
+    response: str,
+    rule_name_to_id: dict[str, int],
+    min_confidence: float,
+) -> list[dict]:
+    text = response.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        end = -1 if lines[-1].strip() == "```" else len(lines)
+        text = "\n".join(lines[1:end])
+    try:
+        items = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(items, list):
+        return []
+    results = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        rule_name = item.get("rule", "")
+        rule_id = rule_name_to_id.get(rule_name)
+        if rule_id is None:
+            continue
+        try:
+            confidence = float(item.get("confidence", 0.0))
+            line = int(item.get("line", 0))
+        except (TypeError, ValueError):
+            continue
+        if confidence < min_confidence:
+            continue
+        results.append({
+            "rule_id": rule_id,
+            "rule_name": rule_name,
+            "symbol": str(item.get("symbol", "")),
+            "line": line,
+            "severity": str(item.get("severity", "info")),
+            "message": str(item.get("message", "")),
+            "confidence": confidence,
+        })
+    return results
+
+
+def run_file_mode(
+    conn,
+    analyzer: config.Analyzer,
+    rule_name_to_id: dict[str, int],
+    scope: Scope,
+    rule_filter: list[str],
+    min_confidence: float,
+    limit: int,
+    no_save: bool,
+    endpoint: str,
+    model: str,
+    api_key: str,
+) -> tuple[list[Finding], int]:
+    active_rules = [r for r in analyzer.rules if not rule_filter or r.name in rule_filter]
+    if not active_rules:
+        return [], 0
+
+    files = _fetch_files_in_scope(conn, scope, analyzer.extensions)
+    if limit > 0:
+        files = files[:limit]
+
+    all_findings: list[Finding] = []
+
+    for i, (file_id, path) in enumerate(files):
+        print(f"  [{i + 1}/{len(files)}] {os.path.basename(path)}", file=sys.stderr, flush=True)
+
+        symbols = _fetch_file_symbols(conn, file_id, analyzer.max_context_callers, analyzer.max_context_callees)
+        if not symbols:
+            continue
+
+        prompt = _build_file_prompt(path, symbols, active_rules)
+        try:
+            response = describe(endpoint, model, api_key, prompt)
+        except Exception as e:
+            print(f"  error: {e}", file=sys.stderr, flush=True)
+            continue
+
+        parsed = _parse_file_response(response, rule_name_to_id, min_confidence)
+
+        if not no_save and parsed:
+            name_to_id = {s["name"]: s["id"] for s in symbols}
+            first_id = symbols[0]["id"]
+            with db._write_lock:
+                for item in parsed:
+                    sym_id = name_to_id.get(item["symbol"]) or first_id
+                    conn.execute(
+                        "INSERT OR REPLACE INTO findings(symbol_id, rule_id, message, confidence, stale)"
+                        " VALUES(?, ?, ?, ?, 0)",
+                        (sym_id, item["rule_id"], item["message"], item["confidence"]),
+                    )
+
+        for item in parsed:
+            sym_name = item["symbol"] or os.path.basename(path)
+            line = item["line"] or symbols[0]["line"]
+            all_findings.append(Finding(
+                rule_id=item["rule_id"],
+                rule_name=item["rule_name"],
+                severity=item["severity"],
+                message=item["message"],
+                confidence=item["confidence"],
+                symbol_name=sym_name,
+                file_path=path,
+                line=line,
+            ))
+
+    return all_findings, len(files)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run LLM-based analyzers against indexed symbols.")
     parser.add_argument("--config", default=config.default_path())
@@ -352,6 +582,7 @@ def main(argv: list[str] | None = None) -> int:
         llm = cfg.llm[0] if cfg.llm else config.defaults().llm[0]
         all_findings: list[Finding] = []
         total_checked = 0
+        modes: set[str] = set()
 
         for analyzer in analyzers:
             rule_name_to_id = rule_ids_by_analyzer.get(analyzer.name, {})
@@ -370,18 +601,28 @@ def main(argv: list[str] | None = None) -> int:
                 continue
 
             print(f"Analyzer: {analyzer.name}", file=sys.stderr)
-            findings, checked = run(
-                conn, analyzer, rule_name_to_id, scope,
-                args.rules, min_confidence, args.limit,
-                args.no_save, endpoint, model, api_key,
-            )
+            if analyzer.file_mode:
+                findings, checked = run_file_mode(
+                    conn, analyzer, rule_name_to_id, scope,
+                    args.rules, min_confidence, args.limit,
+                    args.no_save, endpoint, model, api_key,
+                )
+                modes.add("files")
+            else:
+                findings, checked = run(
+                    conn, analyzer, rule_name_to_id, scope,
+                    args.rules, min_confidence, args.limit,
+                    args.no_save, endpoint, model, api_key,
+                )
+                modes.add("symbols")
             total_checked += checked
             all_findings.extend(findings)
 
+        unit = "items" if len(modes) > 1 else (modes.pop() if modes else "symbols")
         if args.output == "json":
             _print_json(all_findings)
         else:
-            _print_text(all_findings, total_checked)
+            _print_text(all_findings, total_checked, unit)
 
     finally:
         conn.close()

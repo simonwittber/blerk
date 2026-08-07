@@ -16,7 +16,7 @@ import tree_sitter_python
 from tree_sitter import Language, Parser, Query
 
 from blerk.symbols import queries
-from blerk.symbols.types import SNIPPET_MAX_LINES, CallRef, Symbol, count_params
+from blerk.symbols.types import CallRef, Symbol, count_params
 
 
 try:
@@ -435,8 +435,4 @@ def is_inside_class(n: Any) -> bool:
 
 
 def snippet_content(node: Any, src: bytes) -> str:
-    content = _node_text(node, src)
-    lines = content.split("\n", SNIPPET_MAX_LINES)
-    if len(lines) > SNIPPET_MAX_LINES:
-        lines = lines[:SNIPPET_MAX_LINES]
-    return "\n".join(lines)
+    return _node_text(node, src)

@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-06
+
+### CodeBlock architecture
+
+Symbols no longer store a `snippet` column. Instead, each symbol has one or more `code_blocks` rows that hold the content. Blocks are embedded and described separately.
+
+**What changes:**
+
+- The `symbols` table gains a `content_hash` column (SHA-256 truncated to 16 hex chars) for efficient change detection, and loses the `snippet` column.
+- A new `code_blocks` table stores `(symbol_id, block_index, content, start_line, end_line, description, described_at)`. Every symbol has at least one block.
+- Two new queue tables replace the old ones: `code_block_embed_queue` and `code_block_describe_queue` reference `block_id` instead of `symbol_id`. The old `description_queue` and `embedding_queue` tables are dropped.
+- The `embeddings` table now uses `block_id` instead of `symbol_id`.
+- A new `code_blocks_fts` FTS5 virtual table indexes block content for BM25 content search.
+- The `symbols_fts` table no longer includes the snippet column.
+
+**Large symbol chunking:**
+
+When a symbol's content exceeds `max_embed_chars`, the symbolizer splits it into logical blocks using the tree-sitter AST. Split points are nested function/class/method definitions. If tree-sitter produces no split points, the content is split at line boundaries. Each block is embedded and described independently.
+
+**Three-signal hybrid search:**
+
+`blerk query` now fuses three ranking signals via RRF:
+- Vector similarity over embeddings (via `code_blocks → embeddings` join)
+- BM25 over symbol names and descriptions (`symbols_fts`)
+- BM25 over code block content (`code_blocks_fts`)
+
+**Migration:**
+
+Schema migration 7 handles existing databases automatically. It creates the new tables, rebuilds FTS, populates `code_blocks` from the old `snippet` column, migrates the `embeddings` table to use `block_id`, and drops the old queue tables. Existing embeddings are dropped and will be regenerated.
+
 ## [0.3.2] - 2026-08-05
 
 ### blerk summary: directory argument required

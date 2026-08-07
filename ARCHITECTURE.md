@@ -22,23 +22,21 @@ Processes do not communicate with each other directly. All coordination goes thr
 
 ## Data pipeline
 
-Work flows through five SQLite queue tables. Each daemon writes its output only. SQL triggers create the next queue entry automatically.
+Work flows through SQLite queue tables. Each daemon writes its output only. SQL triggers create the next queue entry automatically.
 
 ```
 File system event
       |
       v
-  files table  ──trigger──>  symbol_queue     ──>  symbolizer
-               ──trigger──>  git_queue        ──>  git-enricher
+  files table  ──trigger──>  symbol_queue           ──>  symbolizer
+               ──trigger──>  git_queue              ──>  git-enricher
                                   |
                                   v
-                            symbols table
+                     symbols + code_blocks tables
                                   |
-               ──trigger──>  description_queue  ──>  llm-describer
-               ──trigger──>  embedding_queue    ──>  embedder
-               ──trigger──>  fingerprint_queue  ──>  fingerprinter
-                                  |
-               ──trigger──>  embedding_queue    ──>  embedder (second pass after description)
+               ──trigger──>  code_block_describe_queue  ──>  llm-describer
+               ──trigger──>  code_block_embed_queue     ──>  embedder
+               ──trigger──>  fingerprint_queue          ──>  fingerprinter
                                   |
                                   v
                     embeddings / fingerprints tables
@@ -52,23 +50,21 @@ File system event
    - `files_after_insert`: enqueues the file into `symbol_queue` and `git_queue`.
    - `files_after_update` (hash changed only): re-enqueues into `symbol_queue`.
 
-3. **symbolizer** claims a batch from `symbol_queue`. For each file it runs either the regexp extractor (fast, no call refs) or the tree-sitter extractor (accurate, extracts call refs too). It replaces the file's `symbols` rows in a single transaction. It writes `symbol_refs` for calls to indexed symbols, and `external_refs` for calls to external names not in the index. The `ext` column on each symbol stores the file extension for same-language comparisons.
+3. **symbolizer** claims a batch from `symbol_queue`. For each file it runs the tree-sitter extractor (accurate, extracts call refs). It replaces the file's `symbols` rows using `content_hash` (SHA-256[:16] of the snippet) for change detection: unchanged symbols get only position metadata updated; changed and new symbols get `code_blocks` rebuilt. The `chunk_symbol` function splits content into logical blocks using tree-sitter AST boundaries when content exceeds `max_embed_chars`, falling back to line-based splitting. Each block is a row in `code_blocks`.
 
 4. **git-enricher** claims from `git_queue`. For each file it walks up to the enclosing `.git` directory, runs `git log -1 --format=%H|%an|%D`, and writes `git_commit`, `git_author`, `git_branch` back to `files`.
 
-5. Three triggers fire when the symbolizer inserts a symbol:
-   - `symbols_description_insert`: fires for `function` and `method` only, enqueues into `description_queue`.
-   - `symbols_embedding_insert`: fires for every kind except `heading`, enqueues into `embedding_queue`.
-   - `symbols_fingerprint_insert`: fires for `function` and `method` with a non-null snippet, enqueues into `fingerprint_queue`.
+5. Two triggers fire when the symbolizer inserts a `code_blocks` row:
+   - `code_blocks_describe_insert`: fires for blocks whose parent symbol is `function` or `method`, enqueues into `code_block_describe_queue`.
+   - `code_blocks_embed_insert`: fires for all blocks except those with parent kind `heading`, enqueues into `code_block_embed_queue`.
+   - Fingerprinting is still triggered on `symbols` INSERT (for `function` and `method`).
 
-6. **llm-describer** claims from `description_queue`. It builds a prompt from the symbol's source context (surrounding file content with markers) and POSTs to an OpenAI-compatible `/v1/chat/completions` endpoint (Ollama, OpenAI, etc.). It writes the response to `symbols.description`.
+6. **llm-describer** claims from `code_block_describe_queue`. It builds a prompt from the symbol's source context (surrounding file content with markers) and POSTs to an OpenAI-compatible `/v1/chat/completions` endpoint (Ollama, OpenAI, etc.). It writes the response to `code_blocks.description`. For block 0, it also updates `symbols.description`.
 
-7. When `symbols.description` changes from NULL to a value, the `symbols_description_update` trigger fires and enqueues the symbol into `embedding_queue` again for a richer second-pass embedding.
+7. **embedder** claims from `code_block_embed_queue`. It builds an input string from the symbol header and block content. It then POSTs to Ollama's native `/api/embeddings` endpoint, encodes the response as a little-endian float32 blob, and upserts into `embeddings(block_id, model)`.
 
-8. **embedder** claims from `embedding_queue`. It builds an input string (`name[: description]\n\nsnippet`) and truncates it to `max_embed_chars`. It then POSTs to Ollama's native `/api/embeddings` endpoint, encodes the response as a little-endian float32 blob, and upserts into `embeddings(symbol_id, model)`.
-
-9. **fingerprinter** claims from `fingerprint_queue`. For each symbol it computes two fingerprints from the snippet:
-   - `normhash`: SHA256 of the whitespace- and case-normalised snippet. Two functions with the same normhash are exact clones.
+8. **fingerprinter** claims from `fingerprint_queue`. For each symbol it fetches block 0 content and computes two fingerprints:
+   - `normhash`: SHA256 of the whitespace- and case-normalised content. Two functions with the same normhash are exact clones.
    - `simhash`: 64-bit SimHash over character 4-grams. Used for near-duplicate detection via Hamming distance.
    Both are stored in the `fingerprints` table.
 
@@ -103,10 +99,11 @@ The `busy_timeout=30000` pragma makes readers wait up to 30 seconds for the WAL 
 
 The embedder stores vectors as raw little-endian float32 blobs (4 bytes per dimension). The [sqlite-vec](https://github.com/asg017/sqlite-vec) extension provides `vec_distance_cosine(a, b)`, which operates directly on these blobs using SIMD acceleration.
 
-The query CLI (`blerk query`) uses **Reciprocal Rank Fusion (RRF)** to combine two ranking signals:
+The query CLI (`blerk query`) uses **Reciprocal Rank Fusion (RRF)** to combine three ranking signals:
 
-- **Vector leg**: embed the query via Ollama, then rank all symbols by `vec_distance_cosine` ascending.
-- **BM25 leg**: match the query text against the `symbols_fts` FTS5 virtual table (name, description, snippet), ranked by FTS5's built-in BM25.
+- **Vector leg**: embed the query via Ollama, then rank all symbols by `vec_distance_cosine` over `embeddings → code_blocks → symbols`.
+- **BM25 symbol leg**: match the query text against `symbols_fts` (name and description), ranked by FTS5's built-in BM25.
+- **BM25 content leg**: match the query text against `code_blocks_fts` (block content), ranked by FTS5's built-in BM25.
 
 Each symbol gets an RRF score from whichever legs it appears in:
 
@@ -114,7 +111,7 @@ Each symbol gets an RRF score from whichever legs it appears in:
 score = sum(1 / (60 + rank + 1)  for each leg the symbol appears in)
 ```
 
-Symbols that appear in both legs score higher than those in only one. Both legs fetch 5x more results before fusion.
+Symbols that appear in multiple legs score higher. All legs fetch 20x more results before fusion.
 
 ## Lint
 
@@ -139,16 +136,17 @@ Rules include: function line count, parameter count, nesting depth, file symbol 
 | Table | Purpose |
 |---|---|
 | `files` | One row per tracked file. Holds path, hash, mtime, size, and git metadata. |
-| `symbols` | One row per extracted symbol. Holds name, kind, line range, snippet, params, nesting depth, param count, description, and file extension. |
+| `symbols` | One row per extracted symbol. Holds name, kind, line range, content_hash, params, nesting depth, param count, description, and file extension. No snippet column. |
+| `code_blocks` | One or more rows per symbol. Holds block_index, content, start/end line, and optional description. Used for embedding and LLM description. |
 | `symbol_tags` | Key/value tags per symbol. Used for `confusing`, `confusing_reason`, and extractor-specific metadata. |
-| `embeddings` | One row per (symbol, model) pair. Stores the float32 vector blob. |
+| `embeddings` | One row per (block_id, model) pair. Stores the float32 vector blob. |
 | `fingerprints` | One row per (symbol, kind) pair. Stores `normhash` and `simhash` values for duplicate detection. |
 | `symbol_refs` | Caller/callee pairs between symbols in the index. |
 | `external_refs` | Calls from indexed symbols to external names not in the index. |
 | `symbol_queue` | Pending symbolization work per file. |
 | `git_queue` | Pending git enrichment work per file. |
-| `description_queue` | Pending LLM description work per symbol. |
-| `embedding_queue` | Pending embedding work per symbol. |
+| `code_block_describe_queue` | Pending LLM description work per code block. |
+| `code_block_embed_queue` | Pending embedding work per code block. |
 | `fingerprint_queue` | Pending fingerprinting work per symbol. |
 | `daemon_status` | One row per daemon. Updated each poll cycle with queue depth, rate, ETA, and errors. |
 | `schema_version` | Single-row table tracking the migration version. |

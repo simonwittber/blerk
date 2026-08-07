@@ -5,8 +5,6 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 
-SNIPPET_MAX_LINES = 100
-
 MARKER_START = "===== DESCRIBE THIS SYMBOL ====="
 MARKER_END = "===== END SYMBOL ====="
 STRIPPED_PLACEHOLDER = "    // ..."

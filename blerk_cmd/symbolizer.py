@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import sqlite3
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from blerk import config, coordinator, daemon_util, db
+from blerk.symbols.chunker import chunk_symbol
 from blerk.symbols.types import CallRef, Symbol
 
 
@@ -35,7 +37,7 @@ def process_symbols(
         # Snapshot existing symbols keyed by (name, kind).
         existing: dict[tuple[str, str], tuple[int, str | None]] = {}
         for r in conn.execute(
-            "SELECT id, name, kind, snippet FROM symbols WHERE file_id=?",
+            "SELECT id, name, kind, content_hash FROM symbols WHERE file_id=?",
             (row.target_id,),
         ).fetchall():
             existing[(r[1], r[2])] = (r[0], r[3])
@@ -48,9 +50,10 @@ def process_symbols(
 
         for sym in syms:
             key = (sym.name, sym.kind)
+            new_hash = hashlib.sha256(sym.snippet.encode("utf-8", errors="replace")).hexdigest()[:16]
             if key in existing:
-                old_id, old_snippet = existing[key]
-                if old_snippet == sym.snippet:
+                old_id, old_hash = existing[key]
+                if old_hash == new_hash:
                     unchanged.append((sym, old_id))
                 else:
                     changed.append((sym, old_id))
@@ -66,12 +69,15 @@ def process_symbols(
             )
             unchanged_ids.append(old_id)
 
-        # Remove stale queue entries for unchanged symbols that are already embedded/fingerprinted.
+        # Remove stale queue entries for unchanged symbols already processed.
         if unchanged_ids:
             ph = ",".join("?" * len(unchanged_ids))
             conn.execute(
-                f"DELETE FROM embedding_queue WHERE symbol_id IN ({ph})"
-                f" AND EXISTS (SELECT 1 FROM embeddings WHERE symbol_id = embedding_queue.symbol_id)",
+                f"DELETE FROM code_block_embed_queue"
+                f" WHERE block_id IN (SELECT id FROM code_blocks WHERE symbol_id IN ({ph}))"
+                f" AND EXISTS ("
+                f"   SELECT 1 FROM embeddings WHERE block_id = code_block_embed_queue.block_id"
+                f" )",
                 unchanged_ids,
             )
             conn.execute(
@@ -80,72 +86,92 @@ def process_symbols(
                 unchanged_ids,
             )
 
-        # Changed: update all columns, clear description, re-queue for all pipelines.
+        # Changed: update all columns, clear description, rebuild code_blocks.
         changed_ids: list[int] = []
+        changed_hashes: dict[int, str] = {}
         for sym, old_id in changed:
+            new_hash = hashlib.sha256(sym.snippet.encode("utf-8", errors="replace")).hexdigest()[:16]
             conn.execute(
-                "UPDATE symbols SET line=?, end_line=?, snippet=?, params=?, nesting_depth=?, param_count=?, "
+                "UPDATE symbols SET line=?, end_line=?, content_hash=?, params=?, nesting_depth=?, param_count=?, "
                 "description=NULL, described_at=NULL, ext=? WHERE id=?",
-                (sym.line, sym.end_line, sym.snippet, sym.params or None,
+                (sym.line, sym.end_line, new_hash, sym.params or None,
                  sym.nesting_depth, sym.param_count, ext_key, old_id),
             )
             changed_ids.append(old_id)
+            changed_hashes[old_id] = new_hash
 
         if changed_ids:
             ph = ",".join("?" * len(changed_ids))
-            # Clear any existing pending queue entries before inserting fresh ones.
-            conn.execute(f"DELETE FROM description_queue WHERE symbol_id IN ({ph})", changed_ids)
-            conn.execute(f"DELETE FROM embedding_queue WHERE symbol_id IN ({ph})", changed_ids)
             conn.execute(f"DELETE FROM fingerprint_queue WHERE symbol_id IN ({ph})", changed_ids)
             conn.execute(
-                f"INSERT INTO description_queue(symbol_id, priority) "
-                f"SELECT id, 2 FROM symbols WHERE id IN ({ph}) AND kind IN ('function','method')",
-                changed_ids,
-            )
-            conn.execute(
-                f"INSERT INTO embedding_queue(symbol_id, priority) "
-                f"SELECT id, 2 FROM symbols WHERE id IN ({ph}) AND kind != 'heading'",
-                changed_ids,
-            )
-            conn.execute(
                 f"INSERT INTO fingerprint_queue(symbol_id, priority) "
-                f"SELECT id, 2 FROM symbols WHERE id IN ({ph}) AND kind IN ('function','method') AND snippet IS NOT NULL",
+                f"SELECT id, 2 FROM symbols WHERE id IN ({ph}) AND kind IN ('function','method')",
                 changed_ids,
             )
             # Clear caller refs and external_refs so they are rebuilt below.
             conn.execute(f"DELETE FROM symbol_refs WHERE caller_id IN ({ph})", changed_ids)
             conn.execute(f"DELETE FROM external_refs WHERE caller_id IN ({ph})", changed_ids)
 
-        # New: insert; triggers handle queue entries.
+        # New: insert symbols; code_blocks inserted separately below.
         inserted_ids: list[int] = []
+        inserted_hashes: dict[int, str] = {}
         for sym in new_syms:
+            new_hash = hashlib.sha256(sym.snippet.encode("utf-8", errors="replace")).hexdigest()[:16]
             cur = conn.execute(
-                "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet, params, "
+                "INSERT INTO symbols(file_id, name, kind, line, end_line, content_hash, params, "
                 "nesting_depth, param_count, description, described_at, ext) "
                 "VALUES(?,?,?,?,?,?,?,?,?,NULL,NULL,?) RETURNING id",
-                (row.target_id, sym.name, sym.kind, sym.line, sym.end_line, sym.snippet,
+                (row.target_id, sym.name, sym.kind, sym.line, sym.end_line, new_hash,
                  sym.params or None, sym.nesting_depth, sym.param_count, ext_key),
             )
             r = cur.fetchone()
             if r is None:
                 raise sqlite3.Error("insert symbols failed")
             inserted_ids.append(int(r[0]))
+            inserted_hashes[int(r[0])] = new_hash
 
-        # Bump new symbols to priority=2 when the file was previously known,
-        # so they are processed ahead of the initial-scan backlog.
-        if inserted_ids and existing:
-            ph = ",".join("?" * len(inserted_ids))
+        # Build a sym->id map for block insertion below.
+        sym_id_map: dict[str, int] = {}
+        for sym, old_id in changed:
+            sym_id_map[sym.name + "\x00" + sym.kind] = old_id
+        for sym, new_id in zip(new_syms, inserted_ids):
+            sym_id_map[sym.name + "\x00" + sym.kind] = new_id
+
+        # Rebuild code_blocks for changed and new symbols.
+        max_embed = cfg.embedder.max_embed_chars or 8000
+        changed_and_new = [(sym, old_id) for sym, old_id in changed] + \
+                          [(sym, new_id) for sym, new_id in zip(new_syms, inserted_ids)]
+        for sym, sid in changed_and_new:
+            conn.execute("DELETE FROM code_blocks WHERE symbol_id=?", (sid,))
+            blocks = chunk_symbol(
+                sym.snippet, sym.line, sym.end_line or sym.line, max_embed, path
+            )
+            for block in blocks:
+                conn.execute(
+                    "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line)"
+                    " VALUES(?,?,?,?,?)",
+                    (sid, block.block_index, block.content, block.start_line, block.end_line),
+                )
+
+        # Bump queues to priority=2 for changed/new symbols in a previously-known file.
+        priority2_ids = (changed_ids if existing else []) + (inserted_ids if existing else [])
+        if priority2_ids:
+            ph = ",".join("?" * len(priority2_ids))
             conn.execute(
-                f"UPDATE embedding_queue SET priority=2 WHERE symbol_id IN ({ph}) AND status='pending'",
-                inserted_ids,
+                f"UPDATE code_block_embed_queue SET priority=2"
+                f" WHERE block_id IN (SELECT id FROM code_blocks WHERE symbol_id IN ({ph}))"
+                f" AND status='pending'",
+                priority2_ids,
             )
             conn.execute(
-                f"UPDATE description_queue SET priority=2 WHERE symbol_id IN ({ph}) AND status='pending'",
-                inserted_ids,
+                f"UPDATE code_block_describe_queue SET priority=2"
+                f" WHERE block_id IN (SELECT id FROM code_blocks WHERE symbol_id IN ({ph}))"
+                f" AND status='pending'",
+                priority2_ids,
             )
             conn.execute(
                 f"UPDATE fingerprint_queue SET priority=2 WHERE symbol_id IN ({ph}) AND status='pending'",
-                inserted_ids,
+                priority2_ids,
             )
 
         # Delete removed symbols; CASCADE cleans up refs, embeddings, and queue entries.
@@ -235,15 +261,16 @@ def process_symbols(
         if min_lines > 0:
             try:
                 conn.execute(
-                    "DELETE FROM description_queue "
-                    "WHERE symbol_id IN ("
-                    "SELECT id FROM symbols "
-                    "WHERE file_id=? AND (COALESCE(end_line,0) - line) < ?"
+                    "DELETE FROM code_block_describe_queue "
+                    "WHERE block_id IN ("
+                    "SELECT cb.id FROM code_blocks cb"
+                    " JOIN symbols s ON s.id = cb.symbol_id"
+                    " WHERE s.file_id=? AND (COALESCE(s.end_line,0) - s.line) < ?"
                     ")",
                     (row.target_id, min_lines),
                 )
             except sqlite3.Error as e:
-                log.warning("delete short symbols from description_queue: %s", e)
+                log.warning("delete short symbols from code_block_describe_queue: %s", e)
 
         conn.execute("COMMIT")
     except Exception:
@@ -342,8 +369,8 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
                 rate_window.append(time.monotonic())
                 processed_today += 1
 
-            client.notify("description_queue")
-            client.notify("embedding_queue")
+            client.notify("code_block_describe_queue")
+            client.notify("code_block_embed_queue")
             client.notify("fingerprint_queue")
 
         cutoff = time.monotonic() - 60.0

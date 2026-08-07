@@ -31,8 +31,8 @@ def _table_exists(conn, name: str) -> bool:
 
 def test_open_creates_schema(conn):
     for tbl in ["files", "symbols", "embeddings", "symbol_queue", "git_queue",
-                "description_queue", "embedding_queue", "daemon_status", "symbol_refs",
-                "analyzers", "analyzer_rules", "findings"]:
+                "code_blocks", "code_block_describe_queue", "code_block_embed_queue",
+                "daemon_status", "symbol_refs", "analyzers", "analyzer_rules", "findings"]:
         assert _table_exists(conn, tbl), f"missing table {tbl}"
 
 
@@ -77,42 +77,40 @@ def test_trigger_files_update_only_on_hash_change(conn):
     assert _count(conn, "git_queue") == 1
 
 
-def test_trigger_symbols_insert_queues_description(conn):
-    fid = _insert_file(conn, "/tmp/a.go", "hash1")
-    conn.execute(
-        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet) VALUES(?,?,?,?,?,?)",
-        (fid, "Foo", "function", 1, 5, "func Foo() {}"),
-    )
-    assert _count(conn, "description_queue") == 1
-    assert _count(conn, "embedding_queue") == 1
-
-
-def test_trigger_description_update_queues_embedding(conn):
+def test_trigger_code_blocks_insert_queues_embed_and_describe(conn):
     fid = _insert_file(conn, "/tmp/a.go", "hash1")
     cur = conn.execute(
-        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet) VALUES(?,?,?,?,?,?)",
-        (fid, "Foo", "function", 1, 5, ""),
+        "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
+        (fid, "Foo", "function", 1, 5),
     )
     sid = cur.lastrowid
-    conn.execute("UPDATE symbols SET description=? WHERE id=?", ("first", sid))
-    assert _count(conn, "embedding_queue") == 2
-    conn.execute("UPDATE symbols SET description=? WHERE id=?", ("second", sid))
-    assert _count(conn, "embedding_queue") == 2
+    conn.execute(
+        "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line)"
+        " VALUES(?,?,?,?,?)",
+        (sid, 0, "func Foo() {}", 1, 5),
+    )
+    assert _count(conn, "code_block_describe_queue") == 1
+    assert _count(conn, "code_block_embed_queue") == 1
 
 
 def test_cascade_delete_file(conn):
     fid = _insert_file(conn, "/tmp/a.go", "hash1")
     cur = conn.execute(
-        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet) VALUES(?,?,?,?,?,?)",
-        (fid, "Foo", "function", 1, 5, ""),
+        "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
+        (fid, "Foo", "function", 1, 5),
     )
     sid = cur.lastrowid
+    blk = conn.execute(
+        "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line)"
+        " VALUES(?,?,?,?,?) RETURNING id",
+        (sid, 0, "func Foo() {}", 1, 5),
+    ).fetchone()[0]
     conn.execute(
-        "INSERT INTO embeddings(symbol_id, model, vector, embedded_at) VALUES(?,?,?,?)",
-        (sid, "m", b"\x00\x00\x00\x00", 0),
+        "INSERT INTO embeddings(block_id, model, vector, embedded_at) VALUES(?,?,?,?)",
+        (blk, "m", b"\x00\x00\x00\x00", 0),
     )
     conn.execute("DELETE FROM files WHERE id=?", (fid,))
-    for tbl in ["symbols", "embeddings", "symbol_queue", "git_queue", "description_queue", "embedding_queue"]:
+    for tbl in ["symbols", "code_blocks", "embeddings", "symbol_queue", "git_queue"]:
         assert _count(conn, tbl) == 0, tbl
 
 

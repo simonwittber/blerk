@@ -123,18 +123,23 @@ def test_build_prompt_preserves_template_literal_braces(tmp_path):
     assert " x " in out
 
 
-def test_run_skips_already_described_symbol(tmp_path):
+def test_run_skips_already_described_block(tmp_path):
     db_path = str(tmp_path / "test.db")
     conn = db.open_db(db_path)
     cur = conn.execute("INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
                        (str(tmp_path / "a.py"), 0, "h"))
     fid = int(cur.lastrowid)
     cur = conn.execute(
-        "INSERT INTO symbols(file_id, name, kind, line, end_line, description) VALUES(?,?,?,?,?,?)",
-        (fid, "foo", "function", 1, 5, "already described"),
+        "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
+        (fid, "foo", "function", 1, 5),
     )
     sid = int(cur.lastrowid)
-    conn.execute("INSERT INTO description_queue(symbol_id) VALUES (?)", (sid,))
+    bid = int(conn.execute(
+        "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line, description)"
+        " VALUES(?,?,?,?,?,?) RETURNING id",
+        (sid, 0, "def foo(): pass", 1, 5, "already described"),
+    ).fetchone()[0])
+    conn.execute("INSERT INTO code_block_describe_queue(block_id) VALUES (?)", (bid,))
     conn.close()
 
     call_count = [0]
@@ -169,7 +174,7 @@ def test_run_skips_already_described_symbol(tmp_path):
     assert call_count[0] == 0
 
 
-def test_description_write_enqueues_embedding(tmp_path):
+def test_code_block_insert_enqueues_embed_and_describe(tmp_path):
     db_path = str(tmp_path / "test.db")
     conn = db.open_db(db_path)
     try:
@@ -185,18 +190,19 @@ def test_description_write_enqueues_embedding(tmp_path):
         )
         sid = int(cur.lastrowid)
 
-        # symbols_after_insert already enqueues one embedding row.
-        conn.execute("DELETE FROM embedding_queue WHERE symbol_id=?", (sid,))
-
         conn.execute(
-            "UPDATE symbols SET description=?, described_at=unixepoch() WHERE id=?",
-            ("a description", sid),
+            "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line)"
+            " VALUES(?,?,?,?,?)",
+            (sid, 0, "def foo(): pass", 1, 5),
         )
 
-        row = conn.execute(
-            "SELECT COUNT(*) FROM embedding_queue WHERE symbol_id=?",
-            (sid,),
-        ).fetchone()
-        assert row[0] == 1
+        embed_count = conn.execute(
+            "SELECT COUNT(*) FROM code_block_embed_queue"
+        ).fetchone()[0]
+        describe_count = conn.execute(
+            "SELECT COUNT(*) FROM code_block_describe_queue"
+        ).fetchone()[0]
+        assert embed_count == 1
+        assert describe_count == 1
     finally:
         conn.close()

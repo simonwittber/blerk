@@ -88,7 +88,11 @@ def test_unchanged_snippet_carries_description_forward(conn):
 
     sym_id = conn.execute("SELECT id FROM symbols WHERE file_id=?", (fid,)).fetchone()[0]
     conn.execute("UPDATE symbols SET description='old desc', described_at=999 WHERE id=?", (sym_id,))
-    conn.execute("DELETE FROM description_queue WHERE symbol_id=?", (sym_id,))
+    conn.execute(
+        "DELETE FROM code_block_describe_queue WHERE block_id IN"
+        " (SELECT id FROM code_blocks WHERE symbol_id=?)",
+        (sym_id,),
+    )
 
     # Re-symbolize with identical snippet.
     process_symbols(conn, cfg, row, "a/b.py", syms, [])
@@ -100,8 +104,9 @@ def test_unchanged_snippet_carries_description_forward(conn):
     assert new_sym[1] == 999
 
     queue_count = conn.execute(
-        "SELECT COUNT(*) FROM description_queue dq "
-        "JOIN symbols s ON s.id = dq.symbol_id WHERE s.file_id=?",
+        "SELECT COUNT(*) FROM code_block_describe_queue dq"
+        " JOIN code_blocks cb ON cb.id = dq.block_id"
+        " JOIN symbols s ON s.id = cb.symbol_id WHERE s.file_id=?",
         (fid,),
     ).fetchone()[0]
     assert queue_count == 0
@@ -118,7 +123,11 @@ def test_changed_snippet_requeues_for_description(conn):
 
     sym_id = conn.execute("SELECT id FROM symbols WHERE file_id=?", (fid,)).fetchone()[0]
     conn.execute("UPDATE symbols SET description='old desc' WHERE id=?", (sym_id,))
-    conn.execute("DELETE FROM description_queue WHERE symbol_id=?", (sym_id,))
+    conn.execute(
+        "DELETE FROM code_block_describe_queue WHERE block_id IN"
+        " (SELECT id FROM code_blocks WHERE symbol_id=?)",
+        (sym_id,),
+    )
 
     # Re-symbolize with changed snippet.
     process_symbols(conn, cfg, row, "a/b.py", syms_v2, [])
@@ -129,8 +138,9 @@ def test_changed_snippet_requeues_for_description(conn):
     assert new_sym[0] is None
 
     queue_count = conn.execute(
-        "SELECT COUNT(*) FROM description_queue dq "
-        "JOIN symbols s ON s.id = dq.symbol_id WHERE s.file_id=?",
+        "SELECT COUNT(*) FROM code_block_describe_queue dq"
+        " JOIN code_blocks cb ON cb.id = dq.block_id"
+        " JOIN symbols s ON s.id = cb.symbol_id WHERE s.file_id=?",
         (fid,),
     ).fetchone()[0]
     assert queue_count == 1
@@ -147,7 +157,11 @@ def test_new_symbol_queues_while_described_unchanged_does_not(conn):
     # Simulate describer completing for foo.
     sym_id = conn.execute("SELECT id FROM symbols WHERE file_id=?", (fid,)).fetchone()[0]
     conn.execute("UPDATE symbols SET description='described', described_at=1 WHERE id=?", (sym_id,))
-    conn.execute("DELETE FROM description_queue WHERE symbol_id=?", (sym_id,))
+    conn.execute(
+        "DELETE FROM code_block_describe_queue WHERE block_id IN"
+        " (SELECT id FROM code_blocks WHERE symbol_id=?)",
+        (sym_id,),
+    )
 
     # Re-symbolize: foo unchanged, bar is new.
     process_symbols(conn, cfg, row, "a/b.py",
@@ -155,8 +169,9 @@ def test_new_symbol_queues_while_described_unchanged_does_not(conn):
                      Symbol(name="bar", kind="function", line=10, end_line=15, snippet="def bar(): pass")], [])
 
     queued = [r[0] for r in conn.execute(
-        "SELECT s.name FROM description_queue dq "
-        "JOIN symbols s ON s.id = dq.symbol_id WHERE s.file_id=?",
+        "SELECT s.name FROM code_block_describe_queue dq"
+        " JOIN code_blocks cb ON cb.id = dq.block_id"
+        " JOIN symbols s ON s.id = cb.symbol_id WHERE s.file_id=?",
         (fid,),
     ).fetchall()]
     assert "bar" in queued
@@ -214,11 +229,11 @@ def test_unchanged_symbol_not_in_embedding_queue(conn):
     syms = [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="def foo(): pass")]
 
     process_symbols(conn, cfg, row, "a/b.py", syms, [])
-    conn.execute("DELETE FROM embedding_queue")
+    conn.execute("DELETE FROM code_block_embed_queue")
 
     process_symbols(conn, cfg, row, "a/b.py", syms, [])
 
-    count = conn.execute("SELECT COUNT(*) FROM embedding_queue").fetchone()[0]
+    count = conn.execute("SELECT COUNT(*) FROM code_block_embed_queue").fetchone()[0]
     assert count == 0
 
 
@@ -229,13 +244,13 @@ def test_changed_symbol_queues_embedding_and_fingerprint(conn):
 
     process_symbols(conn, cfg, row, "a/b.py",
                     [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="def foo(): pass")], [])
-    conn.execute("DELETE FROM embedding_queue")
+    conn.execute("DELETE FROM code_block_embed_queue")
     conn.execute("DELETE FROM fingerprint_queue")
 
     process_symbols(conn, cfg, row, "a/b.py",
                     [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="def foo(): return 1")], [])
 
-    embed_count = conn.execute("SELECT COUNT(*) FROM embedding_queue").fetchone()[0]
+    embed_count = conn.execute("SELECT COUNT(*) FROM code_block_embed_queue").fetchone()[0]
     fp_count = conn.execute("SELECT COUNT(*) FROM fingerprint_queue").fetchone()[0]
     assert embed_count == 1
     assert fp_count == 1
@@ -248,14 +263,14 @@ def test_changed_symbol_gets_priority_2(conn):
 
     process_symbols(conn, cfg, row, "a/b.py",
                     [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="v1")], [])
-    conn.execute("DELETE FROM embedding_queue")
+    conn.execute("DELETE FROM code_block_embed_queue")
     conn.execute("DELETE FROM fingerprint_queue")
-    conn.execute("DELETE FROM description_queue")
+    conn.execute("DELETE FROM code_block_describe_queue")
 
     process_symbols(conn, cfg, row, "a/b.py",
                     [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="v2")], [])
 
-    prio = conn.execute("SELECT priority FROM embedding_queue").fetchone()[0]
+    prio = conn.execute("SELECT priority FROM code_block_embed_queue").fetchone()[0]
     assert prio == 2
 
 
@@ -266,13 +281,13 @@ def test_new_symbol_in_known_file_gets_priority_2(conn):
 
     process_symbols(conn, cfg, row, "a/b.py",
                     [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="v1")], [])
-    conn.execute("DELETE FROM embedding_queue")
+    conn.execute("DELETE FROM code_block_embed_queue")
 
     process_symbols(conn, cfg, row, "a/b.py",
                     [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="v1"),
                      Symbol(name="bar", kind="function", line=10, end_line=15, snippet="v1")], [])
 
-    rows = conn.execute("SELECT priority FROM embedding_queue ORDER BY symbol_id").fetchall()
+    rows = conn.execute("SELECT priority FROM code_block_embed_queue").fetchall()
     assert all(r[0] == 2 for r in rows)
 
 
@@ -284,7 +299,7 @@ def test_new_file_initial_index_gets_priority_1(conn):
     process_symbols(conn, cfg, row, "a/b.py",
                     [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="v1")], [])
 
-    prio = conn.execute("SELECT priority FROM embedding_queue").fetchone()[0]
+    prio = conn.execute("SELECT priority FROM code_block_embed_queue").fetchone()[0]
     assert prio == 1
 
 
@@ -300,9 +315,10 @@ def test_min_describe_lines_removes_short_symbols(conn):
     process_symbols(conn, cfg, row, "a/b.py", syms, [])
 
     remaining = conn.execute(
-        "SELECT s.name FROM description_queue dq "
-        "JOIN symbols s ON s.id = dq.symbol_id "
-        "WHERE s.file_id=?",
+        "SELECT s.name FROM code_block_describe_queue dq"
+        " JOIN code_blocks cb ON cb.id = dq.block_id"
+        " JOIN symbols s ON s.id = cb.symbol_id"
+        " WHERE s.file_id=?",
         (fid,),
     ).fetchall()
     remaining_names = sorted(r[0] for r in remaining)

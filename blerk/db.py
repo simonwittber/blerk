@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS symbols (
     kind           TEXT    NOT NULL,
     line           INTEGER NOT NULL,
     end_line       INTEGER,
-    snippet        TEXT,
+    content_hash   TEXT,
     params         TEXT,
     nesting_depth  INTEGER NOT NULL DEFAULT 0,
     param_count    INTEGER NOT NULL DEFAULT 0,
@@ -39,6 +39,20 @@ CREATE TABLE IF NOT EXISTS symbols (
     described_at   INTEGER,
     ext            TEXT
 );
+
+CREATE TABLE IF NOT EXISTS code_blocks (
+    id           INTEGER PRIMARY KEY,
+    symbol_id    INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    block_index  INTEGER NOT NULL,
+    content      TEXT    NOT NULL,
+    start_line   INTEGER NOT NULL,
+    end_line     INTEGER NOT NULL,
+    description  TEXT,
+    described_at INTEGER,
+    UNIQUE (symbol_id, block_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_blocks_symbol ON code_blocks(symbol_id);
 
 CREATE TABLE IF NOT EXISTS symbol_tags (
     symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
@@ -57,13 +71,13 @@ CREATE INDEX IF NOT EXISTS idx_symbols_kind_file ON symbols(kind, file_id);
 
 CREATE TABLE IF NOT EXISTS embeddings (
     id          INTEGER PRIMARY KEY,
-    symbol_id   INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    block_id    INTEGER NOT NULL REFERENCES code_blocks(id) ON DELETE CASCADE,
     model       TEXT    NOT NULL,
     vector      BLOB    NOT NULL,
     embedded_at INTEGER NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_symbol_model ON embeddings(symbol_id, model);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_block_model ON embeddings(block_id, model);
 
 CREATE TABLE IF NOT EXISTS symbol_queue (
     id        INTEGER PRIMARY KEY,
@@ -85,9 +99,9 @@ CREATE TABLE IF NOT EXISTS git_queue (
     error     TEXT
 );
 
-CREATE TABLE IF NOT EXISTS description_queue (
+CREATE TABLE IF NOT EXISTS code_block_describe_queue (
     id        INTEGER PRIMARY KEY,
-    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    block_id  INTEGER NOT NULL REFERENCES code_blocks(id) ON DELETE CASCADE,
     status    TEXT    NOT NULL DEFAULT 'pending',
     priority  INTEGER NOT NULL DEFAULT 1,
     attempts  INTEGER NOT NULL DEFAULT 0,
@@ -95,9 +109,9 @@ CREATE TABLE IF NOT EXISTS description_queue (
     error     TEXT
 );
 
-CREATE TABLE IF NOT EXISTS embedding_queue (
+CREATE TABLE IF NOT EXISTS code_block_embed_queue (
     id        INTEGER PRIMARY KEY,
-    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    block_id  INTEGER NOT NULL REFERENCES code_blocks(id) ON DELETE CASCADE,
     status    TEXT    NOT NULL DEFAULT 'pending',
     priority  INTEGER NOT NULL DEFAULT 1,
     attempts  INTEGER NOT NULL DEFAULT 0,
@@ -180,12 +194,20 @@ CREATE TABLE IF NOT EXISTS findings (
     rule_id     INTEGER NOT NULL REFERENCES analyzer_rules(id) ON DELETE CASCADE,
     message     TEXT    NOT NULL,
     confidence  REAL    NOT NULL,
+    stale       BOOLEAN NOT NULL DEFAULT 0,
     analyzed_at INTEGER NOT NULL DEFAULT (unixepoch()),
     UNIQUE (symbol_id, rule_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_findings_rule ON findings(rule_id);
 CREATE INDEX IF NOT EXISTS idx_findings_symbol ON findings(symbol_id);
+
+CREATE TRIGGER IF NOT EXISTS findings_stale_on_file_change
+AFTER UPDATE ON files WHEN OLD.hash != NEW.hash
+BEGIN
+  UPDATE findings SET stale = 1
+  WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id = NEW.id);
+END;
 
 CREATE TRIGGER IF NOT EXISTS files_after_insert
 AFTER INSERT ON files BEGIN
@@ -198,30 +220,16 @@ AFTER UPDATE ON files WHEN OLD.hash != NEW.hash BEGIN
     INSERT INTO symbol_queue(file_id, queued_at) VALUES (NEW.id, unixepoch());
 END;
 
-CREATE TRIGGER IF NOT EXISTS symbols_description_insert
-AFTER INSERT ON symbols
-WHEN NEW.kind IN ('function', 'method') AND NEW.description IS NULL
+CREATE TRIGGER IF NOT EXISTS code_blocks_embed_insert
+AFTER INSERT ON code_blocks
 BEGIN
-    INSERT INTO description_queue(symbol_id) VALUES (NEW.id);
+    INSERT INTO code_block_embed_queue(block_id) VALUES (NEW.id);
 END;
 
-CREATE TRIGGER IF NOT EXISTS symbols_embedding_insert
-AFTER INSERT ON symbols
-WHEN NEW.kind != 'heading'
+CREATE TRIGGER IF NOT EXISTS code_blocks_describe_insert
+AFTER INSERT ON code_blocks
 BEGIN
-    INSERT INTO embedding_queue(symbol_id) VALUES (NEW.id);
-END;
-
-CREATE TRIGGER IF NOT EXISTS symbols_description_update
-AFTER UPDATE ON symbols WHEN NEW.description IS NOT NULL AND OLD.description IS NULL BEGIN
-    INSERT INTO embedding_queue(symbol_id) VALUES (NEW.id);
-END;
-
-CREATE TRIGGER IF NOT EXISTS symbols_fingerprint_insert
-AFTER INSERT ON symbols
-WHEN NEW.kind IN ('function', 'method') AND NEW.snippet IS NOT NULL
-BEGIN
-    INSERT INTO fingerprint_queue(symbol_id) VALUES (NEW.id);
+    INSERT INTO code_block_describe_queue(block_id) VALUES (NEW.id);
 END;
 
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -231,29 +239,52 @@ CREATE TABLE IF NOT EXISTS schema_version (
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     name,
     description,
-    snippet,
     content=symbols,
     content_rowid=id
 );
 
 CREATE TRIGGER IF NOT EXISTS symbols_fts_insert
 AFTER INSERT ON symbols BEGIN
-    INSERT INTO symbols_fts(rowid, name, description, snippet)
-    VALUES (NEW.id, NEW.name, NEW.description, NEW.snippet);
+    INSERT INTO symbols_fts(rowid, name, description)
+    VALUES (NEW.id, NEW.name, NEW.description);
 END;
 
 CREATE TRIGGER IF NOT EXISTS symbols_fts_update
 AFTER UPDATE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, name, description, snippet)
-    VALUES ('delete', OLD.id, OLD.name, OLD.description, OLD.snippet);
-    INSERT INTO symbols_fts(rowid, name, description, snippet)
-    VALUES (NEW.id, NEW.name, NEW.description, NEW.snippet);
+    INSERT INTO symbols_fts(symbols_fts, rowid, name, description)
+    VALUES ('delete', OLD.id, OLD.name, OLD.description);
+    INSERT INTO symbols_fts(rowid, name, description)
+    VALUES (NEW.id, NEW.name, NEW.description);
 END;
 
 CREATE TRIGGER IF NOT EXISTS symbols_fts_delete
 AFTER DELETE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, name, description, snippet)
-    VALUES ('delete', OLD.id, OLD.name, OLD.description, OLD.snippet);
+    INSERT INTO symbols_fts(symbols_fts, rowid, name, description)
+    VALUES ('delete', OLD.id, OLD.name, OLD.description);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS code_blocks_fts USING fts5(
+    content,
+    content=code_blocks,
+    content_rowid=id
+);
+
+CREATE TRIGGER IF NOT EXISTS code_blocks_fts_insert
+AFTER INSERT ON code_blocks BEGIN
+    INSERT INTO code_blocks_fts(rowid, content) VALUES (NEW.id, NEW.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS code_blocks_fts_update
+AFTER UPDATE ON code_blocks BEGIN
+    INSERT INTO code_blocks_fts(code_blocks_fts, rowid, content)
+    VALUES ('delete', OLD.id, OLD.content);
+    INSERT INTO code_blocks_fts(rowid, content) VALUES (NEW.id, NEW.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS code_blocks_fts_delete
+AFTER DELETE ON code_blocks BEGIN
+    INSERT INTO code_blocks_fts(code_blocks_fts, rowid, content)
+    VALUES ('delete', OLD.id, OLD.content);
 END;
 """
 
@@ -301,7 +332,7 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
-_CURRENT_VERSION = 5
+_CURRENT_VERSION = 7
 
 
 def _get_version(conn: sqlite3.Connection) -> int:
@@ -335,6 +366,9 @@ def _migrate_1(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_2(conn: sqlite3.Connection) -> None:
+    sym_cols = {row[1] for row in conn.execute("PRAGMA table_info(symbols)")}
+    if "snippet" not in sym_cols:
+        return
     conn.execute(
         """
         INSERT OR IGNORE INTO fingerprint_queue(symbol_id)
@@ -372,12 +406,204 @@ def _migrate_5(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM symbol_tags WHERE key IN ('confusing', 'confusing_reason')")
 
 
+def _migrate_6(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(findings)")}
+    if "stale" not in existing:
+        conn.execute("ALTER TABLE findings ADD COLUMN stale BOOLEAN NOT NULL DEFAULT 0")
+    conn.executescript("""
+        CREATE TRIGGER IF NOT EXISTS findings_stale_on_file_change
+        AFTER UPDATE ON files WHEN OLD.hash != NEW.hash
+        BEGIN
+          UPDATE findings SET stale = 1
+          WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id = NEW.id);
+        END;
+    """)
+
+
+def _migrate_7(conn: sqlite3.Connection) -> None:
+    # Add content_hash to symbols
+    existing_sym = {row[1] for row in conn.execute("PRAGMA table_info(symbols)")}
+    if "content_hash" not in existing_sym:
+        conn.execute("ALTER TABLE symbols ADD COLUMN content_hash TEXT")
+
+    # Create code_blocks, queues, FTS
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS code_blocks (
+            id           INTEGER PRIMARY KEY,
+            symbol_id    INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+            block_index  INTEGER NOT NULL,
+            content      TEXT    NOT NULL,
+            start_line   INTEGER NOT NULL,
+            end_line     INTEGER NOT NULL,
+            description  TEXT,
+            described_at INTEGER,
+            UNIQUE (symbol_id, block_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_blocks_symbol ON code_blocks(symbol_id);
+
+        CREATE TABLE IF NOT EXISTS code_block_describe_queue (
+            id        INTEGER PRIMARY KEY,
+            block_id  INTEGER NOT NULL REFERENCES code_blocks(id) ON DELETE CASCADE,
+            status    TEXT    NOT NULL DEFAULT 'pending',
+            priority  INTEGER NOT NULL DEFAULT 1,
+            attempts  INTEGER NOT NULL DEFAULT 0,
+            queued_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            error     TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS code_block_embed_queue (
+            id        INTEGER PRIMARY KEY,
+            block_id  INTEGER NOT NULL REFERENCES code_blocks(id) ON DELETE CASCADE,
+            status    TEXT    NOT NULL DEFAULT 'pending',
+            priority  INTEGER NOT NULL DEFAULT 1,
+            attempts  INTEGER NOT NULL DEFAULT 0,
+            queued_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            error     TEXT
+        );
+    """)
+
+    # Recreate embeddings with block_id if it still has symbol_id
+    emb_cols = {row[1] for row in conn.execute("PRAGMA table_info(embeddings)")}
+    if "symbol_id" in emb_cols:
+        conn.executescript("""
+            DROP TABLE IF EXISTS _embeddings_old;
+            ALTER TABLE embeddings RENAME TO _embeddings_old;
+            CREATE TABLE embeddings (
+                id          INTEGER PRIMARY KEY,
+                block_id    INTEGER NOT NULL REFERENCES code_blocks(id) ON DELETE CASCADE,
+                model       TEXT    NOT NULL,
+                vector      BLOB    NOT NULL,
+                embedded_at INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_block_model ON embeddings(block_id, model);
+            DROP TABLE IF EXISTS _embeddings_old;
+        """)
+
+    # Drop old triggers
+    conn.executescript("""
+        DROP TRIGGER IF EXISTS symbols_description_insert;
+        DROP TRIGGER IF EXISTS symbols_embedding_insert;
+        DROP TRIGGER IF EXISTS symbols_description_update;
+        DROP TRIGGER IF EXISTS symbols_fingerprint_insert;
+        DROP TRIGGER IF EXISTS code_blocks_embed_insert;
+        DROP TRIGGER IF EXISTS code_blocks_describe_insert;
+    """)
+
+    # Add new code_blocks triggers
+    conn.executescript("""
+        CREATE TRIGGER IF NOT EXISTS code_blocks_embed_insert
+        AFTER INSERT ON code_blocks
+        BEGIN
+            INSERT INTO code_block_embed_queue(block_id) VALUES (NEW.id);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS code_blocks_describe_insert
+        AFTER INSERT ON code_blocks
+        BEGIN
+            INSERT INTO code_block_describe_queue(block_id) VALUES (NEW.id);
+        END;
+    """)
+
+    # Rebuild symbols_fts without snippet
+    conn.executescript("""
+        DROP TRIGGER IF EXISTS symbols_fts_insert;
+        DROP TRIGGER IF EXISTS symbols_fts_update;
+        DROP TRIGGER IF EXISTS symbols_fts_delete;
+        DROP TABLE IF EXISTS symbols_fts;
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+            name,
+            description,
+            content=symbols,
+            content_rowid=id
+        );
+
+        CREATE TRIGGER IF NOT EXISTS symbols_fts_insert
+        AFTER INSERT ON symbols BEGIN
+            INSERT INTO symbols_fts(rowid, name, description)
+            VALUES (NEW.id, NEW.name, NEW.description);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS symbols_fts_update
+        AFTER UPDATE ON symbols BEGIN
+            INSERT INTO symbols_fts(symbols_fts, rowid, name, description)
+            VALUES ('delete', OLD.id, OLD.name, OLD.description);
+            INSERT INTO symbols_fts(rowid, name, description)
+            VALUES (NEW.id, NEW.name, NEW.description);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS symbols_fts_delete
+        AFTER DELETE ON symbols BEGIN
+            INSERT INTO symbols_fts(symbols_fts, rowid, name, description)
+            VALUES ('delete', OLD.id, OLD.name, OLD.description);
+        END;
+    """)
+
+    conn.execute(
+        "INSERT INTO symbols_fts(rowid, name, description)"
+        " SELECT id, name, COALESCE(description, '') FROM symbols"
+    )
+
+    # Create code_blocks_fts
+    conn.executescript("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS code_blocks_fts USING fts5(
+            content,
+            content=code_blocks,
+            content_rowid=id
+        );
+
+        CREATE TRIGGER IF NOT EXISTS code_blocks_fts_insert
+        AFTER INSERT ON code_blocks BEGIN
+            INSERT INTO code_blocks_fts(rowid, content) VALUES (NEW.id, NEW.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS code_blocks_fts_update
+        AFTER UPDATE ON code_blocks BEGIN
+            INSERT INTO code_blocks_fts(code_blocks_fts, rowid, content)
+            VALUES ('delete', OLD.id, OLD.content);
+            INSERT INTO code_blocks_fts(rowid, content) VALUES (NEW.id, NEW.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS code_blocks_fts_delete
+        AFTER DELETE ON code_blocks BEGIN
+            INSERT INTO code_blocks_fts(code_blocks_fts, rowid, content)
+            VALUES ('delete', OLD.id, OLD.content);
+        END;
+    """)
+
+    # Populate code_blocks from existing snippet data
+    existing_sym2 = {row[1] for row in conn.execute("PRAGMA table_info(symbols)")}
+    if "snippet" in existing_sym2:
+        conn.execute("""
+            INSERT OR IGNORE INTO code_blocks(symbol_id, block_index, content, start_line, end_line)
+            SELECT id, 0, snippet, line, COALESCE(end_line, line)
+            FROM symbols
+            WHERE snippet IS NOT NULL AND snippet != ''
+        """)
+        conn.execute(
+            "INSERT INTO code_blocks_fts(rowid, content)"
+            " SELECT id, content FROM code_blocks WHERE block_index = 0"
+        )
+        try:
+            conn.execute("ALTER TABLE symbols DROP COLUMN snippet")
+        except sqlite3.OperationalError:
+            pass
+
+    # Drop old queues (empty, no longer needed)
+    conn.executescript("""
+        DROP TABLE IF EXISTS description_queue;
+        DROP TABLE IF EXISTS embedding_queue;
+    """)
+
+
 _MIGRATIONS: dict[int, object] = {
     1: _migrate_1,
     2: _migrate_2,
     3: _migrate_3,
     4: _migrate_4,
     5: _migrate_5,
+    6: _migrate_6,
+    7: _migrate_7,
 }
 
 

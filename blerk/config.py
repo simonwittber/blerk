@@ -94,6 +94,7 @@ class Analyzer:
     confidence: float = 0.7
     max_context_callers: int = 3
     max_context_callees: int = 5
+    file_mode: bool = False
     rules: list[AnalyzerRule] = field(default_factory=list)
 
 
@@ -276,6 +277,7 @@ def load_analyzers_file(path: str) -> list[Analyzer]:
             confidence=a.get("confidence", 0.7),
             max_context_callers=a.get("max_context_callers", 3),
             max_context_callees=a.get("max_context_callees", 5),
+            file_mode=a.get("file_mode", False),
             rules=rules,
         ))
     return result

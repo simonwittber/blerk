@@ -12,8 +12,8 @@ import httpx
 from blerk import config, coordinator, daemon_util, db
 
 
-QUEUE = "embedding_queue"
-TARGET_COL = "symbol_id"
+QUEUE = "code_block_embed_queue"
+TARGET_COL = "block_id"
 DAEMON = "embedder"
 
 log = logging.getLogger("embedder")
@@ -85,20 +85,26 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
         if rows:
             status = "running"
             for row in rows:
-                sym_row = conn.execute(
-                    "SELECT s.name, COALESCE(s.description, ''), COALESCE(s.snippet, ''), f.path, COALESCE(s.params, ''), s.kind, "
-                    "s.file_id, s.line, s.nesting_depth "
-                    "FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id=?",
+                blk_row = conn.execute(
+                    "SELECT cb.content, cb.start_line, cb.block_index,"
+                    " s.id, s.name, COALESCE(s.description, ''), f.path,"
+                    " COALESCE(s.params, ''), s.kind, s.file_id, s.line, s.nesting_depth"
+                    " FROM code_blocks cb"
+                    " JOIN symbols s ON s.id = cb.symbol_id"
+                    " JOIN files f ON f.id = s.file_id"
+                    " WHERE cb.id=?",
                     (row.target_id,),
                 ).fetchone()
-                if not sym_row:
+                if not blk_row:
                     try:
                         db.mark_done(conn, QUEUE, row.id)
                     except sqlite3.Error as e:
                         log.warning("mark done %s %d: %s", QUEUE, row.id, e)
                     continue
 
-                name, description, snippet, path, params, kind, file_id, line, nesting_depth = sym_row
+                (block_content, block_start, block_index,
+                 sym_id, name, description, path,
+                 params, kind, file_id, line, nesting_depth) = blk_row
 
                 parent_row = None
                 if nesting_depth and nesting_depth > 0:
@@ -114,39 +120,47 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
 
                 ns_row = conn.execute(
                     "SELECT value FROM symbol_tags WHERE symbol_id=? AND key='namespace'",
-                    (row.target_id,),
+                    (sym_id,),
                 ).fetchone()
                 namespace = ns_row[0] if ns_row else ""
 
                 callers = conn.execute(
                     "SELECT s.name FROM symbol_refs r JOIN symbols s ON s.id = r.caller_id "
                     "WHERE r.callee_id=? LIMIT 10",
-                    (row.target_id,),
+                    (sym_id,),
                 ).fetchall()
                 callees = conn.execute(
                     "SELECT s.name FROM symbol_refs r JOIN symbols s ON s.id = r.callee_id "
                     "WHERE r.caller_id=? LIMIT 10",
-                    (row.target_id,),
+                    (sym_id,),
                 ).fetchall()
 
                 sig = f"({params})" if params else ""
                 ns_prefix = f"{namespace}." if namespace else ""
                 cls_prefix = f"{parent_class}." if parent_class else ""
+                block_desc = ""
+                if block_index == 0:
+                    block_desc = description
+                else:
+                    bd_row = conn.execute(
+                        "SELECT COALESCE(description, '') FROM code_blocks WHERE id=?",
+                        (row.target_id,),
+                    ).fetchone()
+                    block_desc = bd_row[0] if bd_row else ""
+
                 parts = [f"{ns_prefix}{cls_prefix}{name}{sig}"]
-                if description:
+                if block_desc:
                     parts.append(": ")
-                    parts.append(description)
+                    parts.append(block_desc)
                 parts.append(f"\nin {path}")
                 if callers:
                     parts.append("\ncallers: " + ", ".join(r[0] for r in callers))
                 if callees:
                     parts.append("\ncallees: " + ", ".join(r[0] for r in callees))
-                if snippet and kind in ("function", "method"):
+                if block_content and kind in ("function", "method"):
                     parts.append("\n\n")
-                    parts.append(snippet)
+                    parts.append(block_content)
                 text = "".join(parts)
-                if cfg.embedder.max_embed_chars > 0 and len(text) > cfg.embedder.max_embed_chars:
-                    text = text[:cfg.embedder.max_embed_chars]
 
                 t0 = time.monotonic()
                 try:
@@ -167,9 +181,9 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
 
                 try:
                     conn.execute(
-                        "INSERT INTO embeddings(symbol_id, model, vector, embedded_at) "
+                        "INSERT INTO embeddings(block_id, model, vector, embedded_at) "
                         "VALUES(?, ?, ?, unixepoch()) "
-                        "ON CONFLICT(symbol_id, model) DO UPDATE SET "
+                        "ON CONFLICT(block_id, model) DO UPDATE SET "
                         "vector = excluded.vector, "
                         "embedded_at = excluded.embedded_at",
                         (row.target_id, cfg.embedder.model, blob),

@@ -20,7 +20,6 @@ def detail(conn, name: str, path_filter: str = "") -> str:
         SELECT s.id, s.name, s.kind, f.path,
                s.line, COALESCE(s.end_line, s.line),
                COALESCE(s.description, ''),
-               COALESCE(s.snippet, ''),
                COALESCE(s.params, ''),
                s.nesting_depth, s.param_count
         FROM symbols s
@@ -37,7 +36,7 @@ def detail(conn, name: str, path_filter: str = "") -> str:
     lines: list[str] = []
     if len(rows) > 1:
         lines.append(f"({len(rows)} symbols named '{name}', showing all)\n")
-    for id_, sym_name, kind, path, line, end_line, desc, snippet, sig_params, nesting_depth, param_count in rows:
+    for id_, sym_name, kind, path, line, end_line, desc, sig_params, nesting_depth, param_count in rows:
         sig = f"({sig_params})" if sig_params else ""
         lines.append(f"{kind} {sym_name}{sig}")
         lines.append(f"file: {path}  lines: {line}-{end_line}")
@@ -63,10 +62,17 @@ def detail(conn, name: str, path_filter: str = "") -> str:
         if callees:
             lines.append("callees: " + ", ".join(r[0] for r in callees))
 
-        if snippet:
-            lines.append("snippet:")
-            for l in snippet.splitlines():
-                lines.append("  " + l)
+        blocks = conn.execute(
+            "SELECT content FROM code_blocks WHERE symbol_id=? ORDER BY block_index",
+            (id_,),
+        ).fetchall()
+        if blocks:
+            lines.append("content:")
+            for bi, (block_content,) in enumerate(blocks):
+                if bi > 0:
+                    lines.append("  ---")
+                for bl in block_content.splitlines():
+                    lines.append("  " + bl)
 
         lines.append("")
 

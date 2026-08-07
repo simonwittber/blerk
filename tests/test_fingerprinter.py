@@ -18,10 +18,15 @@ def _insert_symbol(conn, path: str, name: str, snippet: str, kind: str = "functi
     )
     fid = int(cur.lastrowid)
     cur = conn.execute(
-        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet) VALUES(?,?,?,?,?,?)",
-        (fid, name, kind, 1, 10, snippet),
+        "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
+        (fid, name, kind, 1, 10),
     )
-    return int(cur.lastrowid)
+    sid = int(cur.lastrowid)
+    conn.execute(
+        "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line) VALUES(?,?,?,?,?)",
+        (sid, 0, snippet, 1, 10),
+    )
+    return sid
 
 
 def _fingerprint_symbol(conn, sid: int, snippet: str) -> None:
@@ -149,12 +154,16 @@ def test_exact_clone_not_flagged_within_same_file(conn, tmp_path):
     path = str(tmp_path / "a.py")
     sid_a = _insert_symbol(conn, path, "foo", SNIPPET_A)
     # Same file, same snippet - should not flag.
+    fid_a = conn.execute("SELECT file_id FROM symbols WHERE id=?", (sid_a,)).fetchone()[0]
     cur = conn.execute(
-        "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet) VALUES(?,?,?,?,?,?)",
-        (conn.execute("SELECT file_id FROM symbols WHERE id=?", (sid_a,)).fetchone()[0],
-         "foo2", "function", 20, 30, SNIPPET_A),
+        "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
+        (fid_a, "foo2", "function", 20, 30),
     )
     sid_b = int(cur.lastrowid)
+    conn.execute(
+        "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line) VALUES(?,?,?,?,?)",
+        (sid_b, 0, SNIPPET_A, 20, 30),
+    )
     _fingerprint_symbol(conn, sid_a, SNIPPET_A)
     _fingerprint_symbol(conn, sid_b, SNIPPET_A)
 

@@ -47,7 +47,7 @@ def _fetch_findings(
     rows = conn.execute(
         f"""
         SELECT ar.name, ar.severity, fn.message, fn.confidence,
-               s.name, f.path, s.line, fn.rule_id
+               s.name, f.path, s.line, fn.rule_id, fn.stale
         FROM findings fn
         JOIN analyzer_rules ar ON ar.id = fn.rule_id
         JOIN analyzers a ON a.id = ar.analyzer_id
@@ -69,8 +69,9 @@ def _fetch_findings(
             symbol_name=symbol_name,
             file_path=path,
             line=line,
+            stale=bool(stale),
         )
-        for rule_name, severity, message, confidence, symbol_name, path, line, rule_id in rows
+        for rule_name, severity, message, confidence, symbol_name, path, line, rule_id, stale in rows
     ]
 
 
@@ -81,7 +82,8 @@ def _print_text(findings: list[Finding]) -> None:
     order = {"error": 0, "warning": 1, "info": 2}
     for f in sorted(findings, key=lambda x: (order.get(x.severity, 9), x.file_path, x.line)):
         loc = f"{f.file_path}:{f.line}"
-        print(f"{f.severity:<8} {f.rule_name:<32} [{f.confidence:.2f}]  {loc}  {f.symbol_name}")
+        stale = " [STALE]" if f.stale else ""
+        print(f"{f.severity:<8} {f.rule_name:<32} [{f.confidence:.2f}]{stale}  {loc}  {f.symbol_name}")
         if f.message:
             print(f"         {f.message}")
         print()

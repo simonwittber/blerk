@@ -125,50 +125,57 @@ def test_text_no_truncation_when_max_is_zero():
     assert text == "foo: bar\n\nbaz"
 
 
+def _insert_block(conn, tmp_path, sym_name: str = "foo") -> tuple[int, int]:
+    fid = int(conn.execute(
+        "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
+        (str(tmp_path / "a.py"), 0, "h"),
+    ).lastrowid)
+    sid = int(conn.execute(
+        "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
+        (fid, sym_name, "function", 1, 5),
+    ).lastrowid)
+    bid = int(conn.execute(
+        "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line)"
+        " VALUES(?,?,?,?,?) RETURNING id",
+        (sid, 0, "def foo(): pass", 1, 5),
+    ).fetchone()[0])
+    return sid, bid
+
+
 def test_embedding_upsert_overwrites(tmp_path):
     db_path = str(tmp_path / "test.db")
     conn = db.open_db(db_path)
     try:
-        cur = conn.execute(
-            "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            (str(tmp_path / "a.py"), 0, "h"),
-        )
-        fid = int(cur.lastrowid)
-
-        cur = conn.execute(
-            "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
-            (fid, "foo", "function", 1, 5),
-        )
-        sid = int(cur.lastrowid)
+        _, bid = _insert_block(conn, tmp_path)
 
         blob1 = to_float32_blob([1.0, 2.0, 3.0])
         blob2 = to_float32_blob([4.0, 5.0, 6.0])
 
         conn.execute(
-            "INSERT INTO embeddings(symbol_id, model, vector, embedded_at) "
+            "INSERT INTO embeddings(block_id, model, vector, embedded_at) "
             "VALUES(?, ?, ?, unixepoch()) "
-            "ON CONFLICT(symbol_id, model) DO UPDATE SET "
+            "ON CONFLICT(block_id, model) DO UPDATE SET "
             "vector = excluded.vector, embedded_at = excluded.embedded_at",
-            (sid, "nomic", blob1),
+            (bid, "nomic", blob1),
         )
         conn.execute(
-            "INSERT INTO embeddings(symbol_id, model, vector, embedded_at) "
+            "INSERT INTO embeddings(block_id, model, vector, embedded_at) "
             "VALUES(?, ?, ?, unixepoch()) "
-            "ON CONFLICT(symbol_id, model) DO UPDATE SET "
+            "ON CONFLICT(block_id, model) DO UPDATE SET "
             "vector = excluded.vector, embedded_at = excluded.embedded_at",
-            (sid, "nomic", blob2),
+            (bid, "nomic", blob2),
         )
 
         rows = conn.execute(
-            "SELECT vector FROM embeddings WHERE symbol_id=? AND model=?",
-            (sid, "nomic"),
+            "SELECT vector FROM embeddings WHERE block_id=? AND model=?",
+            (bid, "nomic"),
         ).fetchall()
         assert len(rows) == 1
         assert rows[0][0] == blob2
 
         count = conn.execute(
-            "SELECT COUNT(*) FROM embeddings WHERE symbol_id=?",
-            (sid,),
+            "SELECT COUNT(*) FROM embeddings WHERE block_id=?",
+            (bid,),
         ).fetchone()[0]
         assert count == 1
     finally:
@@ -179,30 +186,20 @@ def test_embedding_upsert_different_model_creates_new_row(tmp_path):
     db_path = str(tmp_path / "test.db")
     conn = db.open_db(db_path)
     try:
-        cur = conn.execute(
-            "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            (str(tmp_path / "a.py"), 0, "h"),
-        )
-        fid = int(cur.lastrowid)
-
-        cur = conn.execute(
-            "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
-            (fid, "foo", "function", 1, 5),
-        )
-        sid = int(cur.lastrowid)
+        _, bid = _insert_block(conn, tmp_path)
 
         conn.execute(
-            "INSERT INTO embeddings(symbol_id, model, vector, embedded_at) VALUES(?, ?, ?, unixepoch())",
-            (sid, "nomic", to_float32_blob([1.0])),
+            "INSERT INTO embeddings(block_id, model, vector, embedded_at) VALUES(?, ?, ?, unixepoch())",
+            (bid, "nomic", to_float32_blob([1.0])),
         )
         conn.execute(
-            "INSERT INTO embeddings(symbol_id, model, vector, embedded_at) VALUES(?, ?, ?, unixepoch())",
-            (sid, "other", to_float32_blob([2.0])),
+            "INSERT INTO embeddings(block_id, model, vector, embedded_at) VALUES(?, ?, ?, unixepoch())",
+            (bid, "other", to_float32_blob([2.0])),
         )
 
         count = conn.execute(
-            "SELECT COUNT(*) FROM embeddings WHERE symbol_id=?",
-            (sid,),
+            "SELECT COUNT(*) FROM embeddings WHERE block_id=?",
+            (bid,),
         ).fetchone()[0]
         assert count == 2
     finally:
