@@ -77,8 +77,6 @@ CREATE TABLE IF NOT EXISTS embeddings (
     embedded_at INTEGER NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_block_model ON embeddings(block_id, model);
-
 CREATE TABLE IF NOT EXISTS symbol_queue (
     id        INTEGER PRIMARY KEY,
     file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -616,6 +614,11 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             if fn:
                 fn(conn)  # type: ignore[call-arg]
         _set_version(conn, _CURRENT_VERSION)
+    # Create after migrations so the embeddings table always has block_id.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_block_model"
+        " ON embeddings(block_id, model)"
+    )
 
 
 def claim_batch(conn: sqlite3.Connection, queue: str, target_col: str, n: int) -> list[QueueRow]:
