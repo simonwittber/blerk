@@ -299,6 +299,152 @@ def extract_decls(root: Any, src: bytes, ld: LangDef, path: str = "") -> list[Sy
     return out
 
 
+_MEMBER_ACCESS_PARENT: dict[str, str] = {
+    "cs":   "member_access_expression",
+    "py":   "attribute",
+    "go":   "selector_expression",
+    "js":   "member_expression",
+    "cpp":  "field_expression",
+}
+
+_MEMBER_ACCESS_OBJ_FIELD: dict[str, str] = {
+    "cs":  "expression",
+    "py":  "object",
+    "go":  "operand",
+    "js":  "object",
+    "cpp": "argument",
+}
+
+_GO_RECV_DECL = """
+(method_declaration
+  receiver: (parameter_list
+    (parameter_declaration
+      name: (identifier) @recv_var
+      type: (type_identifier) @recv_type))
+  name: (field_identifier) @method_name)
+(method_declaration
+  receiver: (parameter_list
+    (parameter_declaration
+      name: (identifier) @recv_var
+      type: (pointer_type (type_identifier) @recv_type)))
+  name: (field_identifier) @method_name)
+"""
+
+_CS_TYPE_DECL = """
+(field_declaration (variable_declaration type: (identifier) @decl_type (variable_declarator name: (identifier) @decl_name)))
+(parameter type: (identifier) @decl_type name: (identifier) @decl_name)
+"""
+
+
+def _build_field_type_map(root: Any, src: bytes, lang_key: str) -> dict[tuple[str, str], str]:
+    """Return {(immediate_class_name, variable_name): declared_type} for C# only."""
+    if lang_key != "cs":
+        return {}
+    try:
+        q = Query(CS_LANG, _CS_TYPE_DECL)
+    except Exception:
+        return {}
+    result: dict[tuple[str, str], str] = {}
+    for _, captures in _run_matches(q, root):
+        type_node = (captures.get("decl_type") or [None])[0]
+        name_node = (captures.get("decl_name") or [None])[0]
+        if type_node is None or name_node is None:
+            continue
+        type_name = _node_text(type_node, src)
+        var_name = _node_text(name_node, src)
+        class_names = _enclosing_class_names(name_node, src, lang_key)
+        class_key = class_names[-1] if class_names else ""
+        result[(class_key, var_name)] = type_name
+    return result
+
+
+def _build_go_recv_map(
+    root: Any, src: bytes, syms: list[Symbol],
+) -> dict[str, tuple[str, str]]:
+    """Return {qualified_method_name: (recv_var, qualified_recv_prefix)} for Go methods."""
+    try:
+        q = Query(GO_LANG, _GO_RECV_DECL)
+    except Exception:
+        return {}
+
+    type_short_to_prefix: dict[str, str] = {}
+    for sym in syms:
+        if sym.kind in ("function", "method") and "." in sym.name:
+            prefix = sym.name.rsplit(".", 1)[0]
+            type_short_to_prefix[prefix.split(".")[-1]] = prefix
+
+    method_short_to_qualified: dict[str, list[str]] = {}
+    for sym in syms:
+        if sym.kind in ("function", "method"):
+            short = sym.short_name or sym.name.split(".")[-1]
+            method_short_to_qualified.setdefault(short, []).append(sym.name)
+
+    result: dict[str, tuple[str, str]] = {}
+    for _, captures in _run_matches(q, root):
+        rv_node = (captures.get("recv_var") or [None])[0]
+        rt_node = (captures.get("recv_type") or [None])[0]
+        mn_node = (captures.get("method_name") or [None])[0]
+        if rv_node is None or rt_node is None or mn_node is None:
+            continue
+        recv_var = _node_text(rv_node, src)
+        recv_type_short = _node_text(rt_node, src)
+        method_short = _node_text(mn_node, src)
+        qualified_recv = type_short_to_prefix.get(recv_type_short, recv_type_short)
+        qualified_method: str | None = None
+        for qname in method_short_to_qualified.get(method_short, []):
+            prefix = qname.rsplit(".", 1)[0]
+            if prefix.split(".")[-1] == recv_type_short:
+                qualified_method = qname
+                break
+        if qualified_method:
+            result[qualified_method] = (recv_var, qualified_recv)
+
+    return result
+
+
+def _qualify_callee(
+    callee_node: Any,
+    callee_short: str,
+    caller_name: str,
+    class_method_to_qualified: dict[tuple[str, str], str],
+    short_to_qualified: dict[str, str],
+    field_type_map: dict[tuple[str, str], str],
+    lang_key: str,
+    src: bytes,
+    go_recv_map: dict[str, tuple[str, str]] | None = None,
+) -> str:
+    caller_class = caller_name.rsplit(".", 1)[0] if "." in caller_name else ""
+    parent = callee_node.parent
+    member_access_type = _MEMBER_ACCESS_PARENT.get(lang_key)
+    is_member_access = parent is not None and member_access_type and parent.type == member_access_type
+
+    if is_member_access:
+        obj_field = _MEMBER_ACCESS_OBJ_FIELD.get(lang_key, "expression")
+        expr_node = parent.child_by_field_name(obj_field)
+        if expr_node is not None:
+            obj_name = _node_text(expr_node, src)
+            if field_type_map:
+                caller_class_short = caller_class.split(".")[-1] if caller_class else ""
+                declared_type = field_type_map.get((caller_class_short, obj_name))
+                if declared_type:
+                    return f"{declared_type}.{callee_short}"
+            if go_recv_map is not None and lang_key == "go":
+                recv_info = go_recv_map.get(caller_name)
+                if recv_info is not None:
+                    recv_var, qualified_recv = recv_info
+                    if obj_name == recv_var:
+                        qualified = class_method_to_qualified.get((qualified_recv, callee_short))
+                        if qualified:
+                            return qualified
+
+    if not is_member_access and caller_class:
+        qualified = class_method_to_qualified.get((caller_class, callee_short))
+        if qualified:
+            return qualified
+
+    return short_to_qualified.get(callee_short, callee_short)
+
+
 def extract_calls(root: Any, src: bytes, ld: LangDef, syms: list[Symbol]) -> list[CallRef]:
     try:
         q = Query(ld.language, ld.call_query)
@@ -311,25 +457,56 @@ def extract_calls(root: Any, src: bytes, ld: LangDef, syms: list[Symbol]) -> lis
     )
     if not ranges:
         return []
+
+    # (class_prefix, short_name) → qualified: for bare same-class calls
+    class_method_to_qualified: dict[tuple[str, str], str] = {}
+    for sym in syms:
+        if sym.kind in ("function", "method") and "." in sym.name:
+            prefix = sym.name.rsplit(".", 1)[0]
+            short = sym.short_name or sym.name.split(".")[-1]
+            class_method_to_qualified[(prefix, short)] = sym.name
+
+    # flat short_name → qualified: only for names that are unique across the file
+    short_counts: dict[str, int] = {}
+    for sym in syms:
+        if sym.kind in ("function", "method"):
+            k = sym.short_name or sym.name.split(".")[-1]
+            short_counts[k] = short_counts.get(k, 0) + 1
     short_to_qualified = {
         (sym.short_name or sym.name.split(".")[-1]): sym.name
         for sym in syms
         if sym.kind in ("function", "method")
+        and short_counts[sym.short_name or sym.name.split(".")[-1]] == 1
     }
+
+    field_type_map = _build_field_type_map(root, src, ld.key)
+    go_recv_map: dict[str, tuple[str, str]] | None = None
+    if ld.key == "go":
+        go_recv_map = _build_go_recv_map(root, src, syms)
+
     seen: set[tuple[str, str]] = set()
     refs: list[CallRef] = []
     for _pattern_idx, captures in _run_matches(q, root):
         for callee_node in (captures.get("callee") or []):
             callee_line = callee_node.start_point[0] + 1
             callee_short = _node_text(callee_node, src)
-            callee = short_to_qualified.get(callee_short, callee_short)
+            caller_name = None
             for start, end, name in ranges:
                 if start <= callee_line <= end:
-                    key = (name, callee)
-                    if callee != name and key not in seen:
-                        seen.add(key)
-                        refs.append(CallRef(caller_name=name, callee_name=callee))
+                    caller_name = name
                     break
+            if caller_name is None:
+                continue
+            callee = _qualify_callee(
+                callee_node, callee_short, caller_name,
+                class_method_to_qualified, short_to_qualified,
+                field_type_map, ld.key, src,
+                go_recv_map=go_recv_map,
+            )
+            key = (caller_name, callee)
+            if callee != caller_name and key not in seen:
+                seen.add(key)
+                refs.append(CallRef(caller_name=caller_name, callee_name=callee))
     return refs
 
 

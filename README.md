@@ -24,9 +24,7 @@ The MCP tools blerk exposes are:
 
 - `search` - semantic + keyword hybrid search over all indexed symbols. Returns the most relevant functions, methods, and types for a query.
 - `browse` - lists all symbols in a directory with their signatures and line ranges. Useful for orienting in an unfamiliar package before doing targeted searches.
-- `lint` - runs lint rules against the indexed codebase and returns violations.
-- `antislop` - tags functions that look confusing or pointless.
-- `analyze` - runs configurable LLM rule checks and returns findings.
+- `show` - show source code for a file or symbol by exact name or path substring.
 
 
 ## Requirements
@@ -181,8 +179,7 @@ Once connected, the assistant can call:
 - `browse(directory="", file_extensions=[], symbols=False)` — list files or symbols in a directory
 - `detail(name, file_path="")` — show description, code blocks, callers, and callees for a named symbol
 - `deps(directory="")` — show the file-level dependency graph
-- `lint(directory="", ...)` — run lint rules and return violations
-- `antislop(directory="", n=50, reset=False, ...)` — tag confusing or pointless functions
+- `show(target, file="", lines=200)` — show source code for a file or symbol by name
 
 The assistant decides when to call these based on what it needs. No prompting required.
 
@@ -301,6 +298,7 @@ Each daemon writes a heartbeat row to the `daemon_status` table every poll cycle
 |---|---|
 | `blerk query "..."` | Search indexed symbols with natural language |
 | `blerk browse [--dir PATH]` | List symbols in a directory |
+| `blerk show <target> [--file PATH] [--lines N]` | Show source for a file or symbol by name |
 | `blerk detail <name>` | Show full detail for a symbol by exact name |
 | `blerk deps [--dir PATH]` | Show the file-level dependency graph |
 | `blerk lint [--dir PATH] [--exclude PATTERN]` | Check functions against lint rules |

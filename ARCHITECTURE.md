@@ -155,6 +155,20 @@ Rules include: function line count, parameter count, nesting depth, file symbol 
 
 blerk uses tree-sitter for all symbol extraction. The extractor is AST-based, produces accurate snippet boundaries, and extracts call refs (which symbol calls which). Supported languages: Go, Python, JS/TS, C, C++, C#. Files with unsupported extensions return no symbols.
 
+### Call reference resolution
+
+The extractor qualifies call targets within the same file using three strategies, applied in order:
+
+1. **Declared-type member access** (C# only): field and parameter type annotations are read from the AST (`field_declaration` → `variable_declaration type:`). A call `_engine.Execute()` inside a class with `private EngineA _engine` resolves to `EngineA.Execute`.
+
+2. **Receiver-based method calls** (Go only): the receiver variable and type are read from each `method_declaration`. A call `s.Process()` inside `func (s *Service) Run()` resolves to `Service.Process`, even when another type in the same file also has a `Process` method.
+
+3. **Class-aware bare calls**: a `(class_prefix, short_name)` dict maps `(ClassA, Update)` → `ClassA.Update`. A bare call `Update()` inside `ClassA.Run` resolves to `ClassA.Update` without collision from `ClassB.Update`. Ambiguous short names (same name in multiple classes) fall through to the next strategy.
+
+4. **Unique short-name lookup**: if a short name appears exactly once in the file, the call is qualified unconditionally.
+
+Calls that cannot be resolved are emitted with their short name and stored in `external_refs`. Promotion to `symbol_refs` occurs when the callee is indexed and its fully qualified name matches exactly. Ambiguous short-name promotion is not attempted.
+
 ## Configuration
 
 `~/.blerk/config.toml` controls all tunables. Secrets (LLM API key) live separately in `~/.blerk/secrets.toml`. blerk merges secrets into the config at load time. This lets you check the main config into version control safely.

@@ -107,50 +107,6 @@ class TestCall:
         assert "--dir" not in calls[0]
         assert "src" in calls[0]
 
-    def test_lint_default_flags_present(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("lint", {"directory": "."})
-        args = list(calls[0])
-        for flag in ("--max-lines", "--max-symbols", "--max-callees",
-                     "--max-params", "--max-nesting", "--dip-threshold",
-                     "--max-clone-distance", "--max-methods", "--max-deps"):
-            assert flag in args
-
-    def test_lint_unused_flag(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("lint", {"unused": True, "directory": "."})
-        assert "--unused" in calls[0]
-
-    def test_lint_statics_flag(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("lint", {"statics": True, "directory": "."})
-        assert "--statics" in calls[0]
-
-    def test_lint_fallback(self, monkeypatch):
-        monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
-        assert mcp_mod._call("lint", {"directory": "."}) == "No lint findings."
-
-    def test_antislop_calls_analyze_subcommand(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("antislop", {"directory": "."})
-        assert calls[0][0] == "analyze"
-        assert "--analyzer" in calls[0]
-        assert "antislop" in calls[0]
-
-    def test_antislop_reset_flag(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("antislop", {"reset": True, "directory": "."})
-        assert "--reset" in calls[0]
-
-    def test_antislop_fallback(self, monkeypatch):
-        monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
-        assert mcp_mod._call("antislop", {"directory": "."}) == "No confusing fragments found."
-
     def test_unknown_tool_returns_error_message(self, monkeypatch):
         result = mcp_mod._call("does_not_exist", {})
         assert "Unknown tool" in result
@@ -176,7 +132,7 @@ class TestMain:
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
         ])
         names = {t["name"] for t in responses[0]["result"]["tools"]}
-        assert {"search", "browse", "detail", "deps", "lint", "antislop"} <= names
+        assert {"search", "browse", "detail", "deps"} <= names
 
     def test_tools_call_returns_text_content(self, monkeypatch):
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "search result")

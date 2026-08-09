@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import sqlite3
@@ -570,18 +571,40 @@ def _migrate_7(conn: sqlite3.Connection) -> None:
     """)
 
     # Populate code_blocks from existing snippet data
-    existing_sym2 = {row[1] for row in conn.execute("PRAGMA table_info(symbols)")}
-    if "snippet" in existing_sym2:
-        conn.execute("""
-            INSERT OR IGNORE INTO code_blocks(symbol_id, block_index, content, start_line, end_line)
-            SELECT id, 0, snippet, line, COALESCE(end_line, line)
-            FROM symbols
-            WHERE snippet IS NOT NULL AND snippet != ''
-        """)
-        conn.execute(
-            "INSERT INTO code_blocks_fts(rowid, content)"
-            " SELECT id, content FROM code_blocks WHERE block_index = 0"
-        )
+    try:
+        conn.execute("SELECT snippet FROM symbols LIMIT 0")
+        snippet_accessible = True
+    except sqlite3.OperationalError:
+        snippet_accessible = False
+
+    if snippet_accessible:
+        already_populated = conn.execute("SELECT COUNT(*) FROM code_blocks").fetchone()[0] > 0
+        if not already_populated:
+            conn.execute("""
+                INSERT OR IGNORE INTO code_blocks(symbol_id, block_index, content, start_line, end_line)
+                SELECT id, 0, snippet, line, COALESCE(end_line, line)
+                FROM symbols
+                WHERE snippet IS NOT NULL AND snippet != ''
+            """)
+            conn.execute(
+                "INSERT INTO code_blocks_fts(rowid, content)"
+                " SELECT id, content FROM code_blocks WHERE block_index = 0"
+            )
+
+        # Backfill content_hash from snippet before dropping the column, so that
+        # the symbolizer treats these symbols as unchanged on re-symbolization.
+        # Without this, NULL content_hash causes every symbol to be classified as
+        # "changed" on restart, rebuilding code_blocks and re-queuing embeddings.
+        rows = conn.execute(
+            "SELECT id, snippet FROM symbols WHERE content_hash IS NULL AND snippet IS NOT NULL"
+        ).fetchall()
+        if rows:
+            updates = [
+                (hashlib.sha256(snippet.encode("utf-8", errors="replace")).hexdigest()[:16], sym_id)
+                for sym_id, snippet in rows
+            ]
+            conn.executemany("UPDATE symbols SET content_hash=? WHERE id=?", updates)
+
         try:
             conn.execute("ALTER TABLE symbols DROP COLUMN snippet")
         except sqlite3.OperationalError:

@@ -504,10 +504,12 @@ def run_file_mode(
 
         if not no_save and parsed:
             name_to_id = {s["name"]: s["id"] for s in symbols}
-            first_id = symbols[0]["id"]
             with db._write_lock:
                 for item in parsed:
-                    sym_id = name_to_id.get(item["symbol"]) or first_id
+                    sym_id = name_to_id.get(item["symbol"])
+                    if sym_id is None:
+                        log.warning("analyze: unrecognised symbol %r from LLM for %s", item["symbol"], path)
+                        continue
                     conn.execute(
                         "INSERT OR REPLACE INTO findings(symbol_id, rule_id, message, confidence, stale)"
                         " VALUES(?, ?, ?, ?, 0)",

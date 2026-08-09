@@ -2,6 +2,72 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-09
+
+### blerk show
+
+A new `blerk show` command displays source code for a file or symbol directly from disk.
+
+```
+blerk show <target> [--file PATH] [--lines N]
+```
+
+`target` is resolved first as an exact symbol name, then as a file path substring. If multiple symbols share the name, all matches are shown with headers. `--file` restricts symbol lookup to a path substring. `--lines` caps the number of lines returned (default 200).
+
+### MCP server: show tool replaces lint and antislop
+
+The MCP server now exposes a `show` tool instead of `lint` and `antislop`. The `lint` and `antislop` tools are removed from the MCP interface; use the CLI directly for those.
+
+`show(target, file="", lines=200)` returns the source of a file or symbol.
+
+### Call graph accuracy
+
+Three bugs in call-graph construction are fixed.
+
+**Bug 1: LIKE fuzzy callee matching**
+
+When a caller referenced a symbol not in the same file, the symbolizer looked up the callee in the database using `name LIKE '%.ShortName'` with `LIMIT 1`. With no `ORDER BY`, this picked an arbitrary symbol that happened to match the suffix. For example, a call to `ToString()` could resolve to `Unity.U2D.Physics.Extras.TestChain.ToString` — a completely unrelated type.
+
+Fix: exact `name = ?` match only. Calls that cannot be resolved stay in `external_refs` rather than being falsely attributed.
+
+**Bug 2: Short-name promotion ambiguity**
+
+When a caller is indexed before its callee, the ref lands in `external_refs` with a short callee name. On the next indexing run, when the callee file is processed, the symbolizer promoted external refs by matching the short name against newly inserted symbols. If two symbols shared the same short name (e.g. two `Update()` methods in different classes), the first one promoted the ref and deleted the evidence — making a correct re-promotion impossible later.
+
+Fix: promotion now matches `external_refs.callee_name` against the fully qualified `sym.name` only. Ambiguous short names are not promoted.
+
+**Bug 3: Same-file method name collision**
+
+Within a single file, `short_to_qualified` was a flat dict keyed by short method name. The last class to define `Update()` silently overwrote the earlier one, so callers in the first class got the wrong qualified name.
+
+Fix: short names that appear more than once in the file are excluded from `short_to_qualified`. A new `class_method_to_qualified` dict (keyed by `(class_prefix, short_name)`) handles the unambiguous case where the caller and callee share a class prefix.
+
+### C# call resolution improvements
+
+**Class-aware bare calls**: a bare call `Update()` inside `ClassA.Run` is now resolved to `ClassA.Update` when `ClassA.Update` is defined in the same file, even if `ClassB.Update` also exists.
+
+**Declared field type resolution**: member-access calls on typed fields are now qualified using the field's declared type. For example, `_engine.Execute()` inside a class with `private EngineA _engine` resolves to `EngineA.Execute`. The resolver reads field and parameter type annotations from the tree-sitter AST.
+
+### Go receiver-based method call resolution
+
+Member-access calls on the receiver variable are now qualified using the receiver's declared type. For example, `s.Process()` inside `func (s *Service) Run()` resolves to `Service.Process`. Two types with the same method name in the same file are resolved to the correct type without collision.
+
+### analyzer: removed silent symbol fallback
+
+When the LLM returned an unrecognised symbol name, `blerk analyze` previously fell back to the first symbol in the file. It now logs a warning and skips the finding instead.
+
+### Migration 7: content_hash backfill
+
+The migration from the old `snippet` column now backfills `content_hash` before dropping `snippet`. Without this, all symbols were classified as "changed" on the first restart after upgrading to 0.4.0, causing the symbolizer to rebuild all code blocks and re-queue all embeddings unnecessarily.
+
+### watch_folder: OSError handling on hash
+
+`upsert_file` now wraps `hash_file` in a try/except. Previously a file that disappeared between the filesystem event and the hash read would crash the watcher thread.
+
+### watch_folder: drain pending events on shutdown
+
+Debounced events pending at the time of graceful shutdown are now flushed synchronously before the watcher stops. Previously, file changes that arrived just before Ctrl-C could be lost.
+
 ## [0.4.0] - 2026-08-06
 
 ### CodeBlock architecture

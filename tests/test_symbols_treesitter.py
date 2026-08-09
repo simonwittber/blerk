@@ -145,6 +145,99 @@ def test_go_qualified_name_package_and_type(write_temp):
     assert "core.Worker.Run" in names
 
 
+def test_go_receiver_call_resolves_to_own_type(write_temp):
+    """s.Process() inside Service.Run must resolve to svc.Service.Process."""
+    src = (
+        "package svc\n\n"
+        "type Service struct{}\n\n"
+        "func (s *Service) Run() {\n"
+        "    s.Process()\n"
+        "}\n\n"
+        "func (s *Service) Process() {}\n"
+    )
+    path = write_temp("recv.go", src)
+    _, refs = Extractor().extract(path)
+    assert any(r.caller_name == "svc.Service.Run" and r.callee_name == "svc.Service.Process" for r in refs), \
+        f"Expected svc.Service.Run->svc.Service.Process, got: {[(r.caller_name, r.callee_name) for r in refs]}"
+
+
+def test_go_receiver_cross_type_no_collision(write_temp):
+    """Two types with same method name: each receiver call must resolve to its own type."""
+    src = (
+        "package app\n\n"
+        "type Alpha struct{}\n"
+        "type Beta struct{}\n\n"
+        "func (a *Alpha) Run() { a.Work() }\n"
+        "func (b *Beta) Run() { b.Work() }\n\n"
+        "func (a *Alpha) Work() {}\n"
+        "func (b *Beta) Work() {}\n"
+    )
+    path = write_temp("cross.go", src)
+    _, refs = Extractor().extract(path)
+    assert any(r.caller_name == "app.Alpha.Run" and r.callee_name == "app.Alpha.Work" for r in refs), \
+        f"Expected app.Alpha.Run->app.Alpha.Work, got: {[(r.caller_name, r.callee_name) for r in refs]}"
+    assert any(r.caller_name == "app.Beta.Run" and r.callee_name == "app.Beta.Work" for r in refs), \
+        f"Expected app.Beta.Run->app.Beta.Work, got: {[(r.caller_name, r.callee_name) for r in refs]}"
+
+
+# ---------------------------------------------------------------------------
+# Call resolution: class-aware and declared-type qualification
+# ---------------------------------------------------------------------------
+
+def test_cs_bare_call_resolves_to_own_class(write_temp):
+    """
+    When two classes in the same file share a method name, a bare call inside
+    ClassA must resolve to ClassA's method, not ClassB's.
+    Currently FAILS: short_to_qualified is a flat dict — last writer wins.
+    """
+    src = """\
+public class ClassA {
+    public void Update() { }
+    public void Run() { Update(); }
+}
+public class ClassB {
+    public void Update() { }
+    public void Execute() { Update(); }
+}
+"""
+    path = write_temp("collision.cs", src)
+    _, refs = Extractor().extract(path)
+    assert any(r.caller_name == "ClassA.Run" and r.callee_name == "ClassA.Update" for r in refs), \
+        f"Expected ClassA.Run->ClassA.Update, got: {[(r.caller_name, r.callee_name) for r in refs]}"
+    assert any(r.caller_name == "ClassB.Execute" and r.callee_name == "ClassB.Update" for r in refs), \
+        f"Expected ClassB.Execute->ClassB.Update, got: {[(r.caller_name, r.callee_name) for r in refs]}"
+
+
+def test_cs_member_access_uses_declared_field_type(write_temp):
+    """
+    When two classes have fields of different types but both named _engine,
+    member access calls must be qualified using each class's declared field type.
+    Currently FAILS: short_to_qualified['Execute'] is one of EngineA or EngineB arbitrarily.
+    """
+    src = """\
+public class ClassA {
+    private EngineA _engine;
+    public void Run() { _engine.Execute(); }
+}
+public class ClassB {
+    private EngineB _engine;
+    public void Run() { _engine.Execute(); }
+}
+public class EngineA {
+    public void Execute() { }
+}
+public class EngineB {
+    public void Execute() { }
+}
+"""
+    path = write_temp("field_types.cs", src)
+    _, refs = Extractor().extract(path)
+    assert any(r.caller_name == "ClassA.Run" and r.callee_name == "EngineA.Execute" for r in refs), \
+        f"Expected ClassA.Run->EngineA.Execute, got: {[(r.caller_name, r.callee_name) for r in refs]}"
+    assert any(r.caller_name == "ClassB.Run" and r.callee_name == "EngineB.Execute" for r in refs), \
+        f"Expected ClassB.Run->EngineB.Execute, got: {[(r.caller_name, r.callee_name) for r in refs]}"
+
+
 def test_call_refs_use_short_names(write_temp):
     src = (
         "namespace App {\n"

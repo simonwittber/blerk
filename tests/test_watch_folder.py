@@ -50,7 +50,7 @@ def test_debouncer_multiple_paths_accumulate():
     assert received[0] == {"/tmp/a": "modify", "/tmp/b": "modify"}
 
 
-def test_upsert_skips_when_mtime_and_size_unchanged(conn, tmp_path):
+def test_upsert_skips_when_hash_unchanged(conn, tmp_path):
     f = tmp_path / "hello.txt"
     f.write_text("hello world", encoding="utf-8")
     path = str(f)
@@ -70,6 +70,26 @@ def test_upsert_skips_when_mtime_and_size_unchanged(conn, tmp_path):
 
     count = int(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0])
     assert count == 1
+
+
+def test_upsert_hashes_even_when_mtime_and_size_unchanged(conn, tmp_path):
+    """If mtime/size match but the stored hash is wrong, upsert_file must re-check and correct."""
+    f = tmp_path / "hello.txt"
+    f.write_text("hello world", encoding="utf-8")
+    path = str(f).replace("\\", "/")
+
+    wf.upsert_file(conn, path)
+    real_hash = conn.execute("SELECT hash FROM files WHERE path=?", (path,)).fetchone()[0]
+
+    # Corrupt the stored hash while keeping mtime/size.
+    conn.execute("UPDATE files SET hash='badhash' WHERE path=?", (path,))
+    before = wf._upsert_count.load()
+    wf.upsert_file(conn, path)
+    after = wf._upsert_count.load()
+
+    stored_hash = conn.execute("SELECT hash FROM files WHERE path=?", (path,)).fetchone()[0]
+    assert stored_hash == real_hash
+    assert after > before
 
 
 def test_upsert_updates_when_content_changes(conn, tmp_path):
@@ -159,3 +179,22 @@ def test_hash_file_matches_sha1(tmp_path):
     data = b"blerk\n" * 1000
     f.write_bytes(data)
     assert wf.hash_file(str(f)) == hashlib.sha1(data).hexdigest()
+
+
+def test_debouncer_drain_returns_pending_events():
+    received: list[dict[str, str]] = []
+
+    def flush(events: dict[str, str]) -> None:
+        received.append(events)
+
+    d = wf.Debouncer(60.0, flush)
+    d.add("/tmp/a", "modify")
+    d.add("/tmp/b", "remove")
+
+    events = d.drain()
+    assert events == {"/tmp/a": "modify", "/tmp/b": "remove"}
+    assert d.drain() == {}
+
+    # Give any stray timer threads a moment; no flush should have been invoked.
+    time.sleep(0.05)
+    assert received == []

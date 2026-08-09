@@ -58,40 +58,16 @@ _TOOLS = [
         },
     },
     {
-        "name": "lint",
-        "description": "Lint code using the blerk index. Flags large files and complex functions.",
+        "name": "show",
+        "description": "Show source code for an indexed file or symbol, read directly from the original source file.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "directory": {"type": "string"},
-                "exclude": {"type": "array", "items": {"type": "string"}},
-                "max_lines": {"type": "integer"},
-                "max_symbols": {"type": "integer"},
-                "max_callees": {"type": "integer"},
-                "max_params": {"type": "integer"},
-                "max_nesting": {"type": "integer"},
-                "unused": {"type": "boolean"},
-                "statics": {"type": "boolean"},
-                "dip_threshold": {"type": "integer"},
-                "max_clone_distance": {"type": "integer"},
-                "max_methods": {"type": "integer"},
-                "max_deps": {"type": "integer"},
+                "target": {"type": "string", "description": "file path or exact symbol name"},
+                "file": {"type": "string", "description": "restrict symbol lookup to a file path substring"},
+                "lines": {"type": "integer", "description": "maximum number of source lines to display"},
             },
-            "required": ["directory"],
-        },
-    },
-    {
-        "name": "antislop",
-        "description": "Find confusing or pointless code fragments using the blerk index.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "directory": {"type": "string"},
-                "file_extensions": {"type": "array", "items": {"type": "string"}},
-                "exclude": {"type": "array", "items": {"type": "string"}},
-                "reset": {"type": "boolean", "description": "Clear existing confusing tags before sweeping."},
-            },
-            "required": ["directory"],
+            "required": ["target"],
         },
     },
 ]
@@ -139,37 +115,13 @@ def _call(name: str, args: dict) -> str:
         cmd = ["deps", args["directory"]]
         return _run(*cmd) or "No dependencies found."
 
-    if name == "lint":
-        cmd = ["lint", args["directory"]]
-        for pattern in args.get("exclude", []):
-            cmd += ["--exclude", pattern]
-        cmd += [
-            "--max-lines", str(args.get("max_lines", 40)),
-            "--max-symbols", str(args.get("max_symbols", 20)),
-            "--max-callees", str(args.get("max_callees", 8)),
-            "--max-params", str(args.get("max_params", 4)),
-            "--max-nesting", str(args.get("max_nesting", 3)),
-            "--dip-threshold", str(args.get("dip_threshold", 3)),
-            "--max-clone-distance", str(args.get("max_clone_distance", 3)),
-            "--max-methods", str(args.get("max_methods", 10)),
-            "--max-deps", str(args.get("max_deps", 10)),
-        ]
-        if args.get("unused"):
-            cmd.append("--unused")
-        if args.get("statics"):
-            cmd.append("--statics")
-        return _run(*cmd) or "No lint findings."
-
-    if name == "antislop":
-        cmd = ["analyze", "--analyzer", "antislop"]
-        for ext in args.get("file_extensions", []):
-            cmd += ["--ext", ext]
-        cmd.append(args["directory"])
-        for pattern in args.get("exclude", []):
-            cmd += ["--exclude", pattern]
-        if args.get("reset"):
-            cmd.append("--reset")
-        return _run(*cmd) or "No confusing fragments found."
+    if name == "show":
+        cmd = ["show", args["target"]]
+        if args.get("file"):
+            cmd += ["--file", args["file"]]
+        if args.get("lines"):
+            cmd += ["--lines", str(args["lines"])]
+        return _run(*cmd)
 
     return f"Unknown tool: {name}"
 

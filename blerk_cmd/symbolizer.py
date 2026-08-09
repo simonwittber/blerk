@@ -210,9 +210,9 @@ def process_symbols(
                 callee_id = name_to_id.get(ref.callee_name)
                 if callee_id is None:
                     r = conn.execute(
-                        "SELECT id FROM symbols WHERE (name=? OR name LIKE ?) "
-                        "AND kind IN ('function','method') LIMIT 1",
-                        (ref.callee_name, f"%.{ref.callee_name}"),
+                        "SELECT id FROM symbols WHERE name=?"
+                        " AND kind IN ('function','method') LIMIT 1",
+                        (ref.callee_name,),
                     ).fetchone()
                     if r is not None:
                         callee_id = int(r[0])
@@ -233,28 +233,26 @@ def process_symbols(
                     except sqlite3.Error as e:
                         log.warning("insert external_ref %d->%s: %s", caller_id, ref.callee_name, e)
 
-        # Promote external_refs that now resolve to newly inserted symbols.
+        # Promote external_refs that now resolve to newly inserted symbols (exact name only).
         if inserted_ids:
             new_set = set(inserted_ids)
             for sym, sid in all_syms_with_ids:
                 if sid not in new_set:
                     continue
-                short = sym.short_name or sym.name.split(".")[-1]
-                for lookup in {sym.name, short}:
-                    ext_rows = conn.execute(
-                        "SELECT id, caller_id FROM external_refs WHERE callee_name=?",
-                        (lookup,),
-                    ).fetchall()
-                    for ext_id, ext_caller_id in ext_rows:
-                        if ext_caller_id != sid:
-                            try:
-                                conn.execute(
-                                    "INSERT OR IGNORE INTO symbol_refs(caller_id, callee_id) VALUES(?,?)",
-                                    (ext_caller_id, sid),
-                                )
-                            except sqlite3.Error as e:
-                                log.warning("promote external_ref %d->%d: %s", ext_caller_id, sid, e)
-                        conn.execute("DELETE FROM external_refs WHERE id=?", (ext_id,))
+                ext_rows = conn.execute(
+                    "SELECT id, caller_id FROM external_refs WHERE callee_name=?",
+                    (sym.name,),
+                ).fetchall()
+                for ext_id, ext_caller_id in ext_rows:
+                    if ext_caller_id != sid:
+                        try:
+                            conn.execute(
+                                "INSERT OR IGNORE INTO symbol_refs(caller_id, callee_id) VALUES(?,?)",
+                                (ext_caller_id, sid),
+                            )
+                        except sqlite3.Error as e:
+                            log.warning("promote external_ref %d->%d: %s", ext_caller_id, sid, e)
+                    conn.execute("DELETE FROM external_refs WHERE id=?", (ext_id,))
 
         # Apply min_describe_lines filter.
         min_lines = cfg.symbolizer.min_describe_lines

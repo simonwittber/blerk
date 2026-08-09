@@ -241,3 +241,95 @@ def test_rescan_callee_preserves_refs(conn):
     ref_count = conn.execute("SELECT COUNT(*) FROM symbol_refs").fetchone()[0]
     assert ref_count == 1, \
         "rescanning callee must preserve or rebuild the symbol_refs row pointing to it"
+
+
+# ---------------------------------------------------------------------------
+# Failure 4: ambiguous short-name resolution via LIKE fallback (Bug 1)
+# ---------------------------------------------------------------------------
+
+def test_ambiguous_callee_not_falsely_resolved(conn):
+    """
+    When two symbols share the same short name (e.g. ClassA.ToString and
+    ClassB.ToString) a bare CallRef("Caller", "ToString") must NOT be
+    attributed to an arbitrary one via the LIKE '%.ToString' fallback.
+    The ref must remain in external_refs as unresolved.
+    """
+    cfg = _cfg()
+
+    fid_a = _insert_file(conn, "a.cs")
+    process_symbols(
+        conn, cfg, db.QueueRow(1, fid_a), "a.cs",
+        [Symbol("ClassA.ToString", "method", 1, 3, "string ToString(){}")],
+        [],
+    )
+
+    fid_b = _insert_file(conn, "b.cs")
+    process_symbols(
+        conn, cfg, db.QueueRow(2, fid_b), "b.cs",
+        [Symbol("ClassB.ToString", "method", 1, 3, "string ToString(){}")],
+        [],
+    )
+
+    fid_caller = _insert_file(conn, "caller.cs")
+    process_symbols(
+        conn, cfg, db.QueueRow(3, fid_caller), "caller.cs",
+        [Symbol("Caller.Run", "method", 1, 5, "void Run(){}")],
+        [CallRef("Caller.Run", "ToString")],
+    )
+
+    sym_refs = conn.execute("SELECT COUNT(*) FROM symbol_refs").fetchone()[0]
+    assert sym_refs == 0, \
+        "ambiguous bare name must not be falsely resolved via LIKE fallback"
+    ext_refs = conn.execute(
+        "SELECT COUNT(*) FROM external_refs WHERE callee_name='ToString'"
+    ).fetchone()[0]
+    assert ext_refs == 1, \
+        "ambiguous bare name must remain in external_refs as unresolved"
+
+
+# ---------------------------------------------------------------------------
+# Failure 5: ambiguous short-name promotion of external_refs (Bug 2)
+# ---------------------------------------------------------------------------
+
+def test_ambiguous_external_ref_not_promoted(conn):
+    """
+    Caller is indexed first (ref goes to external_refs). When two symbols
+    with the same short name are later indexed, the external_ref must NOT be
+    promoted to an arbitrary first-inserted symbol. It must stay unresolved.
+    """
+    cfg = _cfg()
+
+    fid_caller = _insert_file(conn, "caller.cs")
+    process_symbols(
+        conn, cfg, db.QueueRow(1, fid_caller), "caller.cs",
+        [Symbol("Render", "method", 1, 5, "void Render(){}")],
+        [CallRef("Render", "Update")],
+    )
+
+    ext_count = conn.execute(
+        "SELECT COUNT(*) FROM external_refs WHERE callee_name='Update'"
+    ).fetchone()[0]
+    assert ext_count == 1, "unresolved ref must be recorded in external_refs"
+
+    fid_a = _insert_file(conn, "a.cs")
+    process_symbols(
+        conn, cfg, db.QueueRow(2, fid_a), "a.cs",
+        [Symbol("ClassA.Update", "method", 1, 3, "void Update(){}")],
+        [],
+    )
+
+    fid_b = _insert_file(conn, "b.cs")
+    process_symbols(
+        conn, cfg, db.QueueRow(3, fid_b), "b.cs",
+        [Symbol("ClassB.Update", "method", 1, 3, "void Update(){}")],
+        [],
+    )
+
+    sym_refs = conn.execute("SELECT COUNT(*) FROM symbol_refs").fetchone()[0]
+    assert sym_refs == 0, \
+        "ambiguous bare name must not be promoted to an arbitrary symbol"
+    ext_refs = conn.execute(
+        "SELECT COUNT(*) FROM external_refs WHERE callee_name='Update'"
+    ).fetchone()[0]
+    assert ext_refs == 1, \
+        "ambiguous external_ref must remain unresolved when multiple symbols match"

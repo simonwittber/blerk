@@ -59,19 +59,19 @@ def upsert_file(conn: sqlite3.Connection, path: str) -> None:
 
     stored = normalize_dir(path)
     try:
+        h = hash_file(real)
+    except OSError:
+        return
+
+    try:
         with _conn_lock:
             row = conn.execute(
-                "SELECT mtime, size FROM files WHERE path=?", (stored,)
+                "SELECT hash FROM files WHERE path=?", (stored,)
             ).fetchone()
     except sqlite3.Error as e:
         log.warning("upsert file select %s: %s", stored, e)
         return
-    if row and int(row[0]) == mtime and int(row[1]) == size:
-        return
-
-    try:
-        h = hash_file(real)
-    except OSError:
+    if row and row[0] == h:
         return
 
     try:
@@ -79,7 +79,7 @@ def upsert_file(conn: sqlite3.Connection, path: str) -> None:
             conn.execute(
                 "INSERT INTO files(path, mtime, size, hash) VALUES(?,?,?,?) "
                 "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, size=excluded.size, hash=excluded.hash "
-                "WHERE excluded.hash != files.hash OR excluded.mtime != files.mtime OR excluded.size != files.size",
+                "WHERE excluded.hash != files.hash",
                 (stored, mtime, size, h),
             )
     except sqlite3.Error as e:
@@ -165,12 +165,16 @@ class Debouncer:
             self._pending = {}
         self._flush(events)
 
-    def cancel(self) -> None:
+    def drain(self) -> dict[str, str]:
+        """Cancel any pending timer and return pending events for immediate processing."""
         with self._lock:
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
             self._gen += 1
+            events = self._pending
+            self._pending = {}
+            return events
 
 
 class _Handler(FileSystemEventHandler):
@@ -300,7 +304,7 @@ def watch_folder(
     observer = Observer()
     observer.schedule(handler, folder, recursive=True)
     observer.start()
-    return observer
+    return observer, debouncer
 
 
 def start_heartbeat_thread(conn: sqlite3.Connection, shutdown: threading.Event) -> threading.Thread:
@@ -367,12 +371,15 @@ def main() -> None:
         start_heartbeat_thread(conn, shutdown)
 
     observers = []
+    debouncers = []
     ignore_path = args.ignore or cfg.watch.ignore_file
     folders = [args.folder] if args.folder else cfg.watch.folders
     for folder in folders:
-        obs = watch_folder(folder, conn, ignore_path, debounce_s, args.scan, shutdown, cfg.db.path, silent)
-        if obs is not None:
+        result = watch_folder(folder, conn, ignore_path, debounce_s, args.scan, shutdown, cfg.db.path, silent)
+        if result is not None:
+            obs, deb = result
             observers.append(obs)
+            debouncers.append(deb)
 
     if args.scan:
         return
@@ -382,6 +389,24 @@ def main() -> None:
             shutdown.wait(timeout=1.0)
     except KeyboardInterrupt:
         shutdown.set()
+
+    for deb in debouncers:
+        events = deb.drain()
+        if events:
+            # Apply pending live events synchronously so they are not lost between Ctrl-C
+            # and process exit. Notify workers if anything changed.
+            upserted = 0
+            for path, ev in events.items():
+                if ev == "remove":
+                    delete_file(conn, path)
+                else:
+                    upsert_file(conn, path)
+                    upserted += 1
+            if upserted:
+                client = coordinator.CoordinatorClient("symbol_queue", cfg.db.path) if cfg.db.path else None
+                if client:
+                    client.notify("symbol_queue")
+                    client.close()
 
     for obs in observers:
         obs.stop()
