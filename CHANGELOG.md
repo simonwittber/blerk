@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-09
+
+### Fixes
+
+**watch-folder logging**: file deletion now appears in logs. Previously, only upserted files were logged; deletions were silent.
+
+**Queue pipeline tests**: added comprehensive test suite (`tests/test_queue_flow.py`) verifying file-event queuing, pipeline integrity, restart safety, and migration content_hash backfill correctness.
+
 ## [0.5.0] - 2026-08-09
 
 ### blerk show

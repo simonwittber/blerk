@@ -287,17 +287,18 @@ def watch_folder(
 
     def flush(events: dict[str, str]) -> None:
         upserted = 0
+        deleted = 0
         for path, ev in events.items():
             if ev == "remove":
                 delete_file(conn, path)
+                deleted += 1
             else:
                 upsert_file(conn, path)
                 upserted += 1
-        if upserted:
-            if not silent:
-                log.info("watch-folder: %d file(s)", upserted)
-            if client:
-                client.notify("symbol_queue")
+        if not silent and (upserted or deleted):
+            log.info("watch-folder: %d upserted, %d deleted", upserted, deleted)
+        if upserted and client:
+            client.notify("symbol_queue")
 
     debouncer = Debouncer(debounce_s, flush)
     handler = _Handler(conn, debouncer, get_sets)
