@@ -426,7 +426,19 @@ prompt_template = "You are writing documentation for other programmers. Describe
         print("Setting up sentence-transformers embedding model...")
         try:
             import sentence_transformers
+            import torch
             print(f"  sentence-transformers {sentence_transformers.__version__} installed")
+
+            # Map "auto" to actual available device
+            device_to_use = embed_device
+            if device_to_use == "auto":
+                device_to_use = "cuda" if torch.cuda.is_available() else "cpu"
+                if torch.cuda.is_available():
+                    print(f"  Device: auto → cuda (GPU available)")
+                else:
+                    print(f"  Device: auto → cpu (no GPU)")
+            else:
+                print(f"  Device: {device_to_use}")
 
             cache_path = Path(embed_cache_dir).expanduser()
             print(f"  Cache directory: {cache_path}")
@@ -435,7 +447,7 @@ prompt_template = "You are writing documentation for other programmers. Describe
 
             st = sentence_transformers.SentenceTransformer(
                 embed_model,
-                device=embed_device,
+                device=device_to_use,
                 cache_folder=str(cache_path)
             )
             print(f"  ✓ Model loaded successfully ({st.get_sentence_embedding_dimension()} dimensions)")

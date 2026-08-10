@@ -31,9 +31,19 @@ def _get_sentence_transformer(model: str, device: str, cache_dir: str):
             from sentence_transformers import SentenceTransformer
         except ImportError:
             raise RuntimeError("sentence-transformers not installed; install with: pip install sentence-transformers")
+
+        # Map "auto" to actual available device
+        device_to_use = device
+        if device_to_use == "auto":
+            try:
+                import torch
+                device_to_use = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                device_to_use = "cpu"
+
         cache_path = os.path.expanduser(cache_dir)
         os.makedirs(cache_path, exist_ok=True)
-        _st_model = SentenceTransformer(model, device=device, cache_folder=cache_path)
+        _st_model = SentenceTransformer(model, device=device_to_use, cache_folder=cache_path)
     return _st_model
 
 
