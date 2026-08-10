@@ -302,11 +302,7 @@ def main(argv: list[str] | None = None) -> int:
             print("  Continuing with defaults — edit config.toml later if needed.")
         print()
 
-        # LLM model
-        llm_model = _prompt("LLM model", existing["llm_model"])
-        print()
-
-        # Embed backend
+        # Embed backend (decide early so we know what to configure)
         print("Embedding backend options:")
         print("  ollama - Use Ollama instance (same as LLM endpoint)")
         print("  sentence-transformers - Use HuggingFace models locally (no server needed)")
@@ -314,6 +310,10 @@ def main(argv: list[str] | None = None) -> int:
         if embed_backend not in ("ollama", "sentence-transformers"):
             embed_backend = "ollama"
             print(f"  Invalid backend; using 'ollama'")
+        print()
+
+        # LLM model
+        llm_model = _prompt("LLM model", existing["llm_model"])
         print()
 
         # Backend-specific settings
