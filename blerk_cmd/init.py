@@ -33,14 +33,7 @@ batch_size = 20
 poll_ms = 2000
 max_retries = 3
 
-[llm]
-endpoint = {llm_endpoint!r}
-model = {llm_model!r}
-batch_size = 5
-poll_ms = 3000
-max_retries = 3
-max_context_chars = 16000
-prompt_template = "You are writing documentation for other programmers. Describe the following {{kind}} named \\"{{name}}\\" from {{path}}. Be concise and technical. Do not try and make fixes or note any errors. Do not make guesses, just describe what is in front of you. Limit to 4 sentences. Do not reference this prompt, as you are making a description that is being used in a RAG database.\\n\\n{{context}}\\n"
+{llm_section}
 
 [embedder]
 backend = {embed_backend!r}
@@ -217,6 +210,7 @@ def _load_existing_config(config_path: Path) -> dict:
     """Load existing config and extract current values as defaults."""
     defaults = {
         "folders": [],
+        "llm_enabled": True,
         "llm_endpoint": "http://localhost:11434",
         "llm_model": "llama3.2",
         "embed_backend": "ollama",
@@ -235,9 +229,11 @@ def _load_existing_config(config_path: Path) -> dict:
         if "llm" in cfg:
             if isinstance(cfg["llm"], list) and cfg["llm"]:
                 llm = cfg["llm"][0]
+                defaults["llm_enabled"] = llm.get("enabled", True)
                 defaults["llm_endpoint"] = llm.get("endpoint", defaults["llm_endpoint"])
                 defaults["llm_model"] = llm.get("model", defaults["llm_model"])
             elif isinstance(cfg["llm"], dict):
+                defaults["llm_enabled"] = cfg["llm"].get("enabled", True)
                 defaults["llm_endpoint"] = cfg["llm"].get("endpoint", defaults["llm_endpoint"])
                 defaults["llm_model"] = cfg["llm"].get("model", defaults["llm_model"])
         if "embedder" in cfg:
@@ -278,6 +274,7 @@ def main(argv: list[str] | None = None) -> int:
         print()
 
     if dry_run:
+        llm_enabled = existing["llm_enabled"]
         llm_endpoint = existing["llm_endpoint"]
         llm_model = existing["llm_model"]
         embed_backend = existing["embed_backend"]
@@ -289,7 +286,12 @@ def main(argv: list[str] | None = None) -> int:
         folders = existing["folders"]
         available_models = []
     else:
-        # Embedding backend (decide first)
+        # Enable descriptions?
+        enable_llm = input("Enable code descriptions? [Y/n]: ").strip().lower()
+        llm_enabled = enable_llm != "n"
+        print()
+
+        # Embedding backend (decide early)
         print("Embedding backend options:")
         print("  ollama - Use Ollama instance")
         print("  sentence-transformers - Use HuggingFace models locally (no server needed)")
@@ -317,12 +319,18 @@ def main(argv: list[str] | None = None) -> int:
             # sentence-transformers doesn't need Ollama
             ollama_endpoint = existing["embed_endpoint"]
 
-        # LLM endpoint (may use same Ollama instance)
-        llm_endpoint = _prompt("LLM endpoint (Ollama)", existing["llm_endpoint"])
-        print()
-
-        # LLM model
-        llm_model = _prompt("LLM model", existing["llm_model"])
+        # LLM configuration only if enabled
+        if llm_enabled:
+            llm_endpoint = _prompt("LLM endpoint (Ollama)", existing["llm_endpoint"])
+            llm_model = _prompt("LLM model", existing["llm_model"])
+            api_key = ""
+            needs_key = input("Does the LLM endpoint require an API key? [y/N]: ").strip().lower()
+            if needs_key == "y":
+                api_key = input("API key: ").strip()
+        else:
+            llm_endpoint = existing["llm_endpoint"]
+            llm_model = existing["llm_model"]
+            api_key = ""
         print()
 
         # Embedding backend-specific settings
@@ -348,13 +356,6 @@ def main(argv: list[str] | None = None) -> int:
             embed_cache_dir = _prompt("HuggingFace cache directory", existing["embed_cache_dir"])
             print()
 
-        # API key
-        api_key = ""
-        needs_key = input("Does the LLM endpoint require an API key? [y/N]: ").strip().lower()
-        if needs_key == "y":
-            api_key = input("API key: ").strip()
-        print()
-
         # Watch folders
         if existing["folders"]:
             print(f"Current folders: {existing['folders']}")
@@ -365,10 +366,23 @@ def main(argv: list[str] | None = None) -> int:
         print()
 
     # Write config
+    if llm_enabled:
+        llm_section = f"""[[llm]]
+enabled = true
+endpoint = {llm_endpoint!r}
+model = {llm_model!r}
+batch_size = 5
+poll_ms = 3000
+max_retries = 3
+max_context_chars = 16000
+prompt_template = "You are writing documentation for other programmers. Describe the following {{kind}} named \\"{{name}}\\" from {{path}}. Be concise and technical. Do not try and make fixes or note any errors. Do not make guesses, just describe what is in front of you. Limit to 4 sentences. Do not reference this prompt, as you are making a description that is being used in a RAG database.\\n\\n{{context}}\\n"
+"""
+    else:
+        llm_section = "# Descriptions disabled"
+
     config_content = _CONFIG_TEMPLATE.format(
         folders=_toml_string_list(folders),
-        llm_endpoint=llm_endpoint,
-        llm_model=llm_model,
+        llm_section=llm_section,
         embed_backend=embed_backend,
         embed_endpoint=embed_endpoint,
         embed_model=embed_model,

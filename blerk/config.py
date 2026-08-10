@@ -36,6 +36,7 @@ class GitEnricher:
 
 @dataclass
 class LLM:
+    enabled: bool = True
     endpoint: str = ""
     model: str = ""
     api_key: str = ""
@@ -151,6 +152,7 @@ def defaults() -> Config:
             max_retries=3,
         ),
         llm=[LLM(
+            enabled=True,
             endpoint="http://localhost:11434",
             model="llama3.2",
             batch_size=5,

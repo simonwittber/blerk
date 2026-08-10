@@ -155,6 +155,8 @@ def main() -> None:
 
     llms = cfg.llm
     for i, llm in enumerate(llms):
+        if not llm.enabled:
+            continue
         daemon_name = "llm-describer" if len(llms) == 1 else f"llm-describer-{i}"
         argv = build_argv("blerk_cmd.llm_describer", args.config) + [
             "--endpoint", llm.endpoint,
