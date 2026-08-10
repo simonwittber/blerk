@@ -40,6 +40,7 @@ blerk-mcp        = "blerk_cmd.mcp_server:main"
 blerk-rescan     = "blerk_cmd.rescan:main"
 blerk-reindex    = "blerk_cmd.reindex:main"
 blerk-lint       = "blerk_cmd.lint:main"
+blerk-similar    = "blerk_cmd.similar:main"
 blerk-fingerprint   = "blerk_cmd.fingerprinter:main"
 
 [tool.setuptools.packages.find]
