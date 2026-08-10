@@ -208,7 +208,8 @@ def _prompt_folders() -> list[str]:
 
 
 def _toml_string_list(items: list[str]) -> str:
-    inner = ", ".join(f'"{v}"' for v in items)
+    escaped = [v.replace("\\", "\\\\") for v in items]
+    inner = ", ".join(f'"{v}"' for v in escaped)
     return f"[{inner}]"
 
 
