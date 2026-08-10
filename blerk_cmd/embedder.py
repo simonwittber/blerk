@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
-import struct
 import threading
 import time
 from datetime import datetime
 
 import httpx
 
-from blerk import config, coordinator, daemon_util, db
+from blerk import config, coordinator, daemon_util, db, embedding
 
 
 QUEUE = "code_block_embed_queue"
@@ -20,57 +18,6 @@ DAEMON = "embedder"
 log = logging.getLogger("embedder")
 
 _client = httpx.Client(timeout=120.0)
-_st_model = None
-_st_lock = threading.Lock()
-
-
-def _get_sentence_transformer(model: str, device: str, cache_dir: str):
-    global _st_model
-    if _st_model is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError:
-            raise RuntimeError("sentence-transformers not installed; install with: pip install sentence-transformers")
-
-        # Map "auto" to actual available device
-        device_to_use = device
-        if device_to_use == "auto":
-            try:
-                import torch
-                device_to_use = "cuda" if torch.cuda.is_available() else "cpu"
-            except ImportError:
-                device_to_use = "cpu"
-
-        cache_path = os.path.expanduser(cache_dir)
-        os.makedirs(cache_path, exist_ok=True)
-        _st_model = SentenceTransformer(model, device=device_to_use, cache_folder=cache_path)
-    return _st_model
-
-
-def embed_ollama(endpoint: str, model: str, text: str) -> list[float]:
-    r = _client.post(
-        endpoint + "/api/embeddings",
-        json={"model": model, "prompt": text},
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"ollama {r.status_code}: {r.text}")
-    return r.json()["embedding"]
-
-
-def embed_sentence_transformers(model: str, device: str, cache_dir: str, text: str) -> list[float]:
-    st = _get_sentence_transformer(model, device, cache_dir)
-    with _st_lock:
-        vecs = st.encode([text], convert_to_numpy=True)
-    return vecs[0].tolist()
-
-
-def embed(backend: str, endpoint: str, model: str, text: str, device: str = "auto", cache_dir: str = "~/.cache/huggingface") -> list[float]:
-    if backend == "ollama":
-        return embed_ollama(endpoint, model, text)
-    elif backend == "sentence-transformers":
-        return embed_sentence_transformers(model, device, cache_dir, text)
-    else:
-        raise RuntimeError(f"unknown embedding backend: {backend}")
 
 
 def embed_with_truncation(backend: str, endpoint: str, model: str, text: str, device: str = "auto", cache_dir: str = "~/.cache/huggingface") -> list[float]:
@@ -81,7 +28,7 @@ def embed_with_truncation(backend: str, endpoint: str, model: str, text: str, de
             raise RuntimeError("embed_with_truncation exceeded max iterations")
         iters += 1
         try:
-            return embed(backend, endpoint, model, text, device, cache_dir)
+            return embedding.embed(backend, endpoint, model, text, device, cache_dir)
         except httpx.TimeoutException as e:
             raise RuntimeError(f"embed timed out: {e}") from e
         except RuntimeError as e:
@@ -89,10 +36,6 @@ def embed_with_truncation(backend: str, endpoint: str, model: str, text: str, de
                 raise
             text = text[: len(text) // 2]
     raise RuntimeError("text truncated to empty string")
-
-
-def to_float32_blob(vec: list[float]) -> bytes:
-    return struct.pack(f"<{len(vec)}f", *vec)
 
 
 
@@ -222,7 +165,7 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
                         failures_today += 1
                     continue
 
-                blob = to_float32_blob(vec)
+                blob = embedding.to_float32_blob(vec)
 
                 try:
                     conn.execute(

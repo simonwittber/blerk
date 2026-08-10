@@ -125,7 +125,7 @@ class CoordinatorClient:
     def _register(self) -> None:
         workers_dir = _workers_dir(self._db_path)
         workers_dir.mkdir(parents=True, exist_ok=True)
-        for f in workers_dir.glob(f"{self._queue}-*.worker"):
+        for f in workers_dir.glob("*.worker"):
             try:
                 lines = {k: v for k, _, v in (l.partition("=") for l in f.read_text().splitlines()) if k}
                 if not _is_alive(int(lines["pid"])):

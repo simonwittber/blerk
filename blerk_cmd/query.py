@@ -7,9 +7,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-import httpx
-
-from blerk import config, db
+from blerk import config, db, embedding
 from blerk_cmd.util import normalize_dir
 
 
@@ -27,17 +25,6 @@ class QueryOptions:
 # RRF smoothing constant: 60 is the standard value that prevents top ranks from dominating.
 _RRF_K = 60
 _OVERFETCH = 20
-
-
-def embed(endpoint: str, model: str, text: str) -> list[float]:
-    r = httpx.post(
-        endpoint + "/api/embeddings",
-        json={"model": model, "prompt": text},
-        timeout=30.0,
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"ollama {r.status_code}: {r.text}")
-    return r.json()["embedding"]
 
 
 def to_blob(vec: list[float]) -> bytes:
@@ -388,7 +375,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
 
-    vec = embed(cfg.embedder.endpoint, cfg.embedder.model, args.query)
+    vec = embedding.embed(cfg.embedder.backend, cfg.embedder.endpoint, cfg.embedder.model, args.query,
+                          cfg.embedder.device, cfg.embedder.cache_dir)
     blob = to_blob(vec)
 
     tag_filter: dict[str, str] = {}

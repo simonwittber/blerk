@@ -4,7 +4,7 @@ import struct
 
 import pytest
 
-from blerk import db
+from blerk import db, embedding
 from blerk_cmd import query
 from blerk_cmd.query import QueryOptions, to_blob, truncate
 
@@ -289,7 +289,7 @@ def test_main_empty_db_prints_nothing(tmp_path, capsys, monkeypatch):
     db_path = tmp_path / "empty.db"
     db.open_db(str(db_path)).close()
     cfg_path = _write_config(tmp_path, db_path)
-    monkeypatch.setattr(query, "embed", lambda *a: [1.0, 0.0, 0.0])
+    monkeypatch.setattr(embedding, "embed", lambda *a, **kw: [1.0, 0.0, 0.0])
 
     assert query.main(["--config", str(cfg_path), "hello", "."]) == 0
     assert capsys.readouterr().out == ""
@@ -306,7 +306,7 @@ def test_main_end_to_end(tmp_path, capsys, monkeypatch):
     conn.close()
 
     cfg_path = _write_config(tmp_path, db_path)
-    monkeypatch.setattr(query, "embed", lambda *a: [1.0, 0.0, 0.0])
+    monkeypatch.setattr(embedding, "embed", lambda *a, **kw: [1.0, 0.0, 0.0])
 
     assert query.main(["--config", str(cfg_path), "-n", "1", "--verbose", "alpha", "src"]) == 0
     out = capsys.readouterr().out
@@ -326,7 +326,7 @@ def test_main_ext_flag(tmp_path, capsys, monkeypatch):
     conn.close()
 
     cfg_path = _write_config(tmp_path, db_path)
-    monkeypatch.setattr(query, "embed", lambda *a: [1.0, 0.0, 0.0])
+    monkeypatch.setattr(embedding, "embed", lambda *a, **kw: [1.0, 0.0, 0.0])
 
     assert query.main(["--config", str(cfg_path), "--ext", ".py", "alpha", "src"]) == 0
     out = capsys.readouterr().out

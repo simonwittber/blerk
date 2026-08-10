@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import threading
+import time
 from datetime import datetime
 from typing import Callable
 
@@ -17,6 +19,9 @@ def fmt_duration(s: float) -> str:
 
 def setup_logging(silent: bool) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+    logging.getLogger("transformers").setLevel(logging.WARNING)
+    logging.getLogger("torch").setLevel(logging.WARNING)
     if silent:
         logging.getLogger().setLevel(logging.WARNING)
 
@@ -45,6 +50,31 @@ def daemon_main(run_fn: Callable) -> None:
     run_fn(cfg, shutdown, silent=args.silent or cfg.silent)
 
 
+def _is_process_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _monitor_parent(parent_pid: int, shutdown: threading.Event) -> None:
+    while not shutdown.is_set():
+        if not _is_process_alive(parent_pid):
+            shutdown.set()
+            break
+        time.sleep(1.0)
+
+
 def make_shutdown() -> threading.Event:
     shutdown = threading.Event()
 
@@ -56,4 +86,9 @@ def make_shutdown() -> threading.Event:
         signal.signal(signal.SIGTERM, _sig)
     except (ValueError, AttributeError):
         pass
+
+    parent_pid = os.getppid()
+    monitor = threading.Thread(target=_monitor_parent, args=(parent_pid, shutdown), daemon=True)
+    monitor.start()
+
     return shutdown

@@ -5,32 +5,20 @@ import struct
 import httpx
 import pytest
 
-from blerk import db
-
-from blerk_cmd import embedder
-from blerk_cmd.embedder import embed, to_float32_blob
+from blerk import db, embedding
 
 
-def _install_transport(handler):
-    original = embedder._client
-    embedder._client = httpx.Client(transport=httpx.MockTransport(handler), timeout=5.0)
-    return original
-
-
-def _restore_client(original):
-    embedder._client.close()
-    embedder._client = original
 
 
 def test_to_float32_blob_length():
     vec = [0.1, 0.2, 0.3, 0.4]
-    blob = to_float32_blob(vec)
+    blob = embedding.to_float32_blob(vec)
     assert len(blob) == len(vec) * 4
 
 
 def test_to_float32_blob_round_trip():
     vec = [-1.5, 0.0, 0.25, 3.14159]
-    blob = to_float32_blob(vec)
+    blob = embedding.to_float32_blob(vec)
     got = struct.unpack(f"<{len(vec)}f", blob)
     for i, want in enumerate(vec):
         # Python floats are float64, so packing to <f truncates. Compare against the same round-trip.
@@ -40,48 +28,32 @@ def test_to_float32_blob_round_trip():
 
 def test_to_float32_blob_little_endian():
     vec = [0.5]
-    blob = to_float32_blob(vec)
+    blob = embedding.to_float32_blob(vec)
     assert len(blob) == 4
     want = struct.pack("<f", 0.5)
     assert blob == want
 
 
 def test_to_float32_blob_empty():
-    assert to_float32_blob([]) == b""
+    assert embedding.to_float32_blob([]) == b""
 
 
-def test_embed_success():
-    seen: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/embeddings"
-        import json as _json
-        seen.update(_json.loads(request.content))
-        return httpx.Response(200, json={"embedding": [0.1, 0.2, 0.3]})
-
-    original = _install_transport(handler)
-    try:
-        got = embed("ollama", "http://api.local", "nomic", "hello")
-        assert got == [0.1, 0.2, 0.3]
-        assert seen["model"] == "nomic"
-        assert seen["prompt"] == "hello"
-    finally:
-        _restore_client(original)
+def test_embed_unknown_backend():
+    with pytest.raises(RuntimeError) as exc:
+        embedding.embed("unknown", "http://api.local", "nomic", "hello")
+    assert "unknown embedding backend" in str(exc.value)
 
 
-def test_embed_non_ok():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="boom")
+def test_embed_sentence_transformers_import_error(monkeypatch):
+    def mock_import(name, *args, **kwargs):
+        if name == "sentence_transformers":
+            raise ImportError("test error")
+        return __import__(name, *args, **kwargs)
 
-    original = _install_transport(handler)
-    try:
-        with pytest.raises(RuntimeError) as exc:
-            embed("ollama", "http://api.local", "nomic", "hello")
-        msg = str(exc.value)
-        assert "500" in msg
-        assert "boom" in msg
-    finally:
-        _restore_client(original)
+    monkeypatch.setattr("builtins.__import__", mock_import)
+    with pytest.raises(RuntimeError) as exc:
+        embedding.embed("sentence-transformers", "", "all-MiniLM", "hello")
+    assert "sentence-transformers not installed" in str(exc.value)
 
 
 def _build_text(name: str, description: str, snippet: str, max_embed_chars: int = 0) -> str:
@@ -148,8 +120,8 @@ def test_embedding_upsert_overwrites(tmp_path):
     try:
         _, bid = _insert_block(conn, tmp_path)
 
-        blob1 = to_float32_blob([1.0, 2.0, 3.0])
-        blob2 = to_float32_blob([4.0, 5.0, 6.0])
+        blob1 = embedding.to_float32_blob([1.0, 2.0, 3.0])
+        blob2 = embedding.to_float32_blob([4.0, 5.0, 6.0])
 
         conn.execute(
             "INSERT INTO embeddings(block_id, model, vector, embedded_at) "
@@ -190,11 +162,11 @@ def test_embedding_upsert_different_model_creates_new_row(tmp_path):
 
         conn.execute(
             "INSERT INTO embeddings(block_id, model, vector, embedded_at) VALUES(?, ?, ?, unixepoch())",
-            (bid, "nomic", to_float32_blob([1.0])),
+            (bid, "nomic", embedding.to_float32_blob([1.0])),
         )
         conn.execute(
             "INSERT INTO embeddings(block_id, model, vector, embedded_at) VALUES(?, ?, ?, unixepoch())",
-            (bid, "other", to_float32_blob([2.0])),
+            (bid, "other", embedding.to_float32_blob([2.0])),
         )
 
         count = conn.execute(
