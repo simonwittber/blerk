@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "blerk"
-version = "0.4.0"
+version = "0.5.1"
 requires-python = ">=3.11"
 dependencies = [
     "sqlite-vec",
@@ -21,6 +21,7 @@ dependencies = [
     "httpx",
     "mcp",
     "tomli_w",
+    "sentence-transformers",
 ]
 
 [project.optional-dependencies]
