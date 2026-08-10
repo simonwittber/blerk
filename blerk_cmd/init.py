@@ -3,6 +3,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore
+
 _BLERK_DIR = Path.home() / ".blerk"
 
 _CONFIG_TEMPLATE = """\
@@ -207,6 +212,45 @@ def _toml_string_list(items: list[str]) -> str:
     return f"[{inner}]"
 
 
+def _load_existing_config(config_path: Path) -> dict:
+    """Load existing config and extract current values as defaults."""
+    defaults = {
+        "folders": [],
+        "llm_endpoint": "http://localhost:11434",
+        "llm_model": "llama3.2",
+        "embed_backend": "ollama",
+        "embed_endpoint": "http://localhost:11434",
+        "embed_model": "nomic-embed-text",
+        "embed_device": "auto",
+        "embed_cache_dir": "~/.cache/huggingface",
+    }
+    if not config_path.exists():
+        return defaults
+    try:
+        with open(config_path, "rb") as f:
+            cfg = tomllib.load(f)
+        if "watch" in cfg and "folders" in cfg["watch"]:
+            defaults["folders"] = cfg["watch"]["folders"]
+        if "llm" in cfg:
+            if isinstance(cfg["llm"], list) and cfg["llm"]:
+                llm = cfg["llm"][0]
+                defaults["llm_endpoint"] = llm.get("endpoint", defaults["llm_endpoint"])
+                defaults["llm_model"] = llm.get("model", defaults["llm_model"])
+            elif isinstance(cfg["llm"], dict):
+                defaults["llm_endpoint"] = cfg["llm"].get("endpoint", defaults["llm_endpoint"])
+                defaults["llm_model"] = cfg["llm"].get("model", defaults["llm_model"])
+        if "embedder" in cfg:
+            embed = cfg["embedder"]
+            defaults["embed_backend"] = embed.get("backend", defaults["embed_backend"])
+            defaults["embed_endpoint"] = embed.get("endpoint", defaults["embed_endpoint"])
+            defaults["embed_model"] = embed.get("model", defaults["embed_model"])
+            defaults["embed_device"] = embed.get("device", defaults["embed_device"])
+            defaults["embed_cache_dir"] = embed.get("cache_dir", defaults["embed_cache_dir"])
+    except Exception as e:
+        print(f"Warning: could not parse existing config: {e}")
+    return defaults
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(add_help=True)
@@ -222,71 +266,91 @@ def main(argv: list[str] | None = None) -> int:
     print(f"blerk init: {_BLERK_DIR}")
     print()
 
-    if config_path.exists():
+    # Load existing config for defaults
+    existing = _load_existing_config(config_path)
+
+    if config_path.exists() and not dry_run:
         ans = input("Config already exists. Reconfigure? [y/N]: ").strip().lower()
         if ans != "y":
             print("Skipping config.")
             return 0
         print()
 
-    # Ollama check
-    llm_endpoint = _prompt("LLM endpoint", "http://localhost:11434")
-    embed_endpoint = llm_endpoint
-
-    print(f"\nChecking Ollama at {llm_endpoint}...")
-    available_models = _check_ollama(llm_endpoint)
-    if available_models:
-        print(f"  OK — {len(available_models)} model(s) available:")
-        for m in available_models:
-            print(f"    {m}")
+    if dry_run:
+        llm_endpoint = existing["llm_endpoint"]
+        llm_model = existing["llm_model"]
+        embed_backend = existing["embed_backend"]
+        embed_endpoint = existing["embed_endpoint"]
+        embed_model = existing["embed_model"]
+        embed_device = existing["embed_device"]
+        embed_cache_dir = existing["embed_cache_dir"]
+        api_key = ""
+        folders = existing["folders"]
+        available_models = []
     else:
-        print("  Could not reach Ollama. Check that it is running.")
-        print("  Continuing with defaults — edit config.toml later if needed.")
-    print()
+        # Ollama check
+        llm_endpoint = _prompt("LLM endpoint", existing["llm_endpoint"])
+        embed_endpoint = llm_endpoint
 
-    # LLM model
-    llm_model = _prompt("LLM model", "llama3.2")
+        print(f"\nChecking Ollama at {llm_endpoint}...")
+        available_models = _check_ollama(llm_endpoint)
+        if available_models:
+            print(f"  OK — {len(available_models)} model(s) available:")
+            for m in available_models:
+                print(f"    {m}")
+        else:
+            print("  Could not reach Ollama. Check that it is running.")
+            print("  Continuing with defaults — edit config.toml later if needed.")
+        print()
 
-    # Embed backend
-    print("Embedding backend options:")
-    print("  ollama - Use local or remote Ollama instance")
-    print("  sentence-transformers - Use HuggingFace models locally (requires sentence-transformers)")
-    embed_backend = _prompt("Embedding backend", "ollama")
-    if embed_backend not in ("ollama", "sentence-transformers"):
-        embed_backend = "ollama"
-        print(f"  Invalid backend; using 'ollama'")
-    print()
+        # LLM model
+        llm_model = _prompt("LLM model", existing["llm_model"])
 
-    # Embed model
-    embed_model = _prompt("Embedding model", "nomic-embed-text")
+        # Embed backend
+        print("Embedding backend options:")
+        print("  ollama - Use local or remote Ollama instance")
+        print("  sentence-transformers - Use HuggingFace models locally (requires sentence-transformers)")
+        embed_backend = _prompt("Embedding backend", existing["embed_backend"])
+        if embed_backend not in ("ollama", "sentence-transformers"):
+            embed_backend = "ollama"
+            print(f"  Invalid backend; using 'ollama'")
+        print()
 
-    # Backend-specific settings
-    embed_device = "auto"
-    embed_cache_dir = "~/.cache/huggingface"
+        # Embed model
+        embed_model = _prompt("Embedding model", existing["embed_model"])
 
-    if embed_backend == "ollama":
-        def _model_available(name: str, models: list[str]) -> bool:
-            name_base = name.split(":")[0]
-            return any(m == name or m.split(":")[0] == name_base for m in models)
+        # Backend-specific settings
+        embed_device = existing["embed_device"]
+        embed_cache_dir = existing["embed_cache_dir"]
 
-        if available_models and not _model_available(embed_model, available_models):
-            print(f"  Warning: '{embed_model}' is not in the available model list.")
-            print(f"  Pull it with:  ollama pull {embed_model}")
-    else:
-        embed_device = _prompt("Device (cpu/cuda/auto)", "auto")
-        embed_cache_dir = _prompt("HuggingFace cache directory", "~/.cache/huggingface")
-    print()
+        if embed_backend == "ollama":
+            def _model_available(name: str, models: list[str]) -> bool:
+                name_base = name.split(":")[0]
+                return any(m == name or m.split(":")[0] == name_base for m in models)
 
-    # API key
-    api_key = ""
-    needs_key = input("Does this endpoint require an API key? [y/N]: ").strip().lower()
-    if needs_key == "y":
-        api_key = input("API key: ").strip()
-    print()
+            if available_models and not _model_available(embed_model, available_models):
+                print(f"  Warning: '{embed_model}' is not in the available model list.")
+                print(f"  Pull it with:  ollama pull {embed_model}")
+        else:
+            embed_device = _prompt("Device (cpu/cuda/auto)", existing["embed_device"])
+            embed_cache_dir = _prompt("HuggingFace cache directory", existing["embed_cache_dir"])
+        print()
 
-    # Watch folders
-    folders = _prompt_folders()
-    print()
+        # API key
+        api_key = ""
+        needs_key = input("Does this endpoint require an API key? [y/N]: ").strip().lower()
+        if needs_key == "y":
+            api_key = input("API key: ").strip()
+        print()
+
+        # Watch folders
+        if existing["folders"]:
+            print(f"Current folders: {existing['folders']}")
+            change = input("Change folders? [y/N]: ").strip().lower()
+            folders = _prompt_folders() if change == "y" else existing["folders"]
+        else:
+            folders = _prompt_folders()
+        print()
 
     # Write config
     config_content = _CONFIG_TEMPLATE.format(
