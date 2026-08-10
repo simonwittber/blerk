@@ -113,6 +113,34 @@ score = sum(1 / (60 + rank + 1)  for each leg the symbol appears in)
 
 Symbols that appear in multiple legs score higher. All legs fetch 20x more results before fusion.
 
+## Embedding model changes
+
+When you change the embedding backend (ollama ↔ sentence-transformers) or model name, the old embeddings are stale because different models produce different vector spaces. blerk stores embeddings keyed by `(block_id, model)` so both old and new embeddings can coexist, but only the new model's embeddings are used for search.
+
+**Re-embedding** is required when:
+- You switch from ollama to sentence-transformers or vice versa
+- You change the model name (e.g., `nomic-embed-text` → `all-MiniLM-L6-v2`)
+
+blerk provides three ways to trigger re-embedding:
+
+1. **During `blerk init` (automatic)**: If you reconfigure and change the embedding model, `blerk init` detects the change and offers to re-queue all blocks.
+
+2. **`blerk reindex` command**: Re-queue specific files or directories:
+   ```bash
+   blerk reindex path/to/dir
+   blerk reindex --all
+   blerk reindex path/to/dir --ext .py --ext .go
+   ```
+
+3. **Manual SQL** (advanced):
+   ```sql
+   DELETE FROM code_block_embed_queue;
+   INSERT INTO code_block_embed_queue(block_id, priority, queued_at)
+   SELECT id, 1, unixepoch() FROM code_blocks;
+   ```
+
+After re-queuing, the embedder daemon processes the queue and populates embeddings for the new model. Old embeddings remain in the database but are unused and can be manually cleaned up with `DELETE FROM embeddings WHERE model='old_model_name'`.
+
 ## Lint
 
 `blerk lint` runs structural rules against the indexed codebase. Rules use a shared `_lint_files` temporary table that scopes queries to the requested directory and excludes. All rules join this table instead of repeating LIKE scans against `files`.

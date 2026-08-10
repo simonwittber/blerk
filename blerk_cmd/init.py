@@ -255,6 +255,45 @@ def _load_existing_config(config_path: Path) -> dict:
     return defaults
 
 
+def _detect_embedding_model_change(existing: dict, new_backend: str, new_model: str, db_path: str) -> bool:
+    """Detect if embedding backend or model changed. If so, ask to re-queue."""
+    old_backend = existing.get("embed_backend", "ollama")
+    old_model = existing.get("embed_model", "nomic-embed-text")
+
+    if old_backend == new_backend and old_model == new_model:
+        return False  # No change
+
+    print("⚠ Embedding model changed!")
+    print(f"  Old: {old_backend}/{old_model}")
+    print(f"  New: {new_backend}/{new_model}")
+    print()
+
+    ans = input("Re-queue all blocks for re-embedding? [y/N]: ").strip().lower()
+    if ans != "y":
+        print("Skipping re-embedding. Old embeddings will remain (but won't be used).")
+        return False
+
+    # Re-queue everything
+    try:
+        from blerk import db as blerk_db
+        conn = blerk_db.open_db(db_path)
+        conn.execute(
+            "UPDATE code_block_embed_queue SET status='pending', priority=1 WHERE status IN ('completed', 'failed')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO code_block_embed_queue(block_id, status, priority) "
+            "SELECT id, 'pending', 1 FROM code_blocks "
+            "WHERE id NOT IN (SELECT block_id FROM code_block_embed_queue)"
+        )
+        conn.commit()
+        conn.close()
+        print("✓ All blocks queued for re-embedding")
+    except Exception as e:
+        print(f"✗ Failed to queue blocks: {e}")
+    print()
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(add_help=True)
@@ -418,6 +457,13 @@ prompt_template = "You are writing documentation for other programmers. Describe
             print(f"  wrote  {ignore_path}")
         else:
             print(f"  skip   {ignore_path}  (already exists)")
+
+        print()
+
+        # Detect if embedding model changed and offer to re-queue
+        # Use default db path (matches config.defaults())
+        db_path = str(Path("~/.blerk/blerk.db").expanduser())
+        _detect_embedding_model_change(existing, embed_backend, embed_model, db_path)
 
     print()
 
