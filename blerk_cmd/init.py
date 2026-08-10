@@ -288,9 +288,8 @@ def main(argv: list[str] | None = None) -> int:
         folders = existing["folders"]
         available_models = []
     else:
-        # Ollama check
-        llm_endpoint = _prompt("LLM endpoint", existing["llm_endpoint"])
-        embed_endpoint = llm_endpoint
+        # LLM endpoint (Ollama)
+        llm_endpoint = _prompt("LLM endpoint (Ollama)", existing["llm_endpoint"])
 
         print(f"\nChecking Ollama at {llm_endpoint}...")
         available_models = _check_ollama(llm_endpoint)
@@ -305,25 +304,25 @@ def main(argv: list[str] | None = None) -> int:
 
         # LLM model
         llm_model = _prompt("LLM model", existing["llm_model"])
+        print()
 
         # Embed backend
         print("Embedding backend options:")
-        print("  ollama - Use local or remote Ollama instance")
-        print("  sentence-transformers - Use HuggingFace models locally (requires sentence-transformers)")
+        print("  ollama - Use Ollama instance (same as LLM endpoint)")
+        print("  sentence-transformers - Use HuggingFace models locally (no server needed)")
         embed_backend = _prompt("Embedding backend", existing["embed_backend"])
         if embed_backend not in ("ollama", "sentence-transformers"):
             embed_backend = "ollama"
             print(f"  Invalid backend; using 'ollama'")
         print()
 
-        # Embed model
-        embed_model = _prompt("Embedding model", existing["embed_model"])
-
         # Backend-specific settings
-        embed_device = existing["embed_device"]
-        embed_cache_dir = existing["embed_cache_dir"]
-
         if embed_backend == "ollama":
+            embed_endpoint = llm_endpoint
+            embed_model = _prompt("Embedding model", existing["embed_model"])
+            embed_device = "auto"
+            embed_cache_dir = "~/.cache/huggingface"
+
             def _model_available(name: str, models: list[str]) -> bool:
                 name_base = name.split(":")[0]
                 return any(m == name or m.split(":")[0] == name_base for m in models)
@@ -331,14 +330,18 @@ def main(argv: list[str] | None = None) -> int:
             if available_models and not _model_available(embed_model, available_models):
                 print(f"  Warning: '{embed_model}' is not in the available model list.")
                 print(f"  Pull it with:  ollama pull {embed_model}")
+            print()
         else:
+            # sentence-transformers: no endpoint needed
+            embed_endpoint = ""
+            embed_model = _prompt("HuggingFace model ID", existing["embed_model"])
             embed_device = _prompt("Device (cpu/cuda/auto)", existing["embed_device"])
             embed_cache_dir = _prompt("HuggingFace cache directory", existing["embed_cache_dir"])
-        print()
+            print()
 
         # API key
         api_key = ""
-        needs_key = input("Does this endpoint require an API key? [y/N]: ").strip().lower()
+        needs_key = input("Does the LLM endpoint require an API key? [y/N]: ").strip().lower()
         if needs_key == "y":
             api_key = input("API key: ").strip()
         print()
