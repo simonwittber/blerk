@@ -409,6 +409,20 @@ prompt_template = "You are writing documentation for other programmers. Describe
             print(f"  skip   {ignore_path}  (already exists)")
 
     print()
+
+    # Test sentence-transformers import if configured
+    if not dry_run and embed_backend == "sentence-transformers":
+        print("Testing sentence-transformers import...")
+        try:
+            import sentence_transformers
+            print(f"  OK — sentence-transformers {sentence_transformers.__version__}")
+            print(f"  Model '{embed_model}' will be downloaded to '{embed_cache_dir}' on first use.")
+            print(f"  This may take a few minutes the first time.")
+        except ImportError as e:
+            print(f"  Warning: sentence-transformers import failed: {e}")
+            print(f"  Install with: pip install sentence-transformers")
+        print()
+
     print("Done. Start blerk with:  blerk")
     return 0
 
