@@ -206,6 +206,13 @@ def _toml_string_list(items: list[str]) -> str:
     return f"[{inner}]"
 
 
+def _get_default_embed_model(backend: str) -> str:
+    """Get appropriate default embedding model for backend."""
+    if backend == "sentence-transformers":
+        return "all-MiniLM-L6-v2"
+    return "nomic-embed-text"
+
+
 def _load_existing_config(config_path: Path) -> dict:
     """Load existing config and extract current values as defaults."""
     defaults = {
@@ -299,6 +306,9 @@ def main(argv: list[str] | None = None) -> int:
         if embed_backend not in ("ollama", "sentence-transformers"):
             embed_backend = "ollama"
             print(f"  Invalid backend; using 'ollama'")
+
+        # Update default embed_model based on backend choice
+        existing["embed_model"] = _get_default_embed_model(embed_backend)
         print()
 
         # Only ask for/check Ollama endpoint if using Ollama backend
@@ -336,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
         # Embedding backend-specific settings
         if embed_backend == "ollama":
             embed_endpoint = ollama_endpoint
-            embed_model = _prompt("Embedding model", existing["embed_model"])
+            embed_model = _prompt("Embedding model (Ollama)", existing["embed_model"])
             embed_device = "auto"
             embed_cache_dir = "~/.cache/huggingface"
 
@@ -351,9 +361,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             # sentence-transformers: no endpoint needed
             embed_endpoint = ""
-            embed_model = _prompt("HuggingFace model ID", existing["embed_model"])
+            embed_model = _prompt("Embedding model (HuggingFace model ID)", existing["embed_model"])
             embed_device = _prompt("Device (cpu/cuda/auto)", existing["embed_device"])
             embed_cache_dir = _prompt("HuggingFace cache directory", existing["embed_cache_dir"])
+            print(f"  Examples: all-MiniLM-L6-v2, sentence-transformers/all-mpnet-base-v2")
             print()
 
         # Watch folders
