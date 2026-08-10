@@ -410,17 +410,29 @@ prompt_template = "You are writing documentation for other programmers. Describe
 
     print()
 
-    # Test sentence-transformers import if configured
+    # Test sentence-transformers and download model if configured
     if not dry_run and embed_backend == "sentence-transformers":
-        print("Testing sentence-transformers import...")
+        print("Setting up sentence-transformers embedding model...")
         try:
             import sentence_transformers
-            print(f"  OK — sentence-transformers {sentence_transformers.__version__}")
-            print(f"  Model '{embed_model}' will be downloaded to '{embed_cache_dir}' on first use.")
-            print(f"  This may take a few minutes the first time.")
+            print(f"  sentence-transformers {sentence_transformers.__version__} installed")
+
+            cache_path = Path(embed_cache_dir).expanduser()
+            print(f"  Cache directory: {cache_path}")
+            print(f"  Downloading model '{embed_model}'...")
+            print(f"  (This may take several minutes on first run)")
+
+            st = sentence_transformers.SentenceTransformer(
+                embed_model,
+                device=embed_device,
+                cache_folder=str(cache_path)
+            )
+            print(f"  ✓ Model loaded successfully ({st.get_sentence_embedding_dimension()} dimensions)")
         except ImportError as e:
-            print(f"  Warning: sentence-transformers import failed: {e}")
+            print(f"  ✗ sentence-transformers not installed: {e}")
             print(f"  Install with: pip install sentence-transformers")
+        except Exception as e:
+            print(f"  ✗ Failed to load model: {e}")
         print()
 
     print("Done. Start blerk with:  blerk")
