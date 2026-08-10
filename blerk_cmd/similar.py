@@ -69,6 +69,9 @@ def similar(conn, directory: str, threshold: float, exts: list[str] | None = Non
     match_count = 0
 
     for i, (sym_id, name, path, line, vector, _) in enumerate(all_blocks, 1):
+        if i % max(1, len(all_blocks) // 20) == 0:
+            print(f"[{i}/{len(all_blocks)}]", file=sys.stderr, flush=True)
+
         similar_rows = conn.execute(
             f"""
             SELECT s.id, vec_distance_cosine(e.vector, ?) AS dist
