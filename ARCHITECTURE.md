@@ -160,12 +160,6 @@ Rules include: function line count, parameter count, nesting depth, file symbol 
 
 **Suppression** is controlled by `.blerk` files placed in any directory. The file is TOML with a `suppress` key (list of rule names, or `["*"]` to suppress all) and an `exclude` key (glob patterns relative to the `.blerk` location). Suppression applies to the directory and all subdirectories.
 
-## antislop
-
-`blerk antislop` asks an LLM whether each untagged function or method looks confusing or pointless without extra context. It stores results as `symbol_tags` rows with `key='confusing'` and an optional `key='confusing_reason'`. Tagged symbols are excluded from future sweeps unless `--reset` is passed.
-
-`--reset` clears all confusing tags under the target directory, ignoring `--ext` and `--exclude` filters, then exits. This lets you run a fresh sweep after refactoring.
-
 ## Database schema summary
 
 | Table | Purpose |
@@ -173,7 +167,7 @@ Rules include: function line count, parameter count, nesting depth, file symbol 
 | `files` | One row per tracked file. Holds path, hash, mtime, size, and git metadata. |
 | `symbols` | One row per extracted symbol. Holds name, kind, line range, content_hash, params, nesting depth, param count, description, and file extension. No snippet column. |
 | `code_blocks` | One or more rows per symbol. Holds block_index, content, start/end line, and optional description. Used for embedding and LLM description. |
-| `symbol_tags` | Key/value tags per symbol. Used for `confusing`, `confusing_reason`, and extractor-specific metadata. |
+| `symbol_tags` | Key/value tags per symbol. Used for extractor-specific metadata. |
 | `embeddings` | One row per (block_id, model) pair. Stores the float32 vector blob. |
 | `fingerprints` | One row per (symbol, kind) pair. Stores `normhash` and `simhash` values for duplicate detection. |
 | `symbol_refs` | Caller/callee pairs between symbols in the index. |

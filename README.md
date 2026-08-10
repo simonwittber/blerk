@@ -5,7 +5,6 @@ blerk indexes source code into a local SQLite database and lets you search it wi
 It also provides tools to find code quality problems before they accumulate.
 
 - **`blerk lint`** checks every indexed function against structural rules: line count, parameter count, nesting depth, duplicate detection, and several design hints. It uses a per-directory `.blerk` config file to suppress known false positives.
-- **`blerk antislop`** asks an LLM whether each function looks confusing or pointless without extra context. It stores results in the index so you can query or filter on them later.
 - **`blerk analyze`** runs configurable LLM rule checks against indexed symbols. You define rules as plain text descriptions in `~/.blerk/analyzers.toml`. Results are stored as findings with severity, message, and confidence scores.
 
 Run these regularly as you accept AI-generated code to keep the codebase from drifting toward unmaintainable complexity.
@@ -115,12 +114,6 @@ endpoint = "http://localhost:11434"
 model = ""
 enabled = false
 # prompt = "Rank these code symbols by relevance to: ..."  # optional: override the default prompt
-
-[antislop]
-endpoint = "http://localhost:11434"
-model = ""
-api_key = ""
-# prompt = "Does this {kind} look confusing...?"  # optional: override the default prompt
 ```
 
 ### LLM API key
@@ -257,22 +250,6 @@ suppress = ["*"]
 exclude = ["*.generated.py", "migrations/*"]
 ```
 
-## antislop
-
-```
-blerk antislop [--dir PATH] [--ext EXT] [-n N]
-```
-
-Asks an LLM whether each untagged function looks confusing or pointless without additional context. Tags results as `confusing=true` or `confusing=false` in the index. The `blerk lint` output includes a confusing count at the end of each run.
-
-To clear all tags and start fresh:
-
-```
-blerk antislop --reset
-```
-
-This removes all confusing tags under the current directory regardless of `--ext` or `--exclude` filters.
-
 ## Symbol extraction
 
 blerk uses tree-sitter for all symbol extraction. Supported languages: Go, Python, JS/TS, C, C++, C#. The extractor produces accurate snippet boundaries and caller/callee relationships for use in lint and search.
@@ -302,7 +279,6 @@ Each daemon writes a heartbeat row to the `daemon_status` table every poll cycle
 | `blerk detail <name>` | Show full detail for a symbol by exact name |
 | `blerk deps [--dir PATH]` | Show the file-level dependency graph |
 | `blerk lint [--dir PATH] [--exclude PATTERN]` | Check functions against lint rules |
-| `blerk antislop [--dir PATH] [-n N] [--reset]` | Tag functions that look confusing or pointless |
 | `blerk tags [--dir PATH]` | List all tag keys and values in the index |
 | `blerk rescan [PATH]` | Re-queue files for symbolization |
 | `blerk purge [--dry-run]` | Remove DB records for files that match ignore patterns |

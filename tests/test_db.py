@@ -285,24 +285,24 @@ def test_write_heartbeat_insert_and_update(conn):
 # ---------------------------------------------------------------------------
 
 def test_get_or_create_rule_returns_id(conn):
-    rid = db.get_or_create_rule(conn, "antislop", "confusing", "warning", "desc")
+    rid = db.get_or_create_rule(conn, "test_analyzer", "test_rule", "warning", "desc")
     assert isinstance(rid, int)
     assert rid > 0
 
 
 def test_get_or_create_rule_is_idempotent(conn):
-    rid1 = db.get_or_create_rule(conn, "antislop", "confusing", "warning", "desc")
-    rid2 = db.get_or_create_rule(conn, "antislop", "confusing", "warning", "desc updated")
+    rid1 = db.get_or_create_rule(conn, "test_analyzer", "test_rule", "warning", "desc")
+    rid2 = db.get_or_create_rule(conn, "test_analyzer", "test_rule", "warning", "desc updated")
     assert rid1 == rid2
 
 
 def test_get_or_create_rule_updates_description(conn):
-    db.get_or_create_rule(conn, "antislop", "confusing", "warning", "original")
-    db.get_or_create_rule(conn, "antislop", "confusing", "warning", "updated")
+    db.get_or_create_rule(conn, "test_analyzer", "test_rule", "warning", "original")
+    db.get_or_create_rule(conn, "test_analyzer", "test_rule", "warning", "updated")
     row = conn.execute(
         "SELECT ar.description FROM analyzer_rules ar"
         " JOIN analyzers a ON a.id = ar.analyzer_id"
-        " WHERE a.name='antislop' AND ar.name='confusing'"
+        " WHERE a.name='test_analyzer' AND ar.name='test_rule'"
     ).fetchone()
     assert row[0] == "updated"
 
