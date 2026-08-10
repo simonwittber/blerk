@@ -38,12 +38,15 @@ max_context_chars = 16000
 prompt_template = "You are writing documentation for other programmers. Describe the following {{kind}} named \\"{{name}}\\" from {{path}}. Be concise and technical. Do not try and make fixes or note any errors. Do not make guesses, just describe what is in front of you. Limit to 4 sentences. Do not reference this prompt, as you are making a description that is being used in a RAG database.\\n\\n{{context}}\\n"
 
 [embedder]
+backend = {embed_backend!r}
 endpoint = {embed_endpoint!r}
 model = {embed_model!r}
 batch_size = 10
 poll_ms = 2000
 max_retries = 3
 max_embed_chars = 2000
+device = {embed_device!r}
+cache_dir = {embed_cache_dir!r}
 """
 
 _SECRETS_TEMPLATE = """\
@@ -244,15 +247,34 @@ def main(argv: list[str] | None = None) -> int:
     # LLM model
     llm_model = _prompt("LLM model", "llama3.2")
 
+    # Embed backend
+    print("Embedding backend options:")
+    print("  ollama - Use local or remote Ollama instance")
+    print("  sentence-transformers - Use HuggingFace models locally (requires sentence-transformers)")
+    embed_backend = _prompt("Embedding backend", "ollama")
+    if embed_backend not in ("ollama", "sentence-transformers"):
+        embed_backend = "ollama"
+        print(f"  Invalid backend; using 'ollama'")
+    print()
+
     # Embed model
     embed_model = _prompt("Embedding model", "nomic-embed-text")
-    def _model_available(name: str, models: list[str]) -> bool:
-        name_base = name.split(":")[0]
-        return any(m == name or m.split(":")[0] == name_base for m in models)
 
-    if available_models and not _model_available(embed_model, available_models):
-        print(f"  Warning: '{embed_model}' is not in the available model list.")
-        print(f"  Pull it with:  ollama pull {embed_model}")
+    # Backend-specific settings
+    embed_device = "auto"
+    embed_cache_dir = "~/.cache/huggingface"
+
+    if embed_backend == "ollama":
+        def _model_available(name: str, models: list[str]) -> bool:
+            name_base = name.split(":")[0]
+            return any(m == name or m.split(":")[0] == name_base for m in models)
+
+        if available_models and not _model_available(embed_model, available_models):
+            print(f"  Warning: '{embed_model}' is not in the available model list.")
+            print(f"  Pull it with:  ollama pull {embed_model}")
+    else:
+        embed_device = _prompt("Device (cpu/cuda/auto)", "auto")
+        embed_cache_dir = _prompt("HuggingFace cache directory", "~/.cache/huggingface")
     print()
 
     # API key
@@ -271,8 +293,11 @@ def main(argv: list[str] | None = None) -> int:
         folders=_toml_string_list(folders),
         llm_endpoint=llm_endpoint,
         llm_model=llm_model,
+        embed_backend=embed_backend,
         embed_endpoint=embed_endpoint,
         embed_model=embed_model,
+        embed_device=embed_device,
+        embed_cache_dir=embed_cache_dir,
     )
     if dry_run:
         print("-- config.toml (dry run) --")

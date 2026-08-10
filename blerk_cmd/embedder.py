@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import struct
 import threading
@@ -19,9 +20,24 @@ DAEMON = "embedder"
 log = logging.getLogger("embedder")
 
 _client = httpx.Client(timeout=120.0)
+_st_model = None
+_st_lock = threading.Lock()
 
 
-def embed(endpoint: str, model: str, text: str) -> list[float]:
+def _get_sentence_transformer(model: str, device: str, cache_dir: str):
+    global _st_model
+    if _st_model is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            raise RuntimeError("sentence-transformers not installed; install with: pip install sentence-transformers")
+        cache_path = os.path.expanduser(cache_dir)
+        os.makedirs(cache_path, exist_ok=True)
+        _st_model = SentenceTransformer(model, device=device, cache_folder=cache_path)
+    return _st_model
+
+
+def embed_ollama(endpoint: str, model: str, text: str) -> list[float]:
     r = _client.post(
         endpoint + "/api/embeddings",
         json={"model": model, "prompt": text},
@@ -31,7 +47,23 @@ def embed(endpoint: str, model: str, text: str) -> list[float]:
     return r.json()["embedding"]
 
 
-def embed_with_truncation(endpoint: str, model: str, text: str) -> list[float]:
+def embed_sentence_transformers(model: str, device: str, cache_dir: str, text: str) -> list[float]:
+    st = _get_sentence_transformer(model, device, cache_dir)
+    with _st_lock:
+        vecs = st.encode([text], convert_to_numpy=True)
+    return vecs[0].tolist()
+
+
+def embed(backend: str, endpoint: str, model: str, text: str, device: str = "auto", cache_dir: str = "~/.cache/huggingface") -> list[float]:
+    if backend == "ollama":
+        return embed_ollama(endpoint, model, text)
+    elif backend == "sentence-transformers":
+        return embed_sentence_transformers(model, device, cache_dir, text)
+    else:
+        raise RuntimeError(f"unknown embedding backend: {backend}")
+
+
+def embed_with_truncation(backend: str, endpoint: str, model: str, text: str, device: str = "auto", cache_dir: str = "~/.cache/huggingface") -> list[float]:
     max_iters = 20
     iters = 0
     while text:
@@ -39,7 +71,7 @@ def embed_with_truncation(endpoint: str, model: str, text: str) -> list[float]:
             raise RuntimeError("embed_with_truncation exceeded max iterations")
         iters += 1
         try:
-            return embed(endpoint, model, text)
+            return embed(backend, endpoint, model, text, device, cache_dir)
         except httpx.TimeoutException as e:
             raise RuntimeError(f"embed timed out: {e}") from e
         except RuntimeError as e:
@@ -164,7 +196,10 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
 
                 t0 = time.monotonic()
                 try:
-                    vec = embed_with_truncation(cfg.embedder.endpoint, cfg.embedder.model, text)
+                    vec = embed_with_truncation(
+                        cfg.embedder.backend, cfg.embedder.endpoint, cfg.embedder.model, text,
+                        cfg.embedder.device, cfg.embedder.cache_dir
+                    )
                 except Exception as e:
                     log.warning("embed %s: %s", name, e)
                     try:

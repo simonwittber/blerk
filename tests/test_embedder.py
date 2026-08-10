@@ -61,7 +61,7 @@ def test_embed_success():
 
     original = _install_transport(handler)
     try:
-        got = embed("http://api.local", "nomic", "hello")
+        got = embed("ollama", "http://api.local", "nomic", "hello")
         assert got == [0.1, 0.2, 0.3]
         assert seen["model"] == "nomic"
         assert seen["prompt"] == "hello"
@@ -76,7 +76,7 @@ def test_embed_non_ok():
     original = _install_transport(handler)
     try:
         with pytest.raises(RuntimeError) as exc:
-            embed("http://api.local", "nomic", "hello")
+            embed("ollama", "http://api.local", "nomic", "hello")
         msg = str(exc.value)
         assert "500" in msg
         assert "boom" in msg

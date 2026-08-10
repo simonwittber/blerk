@@ -48,6 +48,7 @@ class LLM:
 
 @dataclass
 class Embedder:
+    backend: str = "ollama"
     endpoint: str = ""
     model: str = ""
     batch_size: int = 0
@@ -55,6 +56,8 @@ class Embedder:
     vector_dim: int = 0
     max_retries: int = 0
     max_embed_chars: int = 0
+    device: str = "auto"
+    cache_dir: str = "~/.cache/huggingface"
 
 
 _DEFAULT_RERANKER_PROMPT = """\
@@ -162,6 +165,7 @@ def defaults() -> Config:
             enabled=False,
         ),
         embedder=Embedder(
+            backend="ollama",
             endpoint="http://localhost:11434",
             model="nomic-embed-text",
             batch_size=10,
@@ -169,6 +173,8 @@ def defaults() -> Config:
             vector_dim=768,
             max_retries=3,
             max_embed_chars=8000,
+            device="auto",
+            cache_dir="~/.cache/huggingface",
         ),
     )
 
