@@ -288,23 +288,9 @@ def main(argv: list[str] | None = None) -> int:
         folders = existing["folders"]
         available_models = []
     else:
-        # LLM endpoint (Ollama)
-        llm_endpoint = _prompt("LLM endpoint (Ollama)", existing["llm_endpoint"])
-
-        print(f"\nChecking Ollama at {llm_endpoint}...")
-        available_models = _check_ollama(llm_endpoint)
-        if available_models:
-            print(f"  OK — {len(available_models)} model(s) available:")
-            for m in available_models:
-                print(f"    {m}")
-        else:
-            print("  Could not reach Ollama. Check that it is running.")
-            print("  Continuing with defaults — edit config.toml later if needed.")
-        print()
-
-        # Embed backend (decide early so we know what to configure)
+        # Embedding backend (decide first)
         print("Embedding backend options:")
-        print("  ollama - Use Ollama instance (same as LLM endpoint)")
+        print("  ollama - Use Ollama instance")
         print("  sentence-transformers - Use HuggingFace models locally (no server needed)")
         embed_backend = _prompt("Embedding backend", existing["embed_backend"])
         if embed_backend not in ("ollama", "sentence-transformers"):
@@ -312,13 +298,35 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  Invalid backend; using 'ollama'")
         print()
 
+        # Only ask for/check Ollama endpoint if using Ollama backend
+        available_models = []
+        if embed_backend == "ollama":
+            ollama_endpoint = _prompt("Ollama endpoint", existing["embed_endpoint"])
+            print(f"\nChecking Ollama at {ollama_endpoint}...")
+            available_models = _check_ollama(ollama_endpoint)
+            if available_models:
+                print(f"  OK — {len(available_models)} model(s) available:")
+                for m in available_models:
+                    print(f"    {m}")
+            else:
+                print("  Could not reach Ollama. Check that it is running.")
+                print("  Continuing with defaults — edit config.toml later if needed.")
+            print()
+        else:
+            # sentence-transformers doesn't need Ollama
+            ollama_endpoint = existing["embed_endpoint"]
+
+        # LLM endpoint (may use same Ollama instance)
+        llm_endpoint = _prompt("LLM endpoint (Ollama)", existing["llm_endpoint"])
+        print()
+
         # LLM model
         llm_model = _prompt("LLM model", existing["llm_model"])
         print()
 
-        # Backend-specific settings
+        # Embedding backend-specific settings
         if embed_backend == "ollama":
-            embed_endpoint = llm_endpoint
+            embed_endpoint = ollama_endpoint
             embed_model = _prompt("Embedding model", existing["embed_model"])
             embed_device = "auto"
             embed_cache_dir = "~/.cache/huggingface"
