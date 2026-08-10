@@ -113,7 +113,14 @@ score = sum(1 / (60 + rank + 1)  for each leg the symbol appears in)
 
 Symbols that appear in multiple legs score higher. All legs fetch 20x more results before fusion.
 
-## Embedding model changes
+## Reindexing
+
+blerk provides two symmetric reindexing commands for different pipeline stages:
+
+- **`blerk rescan`**: Re-queue files for **symbol extraction** (symbolizer daemon). Use when you want to re-parse source code for symbols (e.g., after upgrading tree-sitter language parsers).
+- **`blerk reindex`**: Re-queue code blocks for **embedding** (embedder daemon). Use when you change the embedding model or backend.
+
+### Embedding model changes
 
 When you change the embedding backend (ollama ↔ sentence-transformers) or model name, the old embeddings are stale because different models produce different vector spaces. blerk stores embeddings keyed by `(block_id, model)` so both old and new embeddings can coexist, but only the new model's embeddings are used for search.
 
