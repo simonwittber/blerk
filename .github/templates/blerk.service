@@ -1,0 +1,15 @@
+[Unit]
+Description=blerk - Antislop context source for source code
+After=network.target
+
+[Service]
+Type=simple
+User={USER}
+ExecStart={BLERK_CMD}
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
