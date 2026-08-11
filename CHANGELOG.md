@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### blerk similar
+
+A new `blerk similar` command finds function-level code candidates for refactoring via the DRY (Don't Repeat Yourself) principle, using semantic embeddings to detect similar implementations.
+
+```
+blerk similar <directory> [--threshold N] [--ext EXT]
+```
+
+Scans functions in the specified directory (excluding test code) and groups semantically similar implementations into clusters. Each cluster shows member functions with their similarity distance (0=identical, 1=orthogonal). Default threshold is 0.1, targeting near-duplicates worth consolidating.
+
 ## [0.5.1] - 2026-08-09
 
 ### Fixes
