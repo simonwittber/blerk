@@ -450,7 +450,7 @@ max_context_chars = 16000
 prompt_template = "You are writing documentation for other programmers. Describe the following {{kind}} named \\"{{name}}\\" from {{path}}. Be concise and technical. Do not try and make fixes or note any errors. Do not make guesses, just describe what is in front of you. Limit to 4 sentences. Do not reference this prompt, as you are making a description that is being used in a RAG database.\\n\\n{{context}}\\n"
 """
     else:
-        llm_section = "# Descriptions disabled"
+        llm_section = "[[llm]]\nenabled = false\n"
 
     config_content = _CONFIG_TEMPLATE.format(
         folders=_toml_string_list(folders),
