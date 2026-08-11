@@ -29,6 +29,9 @@ def _substitute_template(template: str, blerk_cmd: str, config_path: str) -> str
     home = str(Path.home())
     user = os.environ.get("USER", os.environ.get("USERNAME", ""))
 
+    # Normalize config path to absolute, native format
+    config_path = str(Path(config_path).resolve())
+
     return template.format(
         BLERK_CMD=f'{blerk_cmd} --config "{config_path}"',
         USER=user,
