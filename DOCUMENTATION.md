@@ -212,35 +212,6 @@ blerk similar <directory> [--threshold N] [--ext EXT]
 
 Finds function-level code candidates for refactoring via the DRY (Don't Repeat Yourself) principle. Scans functions in the specified directory (excluding test code) and groups semantically similar implementations into clusters. Default threshold is 0.1 (0=identical, 1=orthogonal).
 
-### Service
-
-```
-blerk service install [--config PATH]    # Install as system service
-blerk service uninstall                   # Remove system service
-blerk service status                      # Show service status
-```
-
-Manage blerk as a persistent system service with auto-restart and boot startup.
-
-**Platform-specific installation and logging:**
-
-**Linux (systemd):**
-- Requires `sudo`: `sudo blerk service install`
-- View logs: `journalctl -u blerk` or `journalctl -u blerk -f` (follow)
-- Service runs at boot via systemd
-
-**macOS (launchd):**
-- Install as user service: `blerk service install`
-- View logs: `tail -f ~/.blerk/blerk.log` (stdout) or `tail -f ~/.blerk/blerk.error.log` (stderr)
-- Service runs at boot via launchd
-
-**Windows (Task Scheduler):**
-- Requires administrator: run Command Prompt as Administrator, then `blerk service install`
-- View logs: `type %USERPROFILE%\.blerk\blerk.log` or `tail -f ~/.blerk/blerk.log` (in PowerShell)
-- Service runs at next system boot
-
-Service auto-restarts on failure (10-second delay) and respects editable installs (`pip install -e .`).
-
 ### Tags
 
 ```

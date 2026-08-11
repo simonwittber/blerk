@@ -24,7 +24,6 @@ _DISPATCH = {
     "analyze":   "blerk_cmd.analyze",
     "findings":  "blerk_cmd.findings",
     "summary":   "blerk_cmd.summary",
-    "service":   "blerk_cmd.service",
 }
 
 _HELP = {
@@ -47,7 +46,6 @@ _HELP = {
     "analyze":   "Run LLM-based analyzers against indexed symbols",
     "findings":  "Show stored analyzer findings",
     "summary":   "Print a project index snapshot",
-    "service":   "Manage blerk as a system service",
     "add":    "Add a folder to the watch list",
     "remove": "Remove a folder from the watch list",
 }

@@ -12,23 +12,6 @@ blerk similar <directory> [--threshold N] [--ext EXT]
 
 Scans functions in the specified directory (excluding test code) and groups semantically similar implementations into clusters. Each cluster shows member functions with their similarity distance (0=identical, 1=orthogonal). Default threshold is 0.1, targeting near-duplicates worth consolidating.
 
-### blerk service
-
-A new `blerk service` command manages blerk as a persistent system service with full cross-platform support.
-
-```
-blerk service install [--config PATH]    # Install service
-blerk service uninstall                   # Remove service
-blerk service status                      # Show service status
-```
-
-Platform implementations:
-- **Linux** (systemd): Auto-restart on failure, boots at system startup. Requires `sudo`.
-- **macOS** (launchd): `KeepAlive` restarts on crash, `RunAtLoad` starts at boot.
-- **Windows** (Task Scheduler): Schedules startup at next boot, runs as current user.
-
-Service always uses the installed `blerk` command, so it respects editable installs (`pip install -e .`). Config path can be customized at install time; defaults to `~/.blerk/config.toml`.
-
 ## [0.5.1] - 2026-08-09
 
 ### Fixes

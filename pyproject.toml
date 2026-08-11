@@ -42,7 +42,6 @@ blerk-reindex    = "blerk_cmd.reindex:main"
 blerk-lint       = "blerk_cmd.lint:main"
 blerk-similar    = "blerk_cmd.similar:main"
 blerk-fingerprint   = "blerk_cmd.fingerprinter:main"
-blerk-service    = "blerk_cmd.service:main"
 
 [tool.setuptools.packages.find]
 include = ["blerk*", "blerk_cmd*"]
