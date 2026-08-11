@@ -14,13 +14,13 @@ For large codebases, this cuts context usage by 80%+. The assistant spends token
 ```bash
 git clone https://github.com/simonwittber/blerk.git
 cd blerk
-python -m venv venv
-source venv/bin/activate          # On Windows: venv\Scripts\activate
-pip install -e .
+pipx install -e .
 blerk init
 ```
 
-This indexes your watched folders, starts background daemons, and watches for changes.
+This installs blerk as a global command in its own virtual environment. Then run `blerk init` to configure watched folders and start background daemons.
+
+If you don't have pipx, install it: `brew install pipx` (macOS/Linux) or `choco install pipx` (Windows).
 
 ## MCP tools
 
