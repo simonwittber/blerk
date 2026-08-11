@@ -183,6 +183,32 @@ def _prompt(message: str, default: str = "") -> str:
     return val or default
 
 
+def _prompt_choice(message: str, options: list[tuple[str, str]], default_idx: int = 0) -> str:
+    """Prompt user to select from a list of options.
+
+    options: list of (value, description) tuples
+    default_idx: index of default option
+    Returns: the selected value
+    """
+    print(f"\n{message}")
+    for i, (val, desc) in enumerate(options, 1):
+        mark = " (default)" if i == default_idx + 1 else ""
+        print(f"  {i}. {val}{mark}")
+        print(f"     {desc}")
+
+    while True:
+        choice = input(f"Select [1-{len(options)}] ({default_idx + 1}): ").strip()
+        if not choice:
+            return options[default_idx][0]
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(options):
+                return options[idx][0]
+        except ValueError:
+            pass
+        print(f"Invalid choice. Please enter a number between 1 and {len(options)}.")
+
+
 def _prompt_folders() -> list[str]:
     print("Watch folders (one path per line, blank line to finish):")
     folders: list[str] = []
@@ -220,9 +246,9 @@ def _load_existing_config(config_path: Path) -> dict:
         "llm_enabled": True,
         "llm_endpoint": "http://localhost:11434",
         "llm_model": "llama3.2",
-        "embed_backend": "ollama",
-        "embed_endpoint": "http://localhost:11434",
-        "embed_model": "nomic-embed-text",
+        "embed_backend": "sentence-transformers",
+        "embed_endpoint": "",
+        "embed_model": "all-MiniLM-L6-v2",
         "embed_device": "auto",
         "embed_cache_dir": "~/.cache/huggingface",
     }
@@ -338,17 +364,12 @@ def main(argv: list[str] | None = None) -> int:
         print()
 
         # Embedding backend (decide early)
-        print("Embedding backend options:")
-        print("  ollama - Use Ollama instance")
-        print("  sentence-transformers - Use HuggingFace models locally (no server needed)")
-        embed_backend = _prompt("Embedding backend", existing["embed_backend"])
-        if embed_backend not in ("ollama", "sentence-transformers"):
-            embed_backend = "ollama"
-            print(f"  Invalid backend; using 'ollama'")
-
-        # Update default embed_model based on backend choice
-        existing["embed_model"] = _get_default_embed_model(embed_backend)
-        print()
+        backend_options = [
+            ("sentence-transformers", "HuggingFace models locally (no server needed, recommended)"),
+            ("ollama", "Use Ollama instance (requires Ollama running)")
+        ]
+        default_backend_idx = 0 if existing["embed_backend"] == "sentence-transformers" else 1
+        embed_backend = _prompt_choice("Select embedding backend:", backend_options, default_backend_idx)
 
         # Only ask for/check Ollama endpoint if using Ollama backend
         available_models = []
@@ -385,25 +406,26 @@ def main(argv: list[str] | None = None) -> int:
         # Embedding backend-specific settings
         if embed_backend == "ollama":
             embed_endpoint = ollama_endpoint
-            embed_model = _prompt("Embedding model (Ollama)", existing["embed_model"])
+            ollama_models = [
+                ("nomic-embed-text", "Fast, widely used (768 dims)"),
+                ("mxbai-embed-large", "Larger, higher quality (1024 dims)"),
+            ]
+            default_ollama_idx = 0 if existing["embed_model"] == "nomic-embed-text" else 1
+            embed_model = _prompt_choice("Select Ollama embedding model:", ollama_models, default_ollama_idx)
             embed_device = "auto"
             embed_cache_dir = "~/.cache/huggingface"
-
-            def _model_available(name: str, models: list[str]) -> bool:
-                name_base = name.split(":")[0]
-                return any(m == name or m.split(":")[0] == name_base for m in models)
-
-            if available_models and not _model_available(embed_model, available_models):
-                print(f"  Warning: '{embed_model}' is not in the available model list.")
-                print(f"  Pull it with:  ollama pull {embed_model}")
             print()
         else:
             # sentence-transformers: no endpoint needed
             embed_endpoint = ""
-            embed_model = _prompt("Embedding model (HuggingFace model ID)", existing["embed_model"])
+            st_models = [
+                ("all-MiniLM-L6-v2", "Fast, small (384 dims, recommended)"),
+                ("all-mpnet-base-v2", "Larger, more accurate (768 dims)"),
+            ]
+            default_st_idx = 0 if existing["embed_model"] == "all-MiniLM-L6-v2" else 1
+            embed_model = _prompt_choice("Select HuggingFace embedding model:", st_models, default_st_idx)
             embed_device = _prompt("Device (cpu/cuda/auto)", existing["embed_device"])
             embed_cache_dir = _prompt("HuggingFace cache directory", existing["embed_cache_dir"])
-            print(f"  Examples: all-MiniLM-L6-v2, sentence-transformers/all-mpnet-base-v2")
             print()
 
         # Watch folders
@@ -461,9 +483,10 @@ prompt_template = "You are writing documentation for other programmers. Describe
         print()
 
         # Detect if embedding model changed and offer to re-queue
-        # Use default db path (matches config.defaults())
+        # Only check if DB already exists (not a fresh install)
         db_path = str(Path("~/.blerk/blerk.db").expanduser())
-        _detect_embedding_model_change(existing, embed_backend, embed_model, db_path)
+        if Path(db_path).exists():
+            _detect_embedding_model_change(existing, embed_backend, embed_model, db_path)
 
     print()
 
