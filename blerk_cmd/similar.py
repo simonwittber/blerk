@@ -90,10 +90,7 @@ def similar(conn, directory: str, threshold: float, exts: list[str] | None = Non
         ).fetchall()
 
         if similar_rows:
-            print(f"[{i}/{len(all_blocks)}] {path}:{line}  {name}")
             for other_sym_id, dist in similar_rows:
-                other_name, other_path, other_line = sym_metadata[other_sym_id]
-                print(f"  {dist:.2f}  {other_path}:{other_line}  {other_name}")
                 match_count += 1
                 pair = (min(sym_id, other_sym_id), max(sym_id, other_sym_id))
                 if pair not in edges_dict or dist < edges_dict[pair]:
