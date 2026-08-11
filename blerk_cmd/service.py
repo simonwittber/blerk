@@ -89,20 +89,29 @@ class ServiceManager:
     @staticmethod
     def _install_windows(config_path: str) -> None:
         """Install Task Scheduler service on Windows."""
+        try:
+            import ctypes
+            if not ctypes.windll.shell32.IsUserAnAdmin():
+                print("ERROR: Installing Task Scheduler entry requires administrator privileges.")
+                print("Please run: python -m blerk_cmd.service install")
+                print("with 'Run as administrator' or use: runas /user:Administrator blerk service install")
+                sys.exit(1)
+        except Exception:
+            pass
+
         blerk_cmd = _get_blerk_cmd()
         task_name = "blerk"
-        task_description = "blerk - Antislop context source for source code"
 
         subprocess.run(
             [
                 "schtasks",
                 "/create",
-                f"/tn",
+                "/tn",
                 task_name,
                 "/tr",
                 f'"{blerk_cmd}" --config "{config_path}"',
                 "/sc",
-                "onboot",
+                "onstart",
                 "/f",
             ],
             check=True,
@@ -159,6 +168,15 @@ class ServiceManager:
     @staticmethod
     def _uninstall_windows() -> None:
         """Remove Task Scheduler service on Windows."""
+        try:
+            import ctypes
+            if not ctypes.windll.shell32.IsUserAnAdmin():
+                print("ERROR: Uninstalling Task Scheduler entry requires administrator privileges.")
+                print("Please run with 'Run as administrator' or use: runas /user:Administrator blerk service uninstall")
+                sys.exit(1)
+        except Exception:
+            pass
+
         task_name = "blerk"
 
         subprocess.run(
