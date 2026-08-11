@@ -54,4 +54,12 @@ blerk lint [--dir PATH]                        # Check code quality
 blerk status                                   # Daemon status
 ```
 
-See [DOCUMENTATION.md](DOCUMENTATION.md) for full command reference, configuration, and architecture.
+## Code quality
+
+- **[`blerk lint`](DOCUMENTATION.md#lint)** — structural checks: line count, nesting depth, parameter count, duplicates, dependencies
+- **[`blerk analyze`](DOCUMENTATION.md#analyze)** — configurable LLM rule checks against indexed symbols
+- **[`blerk similar`](DOCUMENTATION.md#similar)** — find DRY violations: semantically similar functions worth consolidating
+
+Fingerprinting (simhash, normhash) runs automatically during indexing for exact/near clone detection.
+
+See [DOCUMENTATION.md](DOCUMENTATION.md) for full reference.
