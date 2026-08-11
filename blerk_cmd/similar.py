@@ -86,7 +86,7 @@ def similar(conn, directory: str, threshold: float, exts: list[str] | None = Non
             ORDER BY dist ASC
             LIMIT ?
             """,
-            where_params + [vector, sym_id, model, vector, threshold, top_k],
+            [vector] + where_params + [sym_id, model, vector, threshold, top_k],
         ).fetchall()
 
         if similar_rows:
