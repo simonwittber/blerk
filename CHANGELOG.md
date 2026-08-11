@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### blerk init: reranker configuration
+
+`blerk init` now asks whether to enable the reranker. If enabled, it prompts for the endpoint, model, and an optional API key. These values write to the `[reranker]` section of `config.toml`.
+
+### Bundled analyzer rules
+
+The repo now ships `analyzers.example.toml` with a set of ready-to-use analyzer rules: `antislop`, `design`, `cache`, `queries`, `async`, `review`, and a new `csharp` analyzer. The `csharp` analyzer has one rule, `boxing`, which flags implicit boxing of value types in `.cs` files. Common patterns it detects include use of non-generic collections, value types assigned to `object` variables, structs stored in interface-typed variables, and enum values passed as `object`.
+
+### blerk init: copy analyzers on first run
+
+`blerk init` now copies `analyzers.example.toml` to `~/.blerk/analyzers.toml` on first run. If `analyzers.toml` already exists, it skips the copy.
+
 ### blerk similar
 
 A new `blerk similar` command finds function-level code candidates for refactoring via the DRY (Don't Repeat Yourself) principle, using semantic embeddings to detect similar implementations.

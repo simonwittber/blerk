@@ -1,0 +1,113 @@
+[[analyzers]]
+name        = "antislop"
+description = "Flag confusing or pointless code fragments"
+# endpoint and model are optional; if omitted, falls back to the first [[llm]] entry in config.toml
+# endpoint = "http://localhost:11434"
+# model    = "llama3.2"
+
+[[analyzers.rules]]
+name        = "confusing"
+severity    = "warning"
+description = """
+Flag any function or method that looks confusing, pointless, or misleading without
+additional context. Signs include: a name that does not match what the body does,
+a body that could be deleted without any caller noticing, logic that obscures a
+simpler underlying operation, and side effects that are not obvious from the
+signature. The fix is always to rename, simplify, or delete.
+"""
+
+
+[[analyzers]]
+name        = "design"
+description = "Code design rules"
+
+[[analyzers.rules]]
+name        = "should_be_shared"
+severity    = "warning"
+description = """
+Flag any code that looks like it was copied from another function rather than
+reused through a shared abstraction. Signs include: inline logic that is
+domain-neutral enough to be useful elsewhere, non-trivial expressions that are
+not delegated to a named helper, and patterns that would clearly belong in a
+utility module. The fix is always the same: extract to a named function and
+call it from every site.
+"""
+
+
+[[analyzers]]
+name        = "cache"
+description = "Cache correctness rules"
+
+[[analyzers.rules]]
+name        = "no_cache_key_mutation"
+severity    = "error"
+description = """
+The function builds a cache key from a value that it also mutates, or that a callee mutates.
+This causes stale cache reads after the mutation.
+"""
+
+[[analyzers.rules]]
+name        = "unbounded_cache_growth"
+severity    = "warning"
+description = """
+The function adds items to a cache or collection with no eviction, expiry, or size limit.
+This can cause unbounded memory growth at runtime.
+"""
+
+
+[[analyzers]]
+name        = "queries"
+description = "Data access pattern rules"
+
+[[analyzers.rules]]
+name        = "n_plus_one_query"
+severity    = "warning"
+description = """
+The function calls a data-access or query method inside a loop.
+Each iteration sends a separate query to the database or network.
+"""
+
+
+[[analyzers]]
+name        = "async"
+description = "Async correctness rules"
+
+[[analyzers.rules]]
+name        = "sync_call_in_async_context"
+severity    = "error"
+description = """
+The function calls a blocking synchronous method from an async context.
+This can stall the event loop or thread pool.
+"""
+
+
+[[analyzers]]
+name        = "review"
+description = "File-level code review"
+file_mode   = true
+confidence  = 0.5
+
+[[analyzers.rules]]
+name        = "review"
+severity    = "warning"
+description = "General code review: correctness, clarity, and maintainability."
+
+
+[[analyzers]]
+name        = "csharp"
+description = "C# performance rules"
+extensions  = [".cs"]
+
+[[analyzers.rules]]
+name        = "boxing"
+severity    = "warning"
+description = """
+Flag any function or method that causes implicit boxing of value types. Look for:
+- Use of non-generic collections (ArrayList, Hashtable, Stack, Queue, SortedList) with value-type elements
+- A value type (int, float, bool, struct, or enum) assigned to an object or System.Object variable
+- A struct stored in an interface-typed variable (IFoo x = myStruct)
+- Enum or other value types passed to a method that accepts object or System.Object
+- Value types used as keys or values in non-generic IDictionary
+Only flag code where boxing is actually present, not where it is merely possible.
+The fix is to use the generic equivalent (List<T>, Dictionary<TKey,TValue>, etc.) or to avoid the object conversion entirely.
+"""

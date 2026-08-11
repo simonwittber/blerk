@@ -45,6 +45,12 @@ max_retries = 3
 max_embed_chars = 2000
 device = {embed_device!r}
 cache_dir = {embed_cache_dir!r}
+
+[reranker]
+enabled = {reranker_enabled!r}
+endpoint = {reranker_endpoint!r}
+model = {reranker_model!r}
+api_key = {reranker_api_key!r}
 """
 
 _SECRETS_TEMPLATE = """\
@@ -251,6 +257,10 @@ def _load_existing_config(config_path: Path) -> dict:
         "embed_model": "all-MiniLM-L6-v2",
         "embed_device": "auto",
         "embed_cache_dir": "~/.cache/huggingface",
+        "reranker_enabled": False,
+        "reranker_endpoint": "http://localhost:11434",
+        "reranker_model": "",
+        "reranker_api_key": "",
     }
     if not config_path.exists():
         return defaults
@@ -276,6 +286,12 @@ def _load_existing_config(config_path: Path) -> dict:
             defaults["embed_model"] = embed.get("model", defaults["embed_model"])
             defaults["embed_device"] = embed.get("device", defaults["embed_device"])
             defaults["embed_cache_dir"] = embed.get("cache_dir", defaults["embed_cache_dir"])
+        if "reranker" in cfg:
+            rr = cfg["reranker"]
+            defaults["reranker_enabled"] = rr.get("enabled", defaults["reranker_enabled"])
+            defaults["reranker_endpoint"] = rr.get("endpoint", defaults["reranker_endpoint"])
+            defaults["reranker_model"] = rr.get("model", defaults["reranker_model"])
+            defaults["reranker_api_key"] = rr.get("api_key", defaults["reranker_api_key"])
     except Exception as e:
         print(f"Warning: could not parse existing config: {e}")
     return defaults
@@ -331,6 +347,8 @@ def main(argv: list[str] | None = None) -> int:
     config_path = _BLERK_DIR / "config.toml"
     secrets_path = _BLERK_DIR / "secrets.toml"
     ignore_path = _BLERK_DIR / "ignore"
+    analyzers_path = _BLERK_DIR / "analyzers.toml"
+    _ANALYZERS_EXAMPLE = Path(__file__).parent.parent / "analyzers.example.toml"
 
     print(f"blerk init: {_BLERK_DIR}")
     print()
@@ -357,6 +375,10 @@ def main(argv: list[str] | None = None) -> int:
         api_key = ""
         folders = existing["folders"]
         available_models = []
+        reranker_enabled = existing["reranker_enabled"]
+        reranker_endpoint = existing["reranker_endpoint"]
+        reranker_model = existing["reranker_model"]
+        reranker_api_key = existing["reranker_api_key"]
     else:
         # Enable descriptions?
         enable_llm = input("Enable code descriptions? [Y/n]: ").strip().lower()
@@ -428,6 +450,20 @@ def main(argv: list[str] | None = None) -> int:
             embed_cache_dir = _prompt("HuggingFace cache directory", existing["embed_cache_dir"])
             print()
 
+        # Reranker
+        enable_rr = input("Enable reranker (re-ranks query results via LLM)? [y/N]: ").strip().lower()
+        reranker_enabled = enable_rr == "y"
+        if reranker_enabled:
+            reranker_endpoint = _prompt("Reranker endpoint", existing["reranker_endpoint"])
+            reranker_model = _prompt("Reranker model", existing["reranker_model"])
+            needs_rr_key = input("Does the reranker endpoint require an API key? [y/N]: ").strip().lower()
+            reranker_api_key = input("API key: ").strip() if needs_rr_key == "y" else ""
+        else:
+            reranker_endpoint = existing["reranker_endpoint"]
+            reranker_model = existing["reranker_model"]
+            reranker_api_key = existing["reranker_api_key"]
+        print()
+
         # Watch folders
         if existing["folders"]:
             print(f"Current folders: {existing['folders']}")
@@ -460,6 +496,10 @@ prompt_template = "You are writing documentation for other programmers. Describe
         embed_model=embed_model,
         embed_device=embed_device,
         embed_cache_dir=embed_cache_dir,
+        reranker_enabled=reranker_enabled,
+        reranker_endpoint=reranker_endpoint,
+        reranker_model=reranker_model,
+        reranker_api_key=reranker_api_key,
     )
     if dry_run:
         print("-- config.toml (dry run) --")
@@ -479,6 +519,16 @@ prompt_template = "You are writing documentation for other programmers. Describe
             print(f"  wrote  {ignore_path}")
         else:
             print(f"  skip   {ignore_path}  (already exists)")
+
+        if not analyzers_path.exists():
+            if _ANALYZERS_EXAMPLE.exists():
+                import shutil
+                shutil.copy(_ANALYZERS_EXAMPLE, analyzers_path)
+                print(f"  wrote  {analyzers_path}")
+            else:
+                print(f"  skip   {analyzers_path}  (analyzers.example.toml not found)")
+        else:
+            print(f"  skip   {analyzers_path}  (already exists)")
 
         print()
 
