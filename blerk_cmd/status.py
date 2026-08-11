@@ -55,8 +55,11 @@ def _record_queue_counts(conn) -> None:
     conn.commit()
 
 
-def _get_queue_eta(conn, queue_name: str) -> int | None:
-    """Calculate ETC in seconds from queue history."""
+def _get_queue_eta(conn, queue_name: str, queue_count: int, fallback_rate_per_min: float = 0.0) -> int | None:
+    """Calculate ETC in seconds from queue history, or fallback to heartbeat rate."""
+    if queue_count <= 0:
+        return None
+
     # Get last 2 measurements
     rows = conn.execute(
         "SELECT queue_count, timestamp FROM queue_history WHERE queue_name = ? "
@@ -64,25 +67,26 @@ def _get_queue_eta(conn, queue_name: str) -> int | None:
         (queue_name,)
     ).fetchall()
 
-    if len(rows) < 2:
-        return None
+    if len(rows) >= 2:
+        count_now, ts_now = rows[0]
+        count_prev, ts_prev = rows[1]
 
-    count_now, ts_now = rows[0]
-    count_prev, ts_prev = rows[1]
+        if ts_now != ts_prev:
+            time_delta = ts_now - ts_prev
+            items_processed = max(0, count_prev - count_now)
 
-    if count_now <= 0 or ts_now == ts_prev:
-        return None
+            if items_processed > 0:
+                rate_per_sec = items_processed / time_delta
+                eta_sec = int(count_now / rate_per_sec)
+                return max(1, eta_sec)
 
-    time_delta = ts_now - ts_prev
-    items_processed = max(0, count_prev - count_now)
+    # Fallback to heartbeat rate if no history
+    if fallback_rate_per_min > 0:
+        rate_per_sec = fallback_rate_per_min / 60.0
+        eta_sec = int(queue_count / rate_per_sec)
+        return max(1, eta_sec)
 
-    if items_processed <= 0:
-        return None
-
-    rate_per_sec = items_processed / time_delta
-    eta_sec = int(count_now / rate_per_sec)
-
-    return max(1, eta_sec)
+    return None
 
 
 def status(conn, db_path: str = "") -> str:
@@ -100,9 +104,10 @@ def status(conn, db_path: str = "") -> str:
             return None
         best = max(matches, key=lambda r: r[5] or 0)
         queue = best[2] or 0
+        rate = best[3] or 0.0
         err = next((r[6] for r in sorted(matches, key=lambda r: r[5] or 0, reverse=True) if r[6]), "")
         stat = "running" if any(r[1] == "running" for r in matches) else best[1]
-        return (best[0], stat, queue, best[5], err)
+        return (best[0], stat, queue, rate, best[5], err)
 
 
     total_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
@@ -143,16 +148,17 @@ def status(conn, db_path: str = "") -> str:
         ts = None
         err = ""
         queue = 0
+        rate = 0.0
         stat = "unknown"
         if hb:
-            _, stat, queue, ts, err = hb
+            _, stat, queue, rate, ts, err = hb
 
         if label == "watch-folder":
             detail = f"{total_files} files"
         else:
             detail = f"{queue} pending" if queue else "idle"
             if queue:
-                eta = _get_queue_eta(conn, label)
+                eta = _get_queue_eta(conn, label, queue, rate)
 
         lines.append(_row(label, detail, eta, ts, err))
 
