@@ -77,7 +77,13 @@ class ServiceManager:
     @staticmethod
     def _install_macos(config_path: str) -> None:
         """Install launchd service on macOS."""
-        blerk_cmd = _get_blerk_cmd()
+        # Use absolute path to blerk instead of relying on PATH (important for launchd)
+        blerk_cmd = shutil.which("blerk")
+        if not blerk_cmd:
+            print("ERROR: 'blerk' command not found in PATH.")
+            print("Make sure you've run: pip install -e .")
+            sys.exit(1)
+
         template = _load_template("com.blerk.plist")
         plist_content = _substitute_template(template, blerk_cmd, config_path)
 
@@ -169,11 +175,13 @@ class ServiceManager:
         """Remove launchd service on macOS."""
         plist_file = Path.home() / "Library" / "LaunchAgents" / "com.blerk.plist"
 
-        subprocess.run(["launchctl", "unload", str(plist_file)], capture_output=True)
-
         if plist_file.exists():
+            subprocess.run(["launchctl", "unload", str(plist_file)], capture_output=True)
             plist_file.unlink()
             print(f"Removed: {plist_file}")
+        else:
+            print("blerk service not installed")
+            return
 
         print("blerk service uninstalled")
 
@@ -232,10 +240,23 @@ class ServiceManager:
                 capture_output=True,
                 text=True,
             )
-            if "com.blerk" in result.stdout:
+            if "com.blerk" not in result.stdout:
+                return "blerk service is not installed"
+
+            # Check if process is actually running
+            result = subprocess.run(
+                ["pgrep", "-f", "blerk"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
                 return "blerk service is installed and running"
             else:
-                return "blerk service is not installed"
+                plist_file = Path.home() / "Library" / "LaunchAgents" / "com.blerk.plist"
+                error_log = Path.home() / ".blerk" / "blerk.error.log"
+                return (f"blerk service is installed but NOT running.\n"
+                        f"Check logs: tail -f {error_log}\n"
+                        f"Or reload with: launchctl load {plist_file}")
         except Exception as e:
             return f"Error checking status: {e}"
 
