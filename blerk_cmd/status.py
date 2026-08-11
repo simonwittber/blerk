@@ -26,12 +26,6 @@ def _fmt_age(ts: int) -> str:
     return f"{age // 3600}h ago"
 
 
-def _pct(num: int, den: int) -> str:
-    if den == 0:
-        return "100%"
-    return f"{num * 100 // den}%"
-
-
 def _record_queue_counts(conn) -> None:
     """Record current queue counts to history for ETC calculation."""
     now = int(datetime.now(timezone.utc).timestamp())
@@ -112,18 +106,6 @@ def status(conn, db_path: str = "") -> str:
 
 
     total_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-    total_syms = conn.execute(
-        "SELECT COUNT(*) FROM symbols WHERE kind != 'heading'"
-    ).fetchone()[0]
-    embedded = conn.execute(
-        "SELECT COUNT(DISTINCT cb.symbol_id) FROM embeddings e JOIN code_blocks cb ON cb.id = e.block_id"
-    ).fetchone()[0]
-    describable = conn.execute(
-        "SELECT COUNT(*) FROM symbols WHERE kind IN ('function','method')"
-    ).fetchone()[0]
-    described = conn.execute(
-        "SELECT COUNT(*) FROM symbols WHERE kind IN ('function','method') AND description IS NOT NULL"
-    ).fetchone()[0]
 
     lines: list[str] = []
 
@@ -148,13 +130,13 @@ def status(conn, db_path: str = "") -> str:
             result += f"\n  error: {error}"
         return result
 
-    for label, db_name, mode in [
-        ("watch-folder",  "watch-folder",  "files"),
-        ("symbolizer",    "symbolizer",    "queue"),
-        ("git-enricher",  "git-enricher",  "queue"),
-        ("fingerprinter", "fingerprinter", "queue"),
-        ("describer",     "llm-describer", "pct_described"),
-        ("embedder",      "embedder",      "pct_embedded"),
+    for label, db_name in [
+        ("watch-folder",  "watch-folder"),
+        ("symbolizer",    "symbolizer"),
+        ("git-enricher",  "git-enricher"),
+        ("fingerprinter", "fingerprinter"),
+        ("describer",     "llm-describer"),
+        ("embedder",      "embedder"),
     ]:
         hb = _aggregate(db_name)
         eta = None
@@ -165,16 +147,12 @@ def status(conn, db_path: str = "") -> str:
         if hb:
             _, stat, queue, ts, err = hb
 
-        if mode == "files":
+        if label == "watch-folder":
             detail = f"{total_files} files"
-        elif mode == "queue":
+        else:
             detail = f"{queue} pending" if queue else "idle"
             if queue:
                 eta = _get_queue_eta(conn, label)
-        elif mode == "pct_described":
-            detail = _pct(described, describable)
-        else:
-            detail = _pct(embedded, total_syms)
 
         lines.append(_row(label, detail, eta, ts, err))
 
