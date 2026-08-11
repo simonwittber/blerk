@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from blerk import config, db
 from blerk.coordinator import _port_file, _workers_dir
@@ -32,7 +32,69 @@ def _pct(num: int, den: int) -> str:
     return f"{num * 100 // den}%"
 
 
+def _record_queue_counts(conn) -> None:
+    """Record current queue counts to history for ETC calculation."""
+    now = int(datetime.now(timezone.utc).timestamp())
+    queues = {
+        "symbolizer": "symbol_queue",
+        "git-enricher": "git_queue",
+        "fingerprinter": "fingerprint_queue",
+        "embedder": "code_block_embed_queue",
+        "llm-describer": "describe_queue",
+    }
+
+    for name, table in queues.items():
+        try:
+            count = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE status='pending'").fetchone()[0]
+            conn.execute(
+                "INSERT INTO queue_history(queue_name, queue_count, timestamp) VALUES (?, ?, ?)",
+                (name, count, now)
+            )
+        except Exception:
+            pass
+
+    conn.commit()
+
+    # Clean up old records (keep last 24 hours)
+    cutoff = now - 86400
+    conn.execute("DELETE FROM queue_history WHERE timestamp < ?", (cutoff,))
+    conn.commit()
+
+
+def _get_queue_eta(conn, queue_name: str) -> int | None:
+    """Calculate ETC in seconds from queue history."""
+    # Get last 2 measurements
+    rows = conn.execute(
+        "SELECT queue_count, timestamp FROM queue_history WHERE queue_name = ? "
+        "ORDER BY timestamp DESC LIMIT 2",
+        (queue_name,)
+    ).fetchall()
+
+    if len(rows) < 2:
+        return None
+
+    count_now, ts_now = rows[0]
+    count_prev, ts_prev = rows[1]
+
+    if count_now <= 0 or ts_now == ts_prev:
+        return None
+
+    time_delta = ts_now - ts_prev
+    items_processed = max(0, count_prev - count_now)
+
+    if items_processed <= 0:
+        return None
+
+    rate_per_sec = items_processed / time_delta
+    eta_sec = int(count_now / rate_per_sec)
+
+    return max(1, eta_sec)
+
+
 def status(conn, db_path: str = "") -> str:
+    # Record current queue state for ETC calculation
+    _record_queue_counts(conn)
+
     raw_heartbeats: list[tuple] = conn.execute(
         "SELECT daemon, status, queue_depth, rate_per_minute, eta_seconds, last_heartbeat, last_error "
         "FROM daemon_status ORDER BY daemon"
@@ -103,23 +165,19 @@ def status(conn, db_path: str = "") -> str:
         queue = 0
         stat = "unknown"
         if hb:
-            _, stat, queue, _, eta, ts, err = hb
+            _, stat, queue, _, _, ts, err = hb
             err = err or ""
 
         if mode == "files":
             detail = f"{total_files} files"
         elif mode == "queue":
             detail = f"{queue} pending" if queue else "idle"
-            if not queue:
-                eta = None
+            if queue:
+                eta = _get_queue_eta(conn, label)
         elif mode == "pct_described":
             detail = _pct(described, describable)
-            if stat == "idle":
-                eta = None
         else:
             detail = _pct(embedded, total_syms)
-            if stat == "idle":
-                eta = None
 
         lines.append(_row(label, detail, eta, ts, err))
 

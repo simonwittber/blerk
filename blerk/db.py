@@ -331,7 +331,7 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
-_CURRENT_VERSION = 7
+_CURRENT_VERSION = 8
 
 
 def _get_version(conn: sqlite3.Connection) -> int:
@@ -617,6 +617,21 @@ def _migrate_7(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_8(conn: sqlite3.Connection) -> None:
+    # Add queue_history table for tracking ETC
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS queue_history (
+            id        INTEGER PRIMARY KEY,
+            queue_name TEXT    NOT NULL,
+            queue_count INTEGER NOT NULL,
+            timestamp  INTEGER NOT NULL DEFAULT (unixepoch())
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_queue_history_queue_time ON queue_history(queue_name, timestamp DESC)"
+    )
+
+
 _MIGRATIONS: dict[int, object] = {
     1: _migrate_1,
     2: _migrate_2,
@@ -625,6 +640,7 @@ _MIGRATIONS: dict[int, object] = {
     5: _migrate_5,
     6: _migrate_6,
     7: _migrate_7,
+    8: _migrate_8,
 }
 
 
