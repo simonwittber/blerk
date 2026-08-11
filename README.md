@@ -9,15 +9,12 @@ For large codebases, this cuts context usage by 80%+. The assistant spends token
 - Python 3.11+
 - [Ollama](https://ollama.com) running locally (for embeddings and optional LLM descriptions)
 
-## Install
+## Quick start
 
-```
-pip install .
-```
-
-## Setup
-
-```
+```bash
+git clone https://github.com/simonwittber/blerk.git
+cd blerk
+pip install -e .
 blerk init
 ```
 
