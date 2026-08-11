@@ -5,7 +5,8 @@ import json
 import sys
 
 from blerk import config, db
-from blerk_cmd.analyze import Finding\nfrom blerk_cmd.util import Scope, build_path_filters as _build_path_filters, normalize_dir
+from blerk_cmd.analyze import Finding
+from blerk_cmd.util import Scope, build_path_filters as _build_path_filters
 
 
 def _fetch_findings(
@@ -117,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", choices=["text", "json"], default="text")
     args = parser.parse_args(argv)
 
-    scope = Scope(directory=normalize_dir(args.directory), exts=args.exts, excludes=args.excludes)
+    scope = Scope(directory=args.directory, exts=args.exts, excludes=args.excludes)
 
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)

@@ -31,8 +31,9 @@ def build_path_filters(scope: Scope) -> tuple[list[str], list]:
     params: list = []
 
     if scope.directory:
-        fwd = scope.directory.replace("\\", "/").rstrip("/")
-        bwd = scope.directory.replace("/", "\\").rstrip("\\")
+        directory = normalize_dir(scope.directory)
+        fwd = directory.replace("\\", "/").rstrip("/")
+        bwd = directory.replace("/", "\\").rstrip("\\")
         filters.append("(f.path LIKE ? OR f.path LIKE ? OR f.path LIKE ? OR f.path LIKE ?)")
         params += [f"%{fwd}/%", f"%{fwd}", f"%{bwd}\\%", f"%{bwd}"]
 

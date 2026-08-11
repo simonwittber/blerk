@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from blerk import config, db
 from blerk_cmd.llm_describer import describe
-from blerk_cmd.util import Scope, build_path_filters, normalize_dir, placeholders
+from blerk_cmd.util import Scope, build_path_filters, placeholders
 
 
 @dataclass
@@ -551,7 +551,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reset", action="store_true",
                         help="delete existing findings for selected analyzers, then exit")
     args = parser.parse_args(argv)
-    args.directory = normalize_dir(args.directory)
     scope = Scope(directory=args.directory, exts=args.exts, excludes=args.excludes)
 
     cfg = config.load(args.config)

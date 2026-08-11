@@ -5,6 +5,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable
 
+from blerk_cmd.util import normalize_dir
+
 Violation = tuple[str, int, str, str, float]  # path, line, rule, display, score
 
 RULES: list[Rule] = []
@@ -31,7 +33,7 @@ def build_scope(conn, directory: str, excludes: list[str]) -> None:
     parts: list[str] = []
     params: list = []
     if directory:
-        norm = directory.replace("\\", "/").rstrip("/")
+        norm = normalize_dir(directory).replace("\\", "/").rstrip("/")
         parts.append("(f.path LIKE ? OR f.path LIKE ?)")
         params += [f"%{norm}/%", f"%{norm}"]
     for pat in excludes:

@@ -5,8 +5,8 @@ import sys
 from collections import defaultdict
 
 from blerk import config, db
-from blerk_cmd.query import _dir_clause, _ext_sql
-from blerk_cmd.util import normalize_dir
+from blerk_cmd.query import _ext_sql
+from blerk_cmd.util import Scope, build_path_filters
 
 
 def similar(conn, directory: str, threshold: float, exts: list[str] | None = None, top_k: int = 20) -> None:
@@ -14,11 +14,13 @@ def similar(conn, directory: str, threshold: float, exts: list[str] | None = Non
 
     # Build WHERE clause for directory and extension filters
     ext_clause, ext_params = _ext_sql(exts or [])
-    dir_clause, dir_params = _dir_clause(normalize_dir(directory))
+    scope = Scope(directory=directory, exts=[])
+    dir_filters, dir_params = build_path_filters(scope)
+    dir_clause = ("AND " + " AND ".join(dir_filters)) if dir_filters else ""
 
     where_fragments = [
         "AND cb.block_index = 0",
-        "AND s.kind = 'function'",
+        "AND s.kind IN ('function', 'method')",
         "AND f.path NOT LIKE '%test%'",
         ext_clause,
         dir_clause,
