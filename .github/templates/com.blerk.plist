@@ -5,7 +5,13 @@
 	<key>Label</key>
 	<string>com.blerk.daemon</string>
 	<key>Program</key>
-	<string>{BLERK_CMD}</string>
+	<string>{BLERK_PATH}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>{BLERK_PATH}</string>
+		<string>--config</string>
+		<string>{CONFIG_PATH}</string>
+	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>

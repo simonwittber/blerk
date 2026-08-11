@@ -34,6 +34,8 @@ def _substitute_template(template: str, blerk_cmd: str, config_path: str) -> str
 
     return template.format(
         BLERK_CMD=f'{blerk_cmd} --config "{config_path}"',
+        BLERK_PATH=blerk_cmd,
+        CONFIG_PATH=config_path,
         USER=user,
         HOME=home,
     )
