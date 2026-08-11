@@ -61,7 +61,7 @@ def test_no_matches_strict_threshold(tmp_path):
     try:
         fid = int(conn.execute(
             "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            ("test.py", 0, "h"),
+            ("code.py", 0, "h"),
         ).lastrowid)
 
         sid1 = _insert_symbol(conn, fid, "func1", line=1)
@@ -94,7 +94,7 @@ def test_similar_blocks_found(tmp_path):
     try:
         fid = int(conn.execute(
             "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            ("test.py", 0, "h"),
+            ("code.py", 0, "h"),
         ).lastrowid)
 
         sid1 = _insert_symbol(conn, fid, "func1", line=1)
@@ -128,11 +128,11 @@ def test_extension_filtering(tmp_path):
     try:
         fid_py = int(conn.execute(
             "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            ("test.py", 0, "h"),
+            ("code.py", 0, "h"),
         ).lastrowid)
         fid_go = int(conn.execute(
             "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            ("test.go", 0, "h"),
+            ("code.go", 0, "h"),
         ).lastrowid)
 
         sid1 = _insert_symbol(conn, fid_py, "func_py", line=1)
@@ -166,7 +166,7 @@ def test_multiple_embedding_models_selects_most_frequent(tmp_path):
     try:
         fid = int(conn.execute(
             "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            ("test.py", 0, "h"),
+            ("code.py", 0, "h"),
         ).lastrowid)
 
         sid1 = _insert_symbol(conn, fid, "func1")
@@ -203,7 +203,7 @@ def test_union_find_groups_clusters(tmp_path):
     try:
         fid = int(conn.execute(
             "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            ("test.py", 0, "h"),
+            ("code.py", 0, "h"),
         ).lastrowid)
 
         # Create a chain: A~B, B~C (so A,B,C form one cluster)

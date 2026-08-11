@@ -18,7 +18,8 @@ def similar(conn, directory: str, threshold: float, exts: list[str] | None = Non
 
     where_fragments = [
         "AND cb.block_index = 0",
-        "AND s.kind != 'heading'",
+        "AND s.kind = 'function'",
+        "AND f.path NOT LIKE '%test%'",
         ext_clause,
         dir_clause,
     ]
@@ -161,8 +162,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.15,
-        help="cosine distance threshold (0=identical, 1=orthogonal, default: 0.15)",
+        default=0.1,
+        help="cosine distance threshold (0=identical, 1=orthogonal, default: 0.1)",
     )
     parser.add_argument(
         "--ext",
