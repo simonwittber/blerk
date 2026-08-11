@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from blerk import config, db
 from blerk.coordinator import _port_file, _workers_dir
@@ -105,12 +105,10 @@ def status(conn, db_path: str = "") -> str:
         if not matches:
             return None
         best = max(matches, key=lambda r: r[5] or 0)
-        total_rate = sum(r[3] or 0.0 for r in matches)
         queue = best[2] or 0
-        eta = int(queue / total_rate * 60) if total_rate > 0 and queue > 0 else None
         err = next((r[6] for r in sorted(matches, key=lambda r: r[5] or 0, reverse=True) if r[6]), "")
         stat = "running" if any(r[1] == "running" for r in matches) else best[1]
-        return (best[0], stat, queue, total_rate, eta, best[5], err)
+        return (best[0], stat, queue, best[5], err)
 
 
     total_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
@@ -165,8 +163,7 @@ def status(conn, db_path: str = "") -> str:
         queue = 0
         stat = "unknown"
         if hb:
-            _, stat, queue, _, _, ts, err = hb
-            err = err or ""
+            _, stat, queue, ts, err = hb
 
         if mode == "files":
             detail = f"{total_files} files"
