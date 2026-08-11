@@ -135,6 +135,14 @@ def main() -> None:
 
     cfg = config.load(args.config)
 
+    # Initialize database before starting daemons to avoid concurrent WAL mode setup
+    try:
+        init_conn = db.open_db(cfg.db.path, init_schema=False)
+        init_conn.close()
+    except Exception as e:
+        log.error("[hub] failed to initialize database: %s", e)
+        sys.exit(1)
+
     coord = coordinator.CoordinatorServer(cfg.db.path, cfg.coordinator.port)
     coord.start(shutdown)
 
