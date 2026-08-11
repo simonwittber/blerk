@@ -272,7 +272,9 @@ blerk uses tree-sitter for all symbol extraction. Supported languages: Go, Pytho
 
 ## Development
 
-```
+```bash
+python -m venv venv
+source venv/bin/activate          # On Windows: venv\Scripts\activate
 pip install -e ".[test]"
 pytest tests/
 ```

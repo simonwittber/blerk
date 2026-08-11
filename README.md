@@ -14,6 +14,8 @@ For large codebases, this cuts context usage by 80%+. The assistant spends token
 ```bash
 git clone https://github.com/simonwittber/blerk.git
 cd blerk
+python -m venv venv
+source venv/bin/activate          # On Windows: venv\Scripts\activate
 pip install -e .
 blerk init
 ```
