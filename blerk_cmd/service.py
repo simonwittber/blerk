@@ -105,6 +105,14 @@ class ServiceManager:
         blerk_cmd = _get_blerk_cmd()
         task_name = "blerk"
 
+        # Create log directory if it doesn't exist
+        log_dir = Path.home() / ".blerk"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "blerk.log"
+
+        # Use cmd.exe to handle output redirection
+        task_command = f'cmd /c "{blerk_cmd}" --config "{config_path}" >> "{log_file}" 2>&1'
+
         subprocess.run(
             [
                 "schtasks",
@@ -112,7 +120,7 @@ class ServiceManager:
                 "/tn",
                 task_name,
                 "/tr",
-                f'"{blerk_cmd}" --config "{config_path}"',
+                task_command,
                 "/sc",
                 "onstart",
                 "/f",
@@ -121,6 +129,7 @@ class ServiceManager:
             capture_output=True,
         )
         print(f"Installed Task Scheduler entry: {task_name}")
+        print(f"Logs will be written to: {log_file}")
         print("blerk service will start at next boot")
 
     @staticmethod

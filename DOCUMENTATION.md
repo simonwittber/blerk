@@ -236,7 +236,7 @@ Manage blerk as a persistent system service with auto-restart and boot startup.
 
 **Windows (Task Scheduler):**
 - Requires administrator: run Command Prompt as Administrator, then `blerk service install`
-- View logs: Event Viewer > Windows Logs > Application (search for "blerk" errors)
+- View logs: `type %USERPROFILE%\.blerk\blerk.log` or `tail -f ~/.blerk/blerk.log` (in PowerShell)
 - Service runs at next system boot
 
 Service auto-restarts on failure (10-second delay) and respects editable installs (`pip install -e .`).
