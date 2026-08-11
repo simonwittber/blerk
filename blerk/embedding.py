@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 import os
 import struct
 import threading
 from typing import Optional
 
 import httpx
+
+# Suppress HuggingFace Hub warnings about unauthenticated requests
+logging.getLogger("huggingface_hub.utils._token").setLevel(logging.ERROR)
 
 _st_model: Optional[object] = None
 _st_lock = threading.Lock()
