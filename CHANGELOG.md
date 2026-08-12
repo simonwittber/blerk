@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fix: vector dimension mismatch in blerk search
+
+The search query now filters embeddings to the configured model. Previously it compared vectors from all stored models against the query vector, which caused a dimension mismatch error when the embedding model changed. Old vectors from a different model are ignored.
+
 ### blerk init: reranker configuration
 
 `blerk init` now asks whether to enable the reranker. If enabled, it prompts for the endpoint, model, and an optional API key. These values write to the `[reranker]` section of `config.toml`.

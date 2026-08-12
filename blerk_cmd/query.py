@@ -21,6 +21,7 @@ class QueryOptions:
     tags: dict[str, str] | None = None
     refs: bool = False
     verbose: bool = False
+    embed_model: str = ""
 
 # RRF smoothing constant: 60 is the standard value that prevents top ranks from dominating.
 _RRF_K = 60
@@ -107,10 +108,11 @@ def _vector_positions(conn, blob: bytes, k: int, opts: QueryOptions) -> dict[int
         JOIN files f ON f.id = s.file_id
         {tag_sql}
         WHERE 1=1 {heading_sql} {ext_sql} {dir_sql}
+        {"AND e.model = ?" if opts.embed_model else ""}
         ORDER BY vec_distance_cosine(e.vector, ?) ASC
         LIMIT ?
         """,
-        (*tag_params, *ext_params, *dir_params, blob, k),
+        (*tag_params, *ext_params, *dir_params, *([opts.embed_model] if opts.embed_model else []), blob, k),
     ).fetchall()
     return {row[0]: rank for rank, row in enumerate(rows)}
 
@@ -393,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
         verbose=args.verbose or args.refs,
         refs=args.refs,
         tags=tag_filter or None,
+        embed_model=cfg.embedder.model,
     )
     run_query(conn, blob, args.query, opts)
     return 0
