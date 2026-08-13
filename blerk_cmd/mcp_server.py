@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import sqlite3 as _sqlite3
+
+_seen_hint_ids: set[int] = set()
+_conn: "_sqlite3.Connection | None" = None
 
 _TOOLS = [
     {
@@ -58,6 +67,25 @@ _TOOLS = [
         },
     },
     {
+        "name": "hint_store",
+        "description": "Save a hint tied to a file-glob pattern. Wide patterns (** or *) create project-level hints that always surface.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "concept": {"type": "string", "description": "short tag e.g. 'path-normalization'"},
+                "pattern": {"type": "string", "description": "fnmatch glob e.g. 'src/indexing/**' or '**'"},
+                "body":    {"type": "string", "description": "one or two sentence actionable note"},
+                "source":  {"type": "string", "enum": ["auto", "explicit"]},
+            },
+            "required": ["concept", "pattern", "body"],
+        },
+    },
+    {
+        "name": "hint_session_reset",
+        "description": "Reset the seen-hint set so all hints can be re-injected. Called automatically after context compaction.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "show",
         "description": "Show source code for an indexed file or symbol, read directly from the original source file.",
         "inputSchema": {
@@ -71,6 +99,38 @@ _TOOLS = [
         },
     },
 ]
+
+
+_PATH_RE = re.compile(r"\s{2,}(\S+):\d+-\d+")
+
+
+def _pattern_matches(path: str, pattern: str) -> bool:
+    from blerk_cmd.util import normalize_dir
+    pattern = normalize_dir(pattern)
+    parts = path.split("/")
+    for i in range(len(parts)):
+        if fnmatch.fnmatch("/".join(parts[i:]), pattern):
+            return True
+    return False
+
+
+def _hints_for_paths(paths: list[str]) -> str:
+    if _conn is None:
+        return ""
+    hint_rows = _conn.execute(
+        "SELECT id, concept, body, pattern FROM hints ORDER BY created_at"
+    ).fetchall()
+    matched = []
+    for id_, concept, body, pattern in hint_rows:
+        if id_ in _seen_hint_ids:
+            continue
+        is_wide = pattern in ("*", "**", "**/*")
+        if is_wide or any(_pattern_matches(p, pattern) for p in paths):
+            matched.append(f"[Hint: {concept}] {body}")
+            _seen_hint_ids.add(id_)
+    if not matched:
+        return ""
+    return "\nRelevant hints:\n" + "\n".join(matched)
 
 
 def _run(*args: str) -> str:
@@ -87,14 +147,32 @@ def _run(*args: str) -> str:
     return output
 
 
-def _call(name: str, args: dict) -> str:
+def _call(name: str, args: dict) -> str:  # noqa: C901
+    if name == "hint_store":
+        if _conn is None:
+            return "Hint store unavailable: database not open."
+        _conn.execute(
+            "INSERT INTO hints(concept, pattern, body, source) VALUES (?,?,?,?)",
+            (args["concept"], args["pattern"], args["body"], args.get("source", "explicit")),
+        )
+        _conn.commit()
+        return f"Hint stored: [{args['concept']}] {args['body']}"
+
+    if name == "hint_session_reset":
+        _seen_hint_ids.clear()
+        return "Hint session reset."
+
+    # existing tools below
     if name == "search":
         n = max(1, min(int(args.get("n", 10)), 50))
         cmd = ["query", args["query"], "-n", str(n)]
         for ext in args.get("file_extensions", []):
             cmd += ["--ext", ext]
         cmd.append(args["directory"])
-        return _run(*cmd) or "No results found."
+        output = _run(*cmd) or "No results found."
+        from blerk_cmd.util import normalize_dir
+        paths = [normalize_dir(p) for p in _PATH_RE.findall(output)]
+        return output + _hints_for_paths(paths)
 
     if name == "browse":
         cmd = ["browse"]
@@ -130,7 +208,6 @@ def _build_instructions(cfg_path: str) -> str:
     try:
         from blerk import config
         from blerk_cmd.util import normalize_dir
-        from blerk_cmd.summary import summary
         cfg = config.load(cfg_path)
         cwd = normalize_dir(os.getcwd())
         watched = any(
@@ -139,7 +216,7 @@ def _build_instructions(cfg_path: str) -> str:
         )
         if not watched:
             return ""
-        return "This project is indexed by blerk. Run blerk summary for file counts, recent changes, and findings."
+        return cfg.hints.instructions
     except Exception:
         return ""
 
@@ -150,12 +227,18 @@ def _send(obj: dict) -> None:
 
 
 def main() -> None:
+    global _conn
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=None)
     args, _ = parser.parse_known_args()
 
-    from blerk import config as _config
+    from blerk import config as _config, db as _db
     cfg_path = args.config or _config.default_path()
+    try:
+        _cfg = _config.load(cfg_path)
+        _conn = _db.open_db(_cfg.db.path)
+    except Exception:
+        _conn = None
 
     for raw in sys.stdin:
         raw = raw.strip()

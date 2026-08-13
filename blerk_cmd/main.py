@@ -23,7 +23,8 @@ _DISPATCH = {
     "tags":      "blerk_cmd.tags",
     "analyze":   "blerk_cmd.analyze",
     "findings":  "blerk_cmd.findings",
-    "summary":   "blerk_cmd.summary",
+    "summary":      "blerk_cmd.summary",
+    "hint-enqueue": "blerk_cmd.hint_enqueue",
 }
 
 _HELP = {

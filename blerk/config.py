@@ -102,6 +102,27 @@ class Analyzer:
     rules: list[AnalyzerRule] = field(default_factory=list)
 
 
+_DEFAULT_HINT_EXTRACT_PROMPT = """\
+Review this coding session transcript and extract non-obvious lessons as hints.
+Focus on: bugs that took multiple attempts to fix, surprising behaviour, non-obvious constraints, gotchas.
+Skip trivial fixes and anything already well-known.
+
+For each hint output a JSON object with:
+  concept: short kebab-case tag (e.g. "path-normalization")
+  pattern: fnmatch glob for relevant files (e.g. "src/indexing/**"), or "**" for project-wide
+  body: one clear actionable sentence
+
+Return a JSON array only, no other text. If nothing is worth saving, return [].
+
+{transcript}"""
+
+
+@dataclass
+class Hints:
+    instructions: str = ""
+    llm: LLM = field(default_factory=LLM)
+
+
 @dataclass
 class Coordinator:
     port: int = 0
@@ -131,6 +152,7 @@ class Config:
     reranker: Reranker = field(default_factory=Reranker)
     coordinator: Coordinator = field(default_factory=Coordinator)
     lint: Lint = field(default_factory=Lint)
+    hints: Hints = field(default_factory=Hints)
     silent: bool = False
 
 
@@ -165,6 +187,26 @@ def defaults() -> Config:
             endpoint="http://localhost:11434",
             model="",
             enabled=False,
+        ),
+        hints=Hints(
+            llm=LLM(
+                enabled=True,
+                endpoint="http://localhost:11434",
+                model="llama3.2",
+                batch_size=1,
+                poll_ms=5000,
+                max_retries=3,
+                max_context_chars=32000,
+                prompt_template=_DEFAULT_HINT_EXTRACT_PROMPT,
+            ),
+            instructions=(
+                "This project is indexed by blerk. "
+                "Run blerk summary for file counts, recent changes, and findings.\n"
+                "Search results include relevant hints shown once per context window. "
+                "After context compaction, call hint_session_reset so hints are shown again. "
+                "After resolving a bug that required more than one attempt, draft a one-sentence hint "
+                "with hint_store and propose it to the user before saving."
+            ),
         ),
         embedder=Embedder(
             backend="ollama",

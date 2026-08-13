@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Hints system
+
+Blerk now stores and surfaces short notes ("hints") tied to file-glob patterns. Hints appear automatically in `search` results when the matched files overlap with a hint's pattern, and are shown at most once per context window.
+
+- `hint_store` saves a hint with a concept tag, a file-glob pattern, and a one or two sentence body. Wide patterns (`*`, `**`) fire on every search regardless of which files matched.
+- `hint_session_reset` clears the seen-hint set so hints re-appear in the next context window. The MCP startup instructions tell Claude to call this after context compaction.
+- MCP startup instructions are now read from `[hints] instructions` in `config.toml` instead of being hardcoded, and are only injected when the current working directory is inside a watched folder.
+- A `PreCompact` hook enqueues the session transcript for async processing (`blerk hint-enqueue`).
+- The `hint-extractor` daemon picks up queued transcripts, calls an LLM to extract candidate hints, and stores them with `source="auto"`. Configure it under `[hints.llm]` in `config.toml`.
+
 ### Content-addressed embeddings
 
 Embeddings are now keyed by a SHA256 hash of the block content instead of the block ID. Previously, switching git branches caused blerk to regenerate all vectors because the same source code returned with new block IDs. Now, when code reappears unchanged after a branch switch or revert, the embedder reuses the existing vector. The schema migration to v9 preserves existing vectors by joining through code_blocks to recover the content hash.

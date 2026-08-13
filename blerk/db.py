@@ -332,7 +332,7 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
-_CURRENT_VERSION = 9
+_CURRENT_VERSION = 11
 
 
 def _get_version(conn: sqlite3.Connection) -> int:
@@ -688,6 +688,51 @@ def _migrate_9(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_10(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS hints (
+            id         INTEGER PRIMARY KEY,
+            concept    TEXT    NOT NULL,
+            pattern    TEXT    NOT NULL,
+            body       TEXT    NOT NULL,
+            source     TEXT    NOT NULL DEFAULT 'explicit',
+            created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS hints_fts
+            USING fts5(concept, body, content=hints, content_rowid=id);
+        CREATE TRIGGER IF NOT EXISTS hints_fts_insert
+            AFTER INSERT ON hints BEGIN
+                INSERT INTO hints_fts(rowid, concept, body) VALUES (new.id, new.concept, new.body);
+            END;
+        CREATE TRIGGER IF NOT EXISTS hints_fts_delete
+            BEFORE DELETE ON hints BEGIN
+                INSERT INTO hints_fts(hints_fts, rowid, concept, body)
+                    VALUES ('delete', old.id, old.concept, old.body);
+            END;
+        CREATE TRIGGER IF NOT EXISTS hints_fts_update
+            AFTER UPDATE ON hints BEGIN
+                INSERT INTO hints_fts(hints_fts, rowid, concept, body)
+                    VALUES ('delete', old.id, old.concept, old.body);
+                INSERT INTO hints_fts(rowid, concept, body) VALUES (new.id, new.concept, new.body);
+            END;
+    """)
+
+
+def _migrate_11(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS hint_extract_queue (
+            id              INTEGER PRIMARY KEY,
+            transcript_path TEXT    NOT NULL,
+            cwd             TEXT    NOT NULL DEFAULT '',
+            status          TEXT    NOT NULL DEFAULT 'pending',
+            priority        INTEGER NOT NULL DEFAULT 10,
+            attempts        INTEGER NOT NULL DEFAULT 0,
+            queued_at       INTEGER NOT NULL DEFAULT (unixepoch()),
+            error           TEXT
+        );
+    """)
+
+
 _MIGRATIONS: dict[int, object] = {
     1: _migrate_1,
     2: _migrate_2,
@@ -698,6 +743,8 @@ _MIGRATIONS: dict[int, object] = {
     7: _migrate_7,
     8: _migrate_8,
     9: _migrate_9,
+    10: _migrate_10,
+    11: _migrate_11,
 }
 
 

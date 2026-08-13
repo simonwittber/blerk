@@ -54,3 +54,23 @@ max_retries = 3
 # Maximum characters of symbol text sent to the embedding model.
 # nomic-embed-text has an 8192-token context; ~2000 chars is a safe ceiling for dense code.
 max_embed_chars = 2000
+
+[hints]
+# Instructions injected into Claude's system prompt when the MCP server starts.
+# Only shown when the current directory is inside a watched folder.
+instructions = """
+This project is indexed by blerk. Run blerk summary for file counts, recent changes, and findings.
+Search results include relevant hints shown once per context window.
+After context compaction, call hint_session_reset so hints are shown again.
+After resolving a bug that required more than one attempt, draft a one-sentence hint with hint_store and propose it to the user before saving.
+"""
+
+[hints.llm]
+# Separate LLM config for automatic hint extraction from session transcripts.
+# Called via the PreCompact hook before context compaction.
+enabled = true
+endpoint = "http://localhost:11434"
+model = "llama3.2"
+poll_ms = 5000
+max_retries = 3
+max_context_chars = 32000

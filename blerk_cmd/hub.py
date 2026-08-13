@@ -27,6 +27,8 @@ DAEMONS = [
     ("fingerprinter", "blerk_cmd.fingerprinter"),
 ]
 
+DAEMON = "hint-extractor"
+
 log = logging.getLogger("hub")
 
 
@@ -158,6 +160,12 @@ def main() -> None:
         daemon_name = "symbolizer" if n_sym == 1 else f"symbolizer-{i}"
         argv = build_argv("blerk_cmd.symbolizer", args.config)
         t = threading.Thread(target=managed, args=(daemon_name, argv, shutdown), name=daemon_name, daemon=False)
+        t.start()
+        threads.append(t)
+
+    if cfg.hints.llm.enabled:
+        argv = build_argv("blerk_cmd.hint_extractor", args.config)
+        t = threading.Thread(target=managed, args=(DAEMON, argv, shutdown), name=DAEMON, daemon=False)
         t.start()
         threads.append(t)
 
