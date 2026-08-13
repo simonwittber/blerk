@@ -332,7 +332,7 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
-_CURRENT_VERSION = 11
+_CURRENT_VERSION = 12
 
 
 def _get_version(conn: sqlite3.Connection) -> int:
@@ -733,6 +733,40 @@ def _migrate_11(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_12(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS transcripts (
+            id        INTEGER PRIMARY KEY,
+            path      TEXT    NOT NULL DEFAULT '',
+            cwd       TEXT    NOT NULL DEFAULT '',
+            content   TEXT    NOT NULL DEFAULT '',
+            stored_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TRIGGER IF NOT EXISTS transcripts_after_insert
+            AFTER INSERT ON transcripts
+        BEGIN
+            INSERT INTO hint_extract_queue(transcript_id, priority)
+            VALUES (new.id, 10);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS transcripts_after_update
+            AFTER UPDATE OF content ON transcripts
+        BEGIN
+            DELETE FROM hints
+                WHERE queue_id IN (
+                    SELECT id FROM hint_extract_queue WHERE transcript_id = new.id
+                );
+            UPDATE hint_extract_queue
+                SET status='pending', attempts=0, error=NULL
+                WHERE transcript_id = new.id;
+        END;
+
+        ALTER TABLE hint_extract_queue ADD COLUMN transcript_id INTEGER REFERENCES transcripts(id);
+        ALTER TABLE hints ADD COLUMN queue_id INTEGER REFERENCES hint_extract_queue(id) ON DELETE SET NULL;
+    """)
+
+
 _MIGRATIONS: dict[int, object] = {
     1: _migrate_1,
     2: _migrate_2,
@@ -745,6 +779,7 @@ _MIGRATIONS: dict[int, object] = {
     9: _migrate_9,
     10: _migrate_10,
     11: _migrate_11,
+    12: _migrate_12,
 }
 
 
@@ -780,6 +815,11 @@ def claim_batch(conn: sqlite3.Connection, queue: str, target_col: str, n: int) -
 def mark_done(conn: sqlite3.Connection, queue: str, id: int) -> None:
     with _write_lock:
         conn.execute(f"DELETE FROM {queue} WHERE id=?", (id,))
+
+
+def mark_queue_done(conn: sqlite3.Connection, queue: str, id: int) -> None:
+    with _write_lock:
+        conn.execute(f"UPDATE {queue} SET status='done' WHERE id=?", (id,))
 
 
 def recover_orphans(conn: sqlite3.Connection, queue: str) -> None:

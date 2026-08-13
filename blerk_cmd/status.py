@@ -108,7 +108,10 @@ def _hints_stats(conn: "_sqlite3.Connection") -> list[str]:
         pending = conn.execute(
             "SELECT COUNT(*) FROM hint_extract_queue WHERE status='pending'"
         ).fetchone()[0]
-        queue_line = f"{pending} pending"
+        done = conn.execute(
+            "SELECT COUNT(*) FROM hint_extract_queue WHERE status='done'"
+        ).fetchone()[0]
+        queue_line = f"{pending} pending, {done} done"
     except Exception:
         queue_line = "unavailable"
 

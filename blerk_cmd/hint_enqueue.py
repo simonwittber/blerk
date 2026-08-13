@@ -18,11 +18,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
+        content = open(transcript_path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return 0
+
+    if not content.strip():
+        return 0
+
+    try:
         cfg = config.load(config.default_path())
         conn = db.open_db(cfg.db.path)
         conn.execute(
-            "INSERT INTO hint_extract_queue(transcript_path, cwd, priority) VALUES (?,?,10)",
-            (transcript_path, cwd),
+            "INSERT INTO transcripts(path, cwd, content) VALUES (?,?,?)",
+            (transcript_path, cwd, content),
         )
         conn.commit()
         conn.close()

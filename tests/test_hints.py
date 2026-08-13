@@ -178,45 +178,35 @@ class TestSearchWithHints:
 
 
 # ---------------------------------------------------------------------------
-# hint_extractor._read_transcript
+# hint_extractor._parse_transcript
 # ---------------------------------------------------------------------------
 
-class TestReadTranscript:
-    def test_reads_role_and_content(self, tmp_path):
-        f = tmp_path / "t.jsonl"
-        f.write_text(
-            json.dumps({"role": "user", "content": "hello"}) + "\n"
-            + json.dumps({"role": "assistant", "content": "world"}) + "\n",
-            encoding="utf-8",
-        )
-        result = hint_extractor._read_transcript(str(f), 9999)
+def _jsonl(*msgs) -> str:
+    return "\n".join(json.dumps(m) for m in msgs) + "\n"
+
+
+class TestParseTranscript:
+    def test_reads_role_and_content(self):
+        content = _jsonl({"role": "user", "content": "hello"}, {"role": "assistant", "content": "world"})
+        result = hint_extractor._parse_transcript(content, 9999)
         assert "user: hello" in result
         assert "assistant: world" in result
 
-    def test_respects_max_chars(self, tmp_path):
-        f = tmp_path / "t.jsonl"
-        lines = [json.dumps({"role": "user", "content": "x" * 100}) for _ in range(20)]
-        f.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        result = hint_extractor._read_transcript(str(f), 200)
-        assert len(result) <= 300  # rough upper bound
+    def test_respects_max_chars(self):
+        content = _jsonl(*[{"role": "user", "content": "x" * 100} for _ in range(20)])
+        result = hint_extractor._parse_transcript(content, 200)
+        assert len(result) <= 300
 
-    def test_skips_non_string_content(self, tmp_path):
-        f = tmp_path / "t.jsonl"
-        f.write_text(
-            json.dumps({"role": "user", "content": [{"type": "text", "text": "hi"}]}) + "\n",
-            encoding="utf-8",
-        )
-        result = hint_extractor._read_transcript(str(f), 9999)
-        assert result == ""
+    def test_skips_non_string_content(self):
+        content = _jsonl({"role": "user", "content": [{"type": "text", "text": "hi"}]})
+        assert hint_extractor._parse_transcript(content, 9999) == ""
 
-    def test_missing_file_returns_empty(self):
-        result = hint_extractor._read_transcript("/nonexistent/path.jsonl", 9999)
-        assert result == ""
+    def test_empty_content_returns_empty(self):
+        assert hint_extractor._parse_transcript("", 9999) == ""
 
-    def test_skips_invalid_json_lines(self, tmp_path):
-        f = tmp_path / "t.jsonl"
-        f.write_text("not json\n" + json.dumps({"role": "user", "content": "ok"}) + "\n", encoding="utf-8")
-        result = hint_extractor._read_transcript(str(f), 9999)
+    def test_skips_invalid_json_lines(self):
+        content = "not json\n" + json.dumps({"role": "user", "content": "ok"}) + "\n"
+        result = hint_extractor._parse_transcript(content, 9999)
         assert "user: ok" in result
 
 

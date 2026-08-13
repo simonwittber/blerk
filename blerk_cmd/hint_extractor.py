@@ -22,30 +22,26 @@ _client = httpx.Client(timeout=120.0)
 _JSON_RE = re.compile(r"\[.*\]", re.DOTALL)
 
 
-def _read_transcript(path: str, max_chars: int) -> str:
+def _parse_transcript(content: str, max_chars: int) -> str:
     lines: list[str] = []
     total = 0
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for raw in f:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                role = msg.get("role", "")
-                content = msg.get("content", "")
-                if not isinstance(content, str):
-                    continue
-                line = f"{role}: {content}"
-                total += len(line)
-                if total > max_chars:
-                    break
-                lines.append(line)
-    except OSError:
-        return ""
+    for raw in content.splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        role = msg.get("role", "")
+        body = msg.get("content", "")
+        if not isinstance(body, str):
+            continue
+        line = f"{role}: {body}"
+        total += len(line)
+        if total > max_chars:
+            break
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -87,17 +83,18 @@ def _parse_hints(text: str) -> list[dict]:
     return result
 
 
-def _claim(conn: sqlite3.Connection) -> tuple[int, str, str] | None:
+def _claim(conn: sqlite3.Connection) -> tuple[int, str] | None:
     with db._write_lock:
         row = conn.execute(
-            f"SELECT id, transcript_path, cwd FROM {QUEUE}"
-            " WHERE status='pending'"
-            " ORDER BY priority DESC, queued_at ASC LIMIT 1"
+            f"SELECT q.id, t.content FROM {QUEUE} q"
+            " JOIN transcripts t ON t.id = q.transcript_id"
+            " WHERE q.status='pending'"
+            " ORDER BY q.priority DESC, q.queued_at ASC LIMIT 1"
         ).fetchone()
         if not row:
             return None
         conn.execute(f"UPDATE {QUEUE} SET status='processing' WHERE id=?", (row[0],))
-    return row[0], row[1], row[2]
+    return row[0], row[1]
 
 
 def run(cfg: config.Config, shutdown: threading.Event) -> None:
@@ -131,14 +128,15 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
             shutdown.wait(timeout=poll)
             continue
 
-        queue_id, transcript_path, _cwd = claimed
+        queue_id, raw_content = claimed
         status = "running"
         t0 = time.monotonic()
 
         try:
-            transcript = _read_transcript(transcript_path, llm.max_context_chars)
+            transcript = _parse_transcript(raw_content, llm.max_context_chars)
             if not transcript:
-                db.mark_done(conn, QUEUE, queue_id)
+                db.mark_queue_done(conn, QUEUE, queue_id)
+                conn.commit()
                 continue
 
             prompt = llm.prompt_template.replace("{transcript}", transcript)
@@ -148,14 +146,14 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
             for h in hints:
                 try:
                     conn.execute(
-                        "INSERT INTO hints(concept, pattern, body, source) VALUES (?,?,?,?)",
-                        (h["concept"], h["pattern"], h["body"], "auto"),
+                        "INSERT INTO hints(concept, pattern, body, source, queue_id) VALUES (?,?,?,?,?)",
+                        (h["concept"], h["pattern"], h["body"], "auto", queue_id),
                     )
                 except sqlite3.IntegrityError:
                     pass
+            db.mark_queue_done(conn, QUEUE, queue_id)
             conn.commit()
 
-            db.mark_done(conn, QUEUE, queue_id)
             processed_today += 1
             last_err = ""
             log.info("%s: extracted %d hints in %.1fs", DAEMON, len(hints), time.monotonic() - t0)
