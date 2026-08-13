@@ -28,23 +28,26 @@ def test_embedding_backend_switch_requires_requery(tmp_path):
             "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
             (fid, "func", "function", 1, 5),
         ).lastrowid)
-        bid = int(conn.execute(
-            "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line)"
-            " VALUES(?,?,?,?,?) RETURNING id",
-            (sid, 0, "def func(): pass", 1, 5),
-        ).fetchone()[0])
+        import hashlib
+        content = "def func(): pass"
+        content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+        conn.execute(
+            "INSERT INTO code_blocks(symbol_id, block_index, content, content_hash, start_line, end_line)"
+            " VALUES(?,?,?,?,?,?) RETURNING id",
+            (sid, 0, content, content_hash, 1, 5),
+        ).fetchone()[0]
 
         blob_768 = struct.pack(f"<768f", *([0.1] * 768))
 
         conn.execute(
-            "INSERT INTO embeddings(block_id, model, vector, embedded_at) VALUES(?, ?, ?, unixepoch())",
-            (bid, "nomic-embed-text", blob_768),
+            "INSERT INTO embeddings(content_hash, model, vector, embedded_at) VALUES(?, ?, ?, unixepoch())",
+            (content_hash, "nomic-embed-text", blob_768),
         )
         conn.commit()
 
         embeddings = conn.execute(
-            "SELECT model FROM embeddings WHERE block_id = ?",
-            (bid,),
+            "SELECT model FROM embeddings WHERE content_hash = ?",
+            (content_hash,),
         ).fetchall()
         assert len(embeddings) == 1
         assert embeddings[0][0] == "nomic-embed-text"

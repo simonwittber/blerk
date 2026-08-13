@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import struct
 
 import pytest
@@ -32,10 +33,12 @@ def _seed_symbol(
         (file_id, name, kind, line, end_line, description or None),
     )
     sid = cur.lastrowid
+    content = snippet or f"def {name}(): pass"
+    content_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16]
     conn.execute(
-        "INSERT INTO code_blocks (symbol_id, block_index, content, start_line, end_line)"
-        " VALUES (?, 0, ?, ?, ?)",
-        (sid, snippet or "", line, end_line),
+        "INSERT INTO code_blocks (symbol_id, block_index, content, content_hash, start_line, end_line)"
+        " VALUES (?, 0, ?, ?, ?, ?)",
+        (sid, content, content_hash, line, end_line),
     )
     return sid
 
@@ -43,12 +46,12 @@ def _seed_symbol(
 def _seed_embedding(conn, symbol_id: int, vec: list[float]) -> None:
     blob = struct.pack(f"<{len(vec)}f", *vec)
     row = conn.execute(
-        "SELECT id FROM code_blocks WHERE symbol_id=? AND block_index=0", (symbol_id,)
+        "SELECT content_hash FROM code_blocks WHERE symbol_id=? AND block_index=0", (symbol_id,)
     ).fetchone()
-    block_id = row[0]
+    content_hash = row[0]
     conn.execute(
-        "INSERT INTO embeddings (block_id, model, vector, embedded_at) VALUES (?, 'm', ?, 0)",
-        (block_id, blob),
+        "INSERT INTO embeddings (content_hash, model, vector, embedded_at) VALUES (?, 'm', ?, 0)",
+        (content_hash, blob),
     )
 
 

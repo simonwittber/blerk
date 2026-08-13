@@ -71,7 +71,7 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
             status = "running"
             for row in rows:
                 blk_row = conn.execute(
-                    "SELECT cb.content, cb.start_line, cb.block_index,"
+                    "SELECT cb.content, cb.content_hash, cb.start_line, cb.block_index,"
                     " s.id, s.name, COALESCE(s.description, ''), f.path,"
                     " COALESCE(s.params, ''), s.kind, s.file_id, s.line, s.nesting_depth"
                     " FROM code_blocks cb"
@@ -87,9 +87,20 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
                         log.warning("mark done %s %d: %s", QUEUE, row.id, e)
                     continue
 
-                (block_content, block_start, block_index,
+                (block_content, content_hash, block_start, block_index,
                  sym_id, name, description, path,
                  params, kind, file_id, line, nesting_depth) = blk_row
+
+                # Skip if a vector for this content and model already exists.
+                if content_hash and conn.execute(
+                    "SELECT 1 FROM embeddings WHERE content_hash=? AND model=?",
+                    (content_hash, cfg.embedder.model),
+                ).fetchone():
+                    try:
+                        db.mark_done(conn, QUEUE, row.id)
+                    except sqlite3.Error as e:
+                        log.warning("mark done %s %d: %s", QUEUE, row.id, e)
+                    continue
 
                 parent_row = None
                 if nesting_depth and nesting_depth > 0:
@@ -169,12 +180,12 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
 
                 try:
                     conn.execute(
-                        "INSERT INTO embeddings(block_id, model, vector, embedded_at) "
+                        "INSERT INTO embeddings(content_hash, model, vector, embedded_at) "
                         "VALUES(?, ?, ?, unixepoch()) "
-                        "ON CONFLICT(block_id, model) DO UPDATE SET "
+                        "ON CONFLICT(content_hash, model) DO UPDATE SET "
                         "vector = excluded.vector, "
                         "embedded_at = excluded.embedded_at",
-                        (row.target_id, cfg.embedder.model, blob),
+                        (content_hash, cfg.embedder.model, blob),
                     )
                 except sqlite3.Error as e:
                     try:

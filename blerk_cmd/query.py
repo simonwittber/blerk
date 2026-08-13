@@ -99,20 +99,21 @@ def _vector_positions(conn, blob: bytes, k: int, opts: QueryOptions) -> dict[int
     dir_sql, dir_params = _dir_clause(opts.directory)
     heading_sql = _no_headings_sql(exts)
     tag_sql, tag_params = _tag_clause(opts.tags or {})
+    model_sql = "AND e.model = ?" if opts.embed_model else ""
+    model_params = [opts.embed_model] if opts.embed_model else []
     rows = conn.execute(
         f"""
         SELECT s.id
         FROM embeddings e
-        JOIN code_blocks cb ON cb.id = e.block_id
+        JOIN code_blocks cb ON cb.content_hash = e.content_hash {model_sql}
         JOIN symbols s ON s.id = cb.symbol_id
         JOIN files f ON f.id = s.file_id
         {tag_sql}
         WHERE 1=1 {heading_sql} {ext_sql} {dir_sql}
-        {"AND e.model = ?" if opts.embed_model else ""}
         ORDER BY vec_distance_cosine(e.vector, ?) ASC
         LIMIT ?
         """,
-        (*tag_params, *ext_params, *dir_params, *([opts.embed_model] if opts.embed_model else []), blob, k),
+        (*model_params, *tag_params, *ext_params, *dir_params, blob, k),
     ).fetchall()
     return {row[0]: rank for rank, row in enumerate(rows)}
 

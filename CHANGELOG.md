@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Content-addressed embeddings
+
+Embeddings are now keyed by a SHA256 hash of the block content instead of the block ID. Previously, switching git branches caused blerk to regenerate all vectors because the same source code returned with new block IDs. Now, when code reappears unchanged after a branch switch or revert, the embedder reuses the existing vector. The schema migration to v9 preserves existing vectors by joining through code_blocks to recover the content hash.
+
+**Fix:** `summary.py` counted embedded symbols using `e.symbol_id`, a column that does not exist in the embeddings table. The query now joins through code_blocks correctly.
+
 ### Fix: vector dimension mismatch in blerk search
 
 The search query now filters embeddings to the configured model. Previously it compared vectors from all stored models against the query vector, which caused a dimension mismatch error when the embedding model changed. Old vectors from a different model are ignored.

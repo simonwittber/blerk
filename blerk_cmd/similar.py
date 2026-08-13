@@ -35,7 +35,7 @@ def similar(conn, directory: str, threshold: float, exts: list[str] | None = Non
         FROM symbols s
         JOIN files f ON f.id = s.file_id
         JOIN code_blocks cb ON cb.symbol_id = s.id
-        JOIN embeddings e ON e.block_id = cb.id
+        JOIN embeddings e ON e.content_hash = cb.content_hash
         {where}
         ORDER BY s.id
         """,
@@ -81,7 +81,7 @@ def similar(conn, directory: str, threshold: float, exts: list[str] | None = Non
             FROM symbols s
             JOIN files f ON f.id = s.file_id
             JOIN code_blocks cb ON cb.symbol_id = s.id
-            JOIN embeddings e ON e.block_id = cb.id
+            JOIN embeddings e ON e.content_hash = cb.content_hash
             {where}
               AND s.id != ?
               AND e.model = ?

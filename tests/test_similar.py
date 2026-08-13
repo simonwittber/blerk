@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import struct
 from io import StringIO
 import sys
@@ -20,19 +21,24 @@ def _insert_symbol(conn, file_id: int, name: str, line: int = 1) -> int:
     return sid
 
 
-def _insert_block(conn, sym_id: int, content: str = "def func(): pass") -> int:
+def _insert_block(conn, sym_id: int, content: str | None = None) -> int:
+    block_content = content if content is not None else f"def func_{sym_id}(): pass"
+    content_hash = hashlib.sha256(block_content.encode("utf-8", errors="replace")).hexdigest()[:16]
     bid = int(conn.execute(
-        "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line) VALUES(?,?,?,?,?) RETURNING id",
-        (sym_id, 0, content, 1, 5),
+        "INSERT INTO code_blocks(symbol_id, block_index, content, content_hash, start_line, end_line)"
+        " VALUES(?,?,?,?,?,?) RETURNING id",
+        (sym_id, 0, block_content, content_hash, 1, 5),
     ).lastrowid)
     return bid
 
 
 def _insert_embedding(conn, block_id: int, vector: list[float], model: str = "test-model") -> None:
     blob = _pack_vector(vector)
+    row = conn.execute("SELECT content_hash FROM code_blocks WHERE id=?", (block_id,)).fetchone()
+    content_hash = row[0]
     conn.execute(
-        "INSERT INTO embeddings(block_id, model, vector, embedded_at) VALUES(?,?,?,unixepoch())",
-        (block_id, model, blob),
+        "INSERT INTO embeddings(content_hash, model, vector, embedded_at) VALUES(?,?,?,unixepoch())",
+        (content_hash, model, blob),
     )
 
 

@@ -69,16 +69,20 @@ def process_symbols(
             )
             unchanged_ids.append(old_id)
 
-        # Remove stale queue entries for unchanged symbols already processed.
+        # Remove stale queue entries for unchanged symbols that already have an embedding
+        # for the current model (matched by content_hash).
         if unchanged_ids:
             ph = ",".join("?" * len(unchanged_ids))
             conn.execute(
                 f"DELETE FROM code_block_embed_queue"
                 f" WHERE block_id IN (SELECT id FROM code_blocks WHERE symbol_id IN ({ph}))"
                 f" AND EXISTS ("
-                f"   SELECT 1 FROM embeddings WHERE block_id = code_block_embed_queue.block_id"
+                f"   SELECT 1 FROM embeddings e"
+                f"   JOIN code_blocks cb ON cb.content_hash = e.content_hash"
+                f"   WHERE cb.id = code_block_embed_queue.block_id"
+                f"   AND e.model = ?"
                 f" )",
-                unchanged_ids,
+                (*unchanged_ids, cfg.embedder.model),
             )
             conn.execute(
                 f"DELETE FROM fingerprint_queue WHERE symbol_id IN ({ph})"
@@ -147,10 +151,11 @@ def process_symbols(
                 sym.snippet, sym.line, sym.end_line or sym.line, max_embed, path
             )
             for block in blocks:
+                block_hash = hashlib.sha256(block.content.encode("utf-8", errors="replace")).hexdigest()[:16]
                 conn.execute(
-                    "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line)"
-                    " VALUES(?,?,?,?,?)",
-                    (sid, block.block_index, block.content, block.start_line, block.end_line),
+                    "INSERT INTO code_blocks(symbol_id, block_index, content, content_hash, start_line, end_line)"
+                    " VALUES(?,?,?,?,?,?)",
+                    (sid, block.block_index, block.content, block_hash, block.start_line, block.end_line),
                 )
 
         # Bump queues to priority=2 for changed/new symbols in a previously-known file.

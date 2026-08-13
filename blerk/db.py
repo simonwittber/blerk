@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS code_blocks (
     symbol_id    INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
     block_index  INTEGER NOT NULL,
     content      TEXT    NOT NULL,
+    content_hash TEXT,
     start_line   INTEGER NOT NULL,
     end_line     INTEGER NOT NULL,
     description  TEXT,
@@ -71,11 +72,11 @@ CREATE INDEX IF NOT EXISTS idx_symbols_kind_nesting ON symbols(kind, nesting_dep
 CREATE INDEX IF NOT EXISTS idx_symbols_kind_file ON symbols(kind, file_id);
 
 CREATE TABLE IF NOT EXISTS embeddings (
-    id          INTEGER PRIMARY KEY,
-    block_id    INTEGER NOT NULL REFERENCES code_blocks(id) ON DELETE CASCADE,
-    model       TEXT    NOT NULL,
-    vector      BLOB    NOT NULL,
-    embedded_at INTEGER NOT NULL
+    id           INTEGER PRIMARY KEY,
+    content_hash TEXT    NOT NULL,
+    model        TEXT    NOT NULL,
+    vector       BLOB    NOT NULL,
+    embedded_at  INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS symbol_queue (
@@ -331,7 +332,7 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
-_CURRENT_VERSION = 8
+_CURRENT_VERSION = 9
 
 
 def _get_version(conn: sqlite3.Connection) -> int:
@@ -632,6 +633,61 @@ def _migrate_8(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_9(conn: sqlite3.Connection) -> None:
+    # Add content_hash to code_blocks
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(code_blocks)")}
+    if "content_hash" not in existing_cols:
+        conn.execute("ALTER TABLE code_blocks ADD COLUMN content_hash TEXT")
+
+    # Backfill content_hash for all existing blocks
+    rows = conn.execute("SELECT id, content FROM code_blocks WHERE content_hash IS NULL").fetchall()
+    if rows:
+        updates = [
+            (hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16], block_id)
+            for block_id, content in rows
+        ]
+        conn.executemany("UPDATE code_blocks SET content_hash=? WHERE id=?", updates)
+
+    # Recreate embeddings table keyed by content_hash instead of block_id.
+    # Only needed when the existing table still has block_id (pre-v9 schema).
+    embed_cols = {row[1] for row in conn.execute("PRAGMA table_info(embeddings)")}
+    if "block_id" in embed_cols:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS embeddings_new (
+                id           INTEGER PRIMARY KEY,
+                content_hash TEXT    NOT NULL,
+                model        TEXT    NOT NULL,
+                vector       BLOB    NOT NULL,
+                embedded_at  INTEGER NOT NULL,
+                UNIQUE (content_hash, model)
+            )
+        """)
+        conn.execute("""
+            INSERT OR IGNORE INTO embeddings_new(id, content_hash, model, vector, embedded_at)
+            SELECT e.id, cb.content_hash, e.model, e.vector, e.embedded_at
+            FROM embeddings e
+            JOIN code_blocks cb ON cb.id = e.block_id
+            WHERE cb.content_hash IS NOT NULL
+        """)
+        conn.execute("DROP TABLE IF EXISTS embeddings")
+        conn.execute("ALTER TABLE embeddings_new RENAME TO embeddings")
+
+    # Re-queue blocks that have no embedding after the migration
+    conn.execute("""
+        INSERT OR IGNORE INTO code_block_embed_queue(block_id, status, priority)
+        SELECT cb.id, 'pending', 1
+        FROM code_blocks cb
+        WHERE cb.content_hash IS NOT NULL
+        AND NOT EXISTS (
+            SELECT 1 FROM embeddings e WHERE e.content_hash = cb.content_hash
+        )
+        AND cb.id NOT IN (
+            SELECT block_id FROM code_block_embed_queue
+            WHERE status IN ('pending', 'processing')
+        )
+    """)
+
+
 _MIGRATIONS: dict[int, object] = {
     1: _migrate_1,
     2: _migrate_2,
@@ -641,6 +697,7 @@ _MIGRATIONS: dict[int, object] = {
     6: _migrate_6,
     7: _migrate_7,
     8: _migrate_8,
+    9: _migrate_9,
 }
 
 
@@ -653,10 +710,9 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             if fn:
                 fn(conn)  # type: ignore[call-arg]
         _set_version(conn, _CURRENT_VERSION)
-    # Create after migrations so the embeddings table always has block_id.
     conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_block_model"
-        " ON embeddings(block_id, model)"
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_content_hash_model"
+        " ON embeddings(content_hash, model)"
     )
 
 

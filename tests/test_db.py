@@ -94,24 +94,29 @@ def test_trigger_code_blocks_insert_queues_embed_and_describe(conn):
 
 
 def test_cascade_delete_file(conn):
+    import hashlib
     fid = _insert_file(conn, "/tmp/a.go", "hash1")
     cur = conn.execute(
         "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
         (fid, "Foo", "function", 1, 5),
     )
     sid = cur.lastrowid
-    blk = conn.execute(
-        "INSERT INTO code_blocks(symbol_id, block_index, content, start_line, end_line)"
-        " VALUES(?,?,?,?,?) RETURNING id",
-        (sid, 0, "func Foo() {}", 1, 5),
+    content = "func Foo() {}"
+    content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+    conn.execute(
+        "INSERT INTO code_blocks(symbol_id, block_index, content, content_hash, start_line, end_line)"
+        " VALUES(?,?,?,?,?,?) RETURNING id",
+        (sid, 0, content, content_hash, 1, 5),
     ).fetchone()[0]
     conn.execute(
-        "INSERT INTO embeddings(block_id, model, vector, embedded_at) VALUES(?,?,?,?)",
-        (blk, "m", b"\x00\x00\x00\x00", 0),
+        "INSERT INTO embeddings(content_hash, model, vector, embedded_at) VALUES(?,?,?,?)",
+        (content_hash, "m", b"\x00\x00\x00\x00", 0),
     )
     conn.execute("DELETE FROM files WHERE id=?", (fid,))
-    for tbl in ["symbols", "code_blocks", "embeddings", "symbol_queue", "git_queue"]:
+    # Embeddings are content-addressed and not cascade-deleted with the file.
+    for tbl in ["symbols", "code_blocks", "symbol_queue", "git_queue"]:
         assert _count(conn, tbl) == 0, tbl
+    assert _count(conn, "embeddings") == 1
 
 
 def test_claim_batch_orders_by_queued_at(conn):

@@ -34,9 +34,10 @@ def summary(cfg: config.Config, directory: str = "") -> str:
         f" WHERE s.kind != 'heading' {sym_dir_sql}", sym_dir_params
     ).fetchone()[0]
     embedded = conn.execute(
-        f"SELECT COUNT(DISTINCT e.symbol_id) FROM embeddings e"
-        f" JOIN symbols s ON s.id = e.symbol_id JOIN files f ON f.id = s.file_id"
-        f" WHERE 1=1 {sym_dir_sql}", sym_dir_params
+        f"SELECT COUNT(DISTINCT s.id) FROM embeddings e"
+        f" JOIN code_blocks cb ON cb.content_hash = e.content_hash"
+        f" JOIN symbols s ON s.id = cb.symbol_id JOIN files f ON f.id = s.file_id"
+        f" WHERE s.kind != 'heading' {sym_dir_sql}", sym_dir_params
     ).fetchone()[0]
     describable = conn.execute(
         f"SELECT COUNT(*) FROM symbols s JOIN files f ON f.id = s.file_id"
