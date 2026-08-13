@@ -3,8 +3,13 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 
+from typing import TYPE_CHECKING
+
 from blerk import config, db
 from blerk.coordinator import _port_file, _workers_dir
+
+if TYPE_CHECKING:
+    import sqlite3 as _sqlite3
 
 
 def _fmt_eta(seconds: int | None) -> str:
@@ -89,7 +94,31 @@ def _get_queue_eta(conn, queue_name: str, queue_count: int, fallback_rate_per_mi
     return None
 
 
-def status(conn, db_path: str = "") -> str:
+def _hints_stats(conn: "_sqlite3.Connection") -> list[str]:
+    rows = conn.execute(
+        "SELECT source, COUNT(*) FROM hints GROUP BY source"
+    ).fetchall()
+    counts = {src: n for src, n in rows}
+    explicit = counts.get("explicit", 0)
+    auto = counts.get("auto", 0)
+    total = explicit + auto
+    hint_line = f"{total} total ({explicit} explicit, {auto} auto)"
+
+    try:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM hint_extract_queue WHERE status='pending'"
+        ).fetchone()[0]
+        queue_line = f"{pending} pending"
+    except Exception:
+        queue_line = "unavailable"
+
+    return [
+        f"{'hints':<20}  {hint_line}",
+        f"{'hint-queue':<20}  {queue_line}",
+    ]
+
+
+def status(conn, db_path: str = "", cfg: "config.Config | None" = None) -> str:
     # Record current queue state for ETC calculation
     _record_queue_counts(conn)
 
@@ -135,14 +164,18 @@ def status(conn, db_path: str = "") -> str:
             result += f"\n  error: {error}"
         return result
 
-    for label, db_name in [
+    daemon_list = [
         ("watch-folder",  "watch-folder"),
         ("symbolizer",    "symbolizer"),
         ("git-enricher",  "git-enricher"),
         ("fingerprinter", "fingerprinter"),
         ("describer",     "llm-describer"),
         ("embedder",      "embedder"),
-    ]:
+    ]
+    if cfg is not None and cfg.hints.llm.enabled:
+        daemon_list.append(("hint-extractor", "hint-extractor"))
+
+    for label, db_name in daemon_list:
         hb = _aggregate(db_name)
         eta = None
         ts = None
@@ -162,6 +195,8 @@ def status(conn, db_path: str = "") -> str:
 
         lines.append(_row(label, detail, eta, ts, err))
 
+    lines.extend(_hints_stats(conn))
+
     return "\n".join(lines) if lines else "No daemon status found."
 
 
@@ -172,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
-    print(status(conn, cfg.db.path))
+    print(status(conn, cfg.db.path, cfg))
     conn.close()
     return 0
 

@@ -105,13 +105,34 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
     llm = cfg.hints.llm
     poll = llm.poll_ms / 1000.0
 
+    processed_today = 0
+    retries_today = 0
+    failures_today = 0
+    status = "idle"
+    last_err = ""
+
     while not shutdown.is_set():
         claimed = _claim(conn)
+
+        queue_depth = conn.execute(
+            f"SELECT COUNT(*) FROM {QUEUE} WHERE status='pending'"
+        ).fetchone()[0]
+
         if not claimed:
+            status = "idle"
+            try:
+                db.write_heartbeat(conn, db.Heartbeat(
+                    DAEMON, status, queue_depth,
+                    processed_today, retries_today, failures_today,
+                    0.0, None, last_err,
+                ))
+            except sqlite3.Error as e:
+                log.warning("heartbeat: %s", e)
             shutdown.wait(timeout=poll)
             continue
 
         queue_id, transcript_path, _cwd = claimed
+        status = "running"
         t0 = time.monotonic()
 
         try:
@@ -135,14 +156,28 @@ def run(cfg: config.Config, shutdown: threading.Event) -> None:
             conn.commit()
 
             db.mark_done(conn, QUEUE, queue_id)
+            processed_today += 1
+            last_err = ""
             log.info("%s: extracted %d hints in %.1fs", DAEMON, len(hints), time.monotonic() - t0)
 
         except Exception as e:
+            last_err = str(e)
+            retries_today += 1
             log.warning("hint extract failed: %s", e)
             try:
                 db.requeue(conn, QUEUE, queue_id, str(e), llm.max_retries)
+                failures_today += 1
             except sqlite3.Error as req_err:
                 log.warning("requeue %d: %s", queue_id, req_err)
+
+        try:
+            db.write_heartbeat(conn, db.Heartbeat(
+                DAEMON, status, queue_depth,
+                processed_today, retries_today, failures_today,
+                0.0, None, last_err,
+            ))
+        except sqlite3.Error as e:
+            log.warning("heartbeat: %s", e)
 
     try:
         conn.close()

@@ -190,7 +190,7 @@ def defaults() -> Config:
         ),
         hints=Hints(
             llm=LLM(
-                enabled=True,
+                enabled=False,
                 endpoint="http://localhost:11434",
                 model="llama3.2",
                 batch_size=1,
@@ -292,6 +292,8 @@ def load(path: str) -> Config:
                     llm.api_key = api_key
             if not cfg.reranker.api_key:
                 cfg.reranker.api_key = api_key
+            if not cfg.hints.llm.api_key:
+                cfg.hints.llm.api_key = api_key
     except (FileNotFoundError, tomllib.TOMLDecodeError):
         pass
 
