@@ -332,7 +332,7 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
-_CURRENT_VERSION = 12
+_CURRENT_VERSION = 13
 
 
 def _get_version(conn: sqlite3.Connection) -> int:
@@ -767,6 +767,20 @@ def _migrate_12(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_13(conn: sqlite3.Connection) -> None:
+    # transcript_path is NOT NULL with no default; fix the auto-enqueue trigger
+    # to also populate it so the constraint is satisfied.
+    conn.executescript("""
+        DROP TRIGGER IF EXISTS transcripts_after_insert;
+        CREATE TRIGGER IF NOT EXISTS transcripts_after_insert
+            AFTER INSERT ON transcripts
+        BEGIN
+            INSERT INTO hint_extract_queue(transcript_id, transcript_path, cwd, priority)
+            VALUES (new.id, new.path, new.cwd, 10);
+        END;
+    """)
+
+
 _MIGRATIONS: dict[int, object] = {
     1: _migrate_1,
     2: _migrate_2,
@@ -780,6 +794,7 @@ _MIGRATIONS: dict[int, object] = {
     10: _migrate_10,
     11: _migrate_11,
     12: _migrate_12,
+    13: _migrate_13,
 }
 
 
