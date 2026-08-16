@@ -317,6 +317,30 @@ def test_main_end_to_end(tmp_path, capsys, monkeypatch):
     assert "bravo" not in out
 
 
+def test_snippet_search_empty_returns_empty(tmp_path, monkeypatch):
+    from blerk import config as _config, embedding
+    conn = _open(tmp_path)
+    cfg = _config.defaults()
+    cfg.embedder.model = "m"
+    monkeypatch.setattr(embedding, "embed", lambda *a, **kw: [1.0, 0.0, 0.0])
+    assert query.snippet_search(conn, cfg, "anything", ".") == ""
+
+
+def test_snippet_search_returns_verbose_text(tmp_path, monkeypatch):
+    from blerk import config as _config, embedding
+    conn = _open(tmp_path)
+    file_id = _seed_file(conn, "src/main.py")
+    a = _seed_symbol(conn, file_id, "alpha", line=5, end_line=10, snippet="def alpha(): pass")
+    _seed_embedding(conn, a, [1.0, 0.0, 0.0])
+    cfg = _config.defaults()
+    cfg.embedder.model = "m"
+    monkeypatch.setattr(embedding, "embed", lambda *a, **kw: [1.0, 0.0, 0.0])
+    result = query.snippet_search(conn, cfg, "alpha", "src")
+    assert "alpha" in result
+    assert "src/main.py" in result
+    assert "def alpha(): pass" in result
+
+
 def test_main_ext_flag(tmp_path, capsys, monkeypatch):
     db_path = tmp_path / "e2e.db"
     conn = db.open_db(str(db_path))

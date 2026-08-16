@@ -42,6 +42,8 @@ Once connected, the assistant can call:
 - `show(target)` — show source code
 - `detail(name)` — show full symbol info with callers/callees
 - `deps(directory)` — file-level dependency graph
+- `knowledge_store(concept, pattern, body)` — save a knowledge item tied to a file-glob pattern
+- `knowledge_session_reset()` — reset the seen-knowledge set after context compaction
 
 ## Command-line tools
 

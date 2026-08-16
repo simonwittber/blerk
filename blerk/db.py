@@ -332,7 +332,7 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
-_CURRENT_VERSION = 13
+_CURRENT_VERSION = 19
 
 
 def _get_version(conn: sqlite3.Connection) -> int:
@@ -767,6 +767,44 @@ def _migrate_12(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_14(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+        DROP TRIGGER IF EXISTS hints_fts_insert;
+        DROP TRIGGER IF EXISTS hints_fts_delete;
+        DROP TRIGGER IF EXISTS hints_fts_update;
+        DROP TABLE IF EXISTS hints_fts;
+
+        CREATE TABLE IF NOT EXISTS knowledge (
+            id         INTEGER PRIMARY KEY,
+            concept    TEXT    NOT NULL,
+            pattern    TEXT    NOT NULL,
+            body       TEXT    NOT NULL,
+            source     TEXT    NOT NULL DEFAULT 'explicit',
+            importance INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            queue_id   INTEGER
+        );
+
+        INSERT OR IGNORE INTO knowledge(id, concept, pattern, body, source, created_at, queue_id)
+            SELECT id, concept, pattern, body, source, created_at, queue_id FROM hints;
+
+        DROP TABLE IF EXISTS hints;
+
+        CREATE TABLE IF NOT EXISTS knowledge_embeddings (
+            id           INTEGER PRIMARY KEY,
+            knowledge_id INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+            vector       BLOB    NOT NULL,
+            model        TEXT    NOT NULL,
+            created_at   INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        DROP TABLE IF EXISTS hint_extract_queue;
+
+        DROP TRIGGER IF EXISTS transcripts_after_insert;
+        DROP TRIGGER IF EXISTS transcripts_after_update;
+    """)
+
+
 def _migrate_13(conn: sqlite3.Connection) -> None:
     # transcript_path is NOT NULL with no default; fix the auto-enqueue trigger
     # to also populate it so the constraint is satisfied.
@@ -778,6 +816,60 @@ def _migrate_13(conn: sqlite3.Connection) -> None:
             INSERT INTO hint_extract_queue(transcript_id, transcript_path, cwd, priority)
             VALUES (new.id, new.path, new.cwd, 10);
         END;
+    """)
+
+
+def _migrate_15(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS knowledge_embed_queue (
+            id           INTEGER PRIMARY KEY,
+            knowledge_id INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+            status       TEXT    NOT NULL DEFAULT 'pending',
+            queued_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+            retries      INTEGER NOT NULL DEFAULT 0,
+            error        TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS knowledge_dedup_queue (
+            id           INTEGER PRIMARY KEY,
+            knowledge_id INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+            status       TEXT    NOT NULL DEFAULT 'pending',
+            queued_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+            retries      INTEGER NOT NULL DEFAULT 0,
+            error        TEXT
+        );
+    """)
+
+
+def _migrate_16(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "ALTER TABLE knowledge ADD COLUMN surfaced_count INTEGER NOT NULL DEFAULT 0"
+    )
+
+
+def _migrate_17(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "ALTER TABLE knowledge ADD COLUMN refined_at INTEGER"
+    )
+
+
+def _migrate_19(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "ALTER TABLE knowledge ADD COLUMN fact_checked_at INTEGER"
+    )
+
+
+def _migrate_18(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "ALTER TABLE knowledge ADD COLUMN suppressed_at INTEGER"
+    )
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS knowledge_contradictions (
+            id          INTEGER PRIMARY KEY,
+            id_a        INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+            id_b        INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+            detected_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
     """)
 
 
@@ -795,6 +887,12 @@ _MIGRATIONS: dict[int, object] = {
     11: _migrate_11,
     12: _migrate_12,
     13: _migrate_13,
+    14: _migrate_14,
+    15: _migrate_15,
+    16: _migrate_16,
+    17: _migrate_17,
+    18: _migrate_18,
+    19: _migrate_19,
 }
 
 

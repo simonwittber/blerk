@@ -24,7 +24,8 @@ _DISPATCH = {
     "analyze":   "blerk_cmd.analyze",
     "findings":  "blerk_cmd.findings",
     "summary":      "blerk_cmd.summary",
-    "hint-enqueue": "blerk_cmd.hint_enqueue",
+    "knowledge-enqueue":  "blerk_cmd.knowledge_enqueue",
+    "extract-knowledge":  "blerk_cmd.extract_knowledge",
 }
 
 _HELP = {

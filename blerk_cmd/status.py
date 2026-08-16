@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+from pathlib import Path
 
 from typing import TYPE_CHECKING
 
@@ -94,30 +95,39 @@ def _get_queue_eta(conn, queue_name: str, queue_count: int, fallback_rate_per_mi
     return None
 
 
-def _hints_stats(conn: "_sqlite3.Connection") -> list[str]:
+def _knowledge_stats(conn: "_sqlite3.Connection") -> list[str]:
     rows = conn.execute(
-        "SELECT source, COUNT(*) FROM hints GROUP BY source"
+        "SELECT source, COUNT(*) FROM knowledge GROUP BY source"
     ).fetchall()
     counts = {src: n for src, n in rows}
     explicit = counts.get("explicit", 0)
     auto = counts.get("auto", 0)
     total = explicit + auto
-    hint_line = f"{total} total ({explicit} explicit, {auto} auto)"
+    knowledge_line = f"{total} total ({explicit} explicit, {auto} auto)"
 
+    transcripts_dir = Path.home() / ".blerk" / "transcripts"
     try:
-        pending = conn.execute(
-            "SELECT COUNT(*) FROM hint_extract_queue WHERE status='pending'"
-        ).fetchone()[0]
-        done = conn.execute(
-            "SELECT COUNT(*) FROM hint_extract_queue WHERE status='done'"
-        ).fetchone()[0]
+        pending = len(list(transcripts_dir.glob("*.jsonl")))
+        done = len(list((transcripts_dir / "done").glob("*.jsonl"))) if (transcripts_dir / "done").exists() else 0
         queue_line = f"{pending} pending, {done} done"
     except Exception:
         queue_line = "unavailable"
 
+    try:
+        embed_pending = conn.execute(
+            "SELECT COUNT(*) FROM knowledge_embed_queue WHERE status='pending'"
+        ).fetchone()[0]
+        dedup_pending = conn.execute(
+            "SELECT COUNT(*) FROM knowledge_dedup_queue WHERE status='pending'"
+        ).fetchone()[0]
+        pipeline_line = f"embed {embed_pending} pending, dedup {dedup_pending} pending"
+    except Exception:
+        pipeline_line = "unavailable"
+
     return [
-        f"{'hints':<20}  {hint_line}",
-        f"{'hint-queue':<20}  {queue_line}",
+        f"{'knowledge':<20}  {knowledge_line}",
+        f"{'knowledge-queue':<20}  {queue_line}",
+        f"{'knowledge-pipeline':<20}  {pipeline_line}",
     ]
 
 
@@ -175,8 +185,10 @@ def status(conn, db_path: str = "", cfg: "config.Config | None" = None) -> str:
         ("describer",     "llm-describer"),
         ("embedder",      "embedder"),
     ]
-    if cfg is not None and cfg.hints.llm.enabled:
-        daemon_list.append(("hint-extractor", "hint-extractor"))
+    if cfg is not None and cfg.knowledge.llm.enabled:
+        daemon_list.append(("knowledge-extractor", "knowledge-extractor"))
+        daemon_list.append(("knowledge-dedup", "knowledge-dedup"))
+        daemon_list.append(("knowledge-refiner", "knowledge-refiner"))
 
     for label, db_name in daemon_list:
         hb = _aggregate(db_name)
@@ -198,7 +210,7 @@ def status(conn, db_path: str = "", cfg: "config.Config | None" = None) -> str:
 
         lines.append(_row(label, detail, eta, ts, err))
 
-    lines.extend(_hints_stats(conn))
+    lines.extend(_knowledge_stats(conn))
 
     return "\n".join(lines) if lines else "No daemon status found."
 

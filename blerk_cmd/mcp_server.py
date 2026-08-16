@@ -7,12 +7,13 @@ import os
 import re
 import subprocess
 import sys
+import time as _time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import sqlite3 as _sqlite3
 
-_seen_hint_ids: set[int] = set()
+_seen_knowledge_ids: set[int] = set()
 _conn: "_sqlite3.Connection | None" = None
 
 _TOOLS = [
@@ -67,8 +68,8 @@ _TOOLS = [
         },
     },
     {
-        "name": "hint_store",
-        "description": "Save a hint tied to a file-glob pattern. Wide patterns (** or *) create project-level hints that always surface.",
+        "name": "knowledge_store",
+        "description": "Save a knowledge item tied to a file-glob pattern. Wide patterns (** or *) create project-level items that always surface.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -81,8 +82,8 @@ _TOOLS = [
         },
     },
     {
-        "name": "hint_session_reset",
-        "description": "Reset the seen-hint set so all hints can be re-injected. Called automatically after context compaction.",
+        "name": "knowledge_session_reset",
+        "description": "Reset the seen-knowledge set so all knowledge items can be re-injected. Called automatically after context compaction.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -118,19 +119,31 @@ def _hints_for_paths(paths: list[str]) -> str:
     if _conn is None:
         return ""
     hint_rows = _conn.execute(
-        "SELECT id, concept, body, pattern FROM hints ORDER BY created_at"
+        "SELECT id, concept, body, pattern, created_at FROM knowledge"
+        " WHERE suppressed_at IS NULL ORDER BY created_at"
     ).fetchall()
+    now = int(_time.time())
     matched = []
-    for id_, concept, body, pattern in hint_rows:
-        if id_ in _seen_hint_ids:
+    ids_to_update = []
+    for id_, concept, body, pattern, created_at in hint_rows:
+        if id_ in _seen_knowledge_ids:
             continue
         is_wide = pattern in ("*", "**", "**/*")
         if is_wide or any(_pattern_matches(p, pattern) for p in paths):
-            matched.append(f"[Hint: {concept}] {body}")
-            _seen_hint_ids.add(id_)
+            age_days = (now - (created_at or now)) // 86400
+            age_str = "today" if age_days == 0 else f"{age_days}d old"
+            matched.append(f"{body} ({age_str})")
+            _seen_knowledge_ids.add(id_)
+            ids_to_update.append(id_)
+    if ids_to_update:
+        _conn.executemany(
+            "UPDATE knowledge SET surfaced_count = surfaced_count + 1 WHERE id=?",
+            [(i,) for i in ids_to_update],
+        )
+        _conn.commit()
     if not matched:
         return ""
-    return "\nRelevant hints:\n" + "\n".join(matched)
+    return "\nHints:\n" + "\n".join(matched)
 
 
 def _run(*args: str) -> str:
@@ -148,18 +161,18 @@ def _run(*args: str) -> str:
 
 
 def _call(name: str, args: dict) -> str:  # noqa: C901
-    if name == "hint_store":
+    if name == "knowledge_store":
         if _conn is None:
-            return "Hint store unavailable: database not open."
+            return "Knowledge store unavailable: database not open."
         _conn.execute(
-            "INSERT INTO hints(concept, pattern, body, source) VALUES (?,?,?,?)",
+            "INSERT INTO knowledge(concept, pattern, body, source) VALUES (?,?,?,?)",
             (args["concept"], args["pattern"], args["body"], args.get("source", "explicit")),
         )
         _conn.commit()
-        return f"Hint stored: [{args['concept']}] {args['body']}"
+        return f"Knowledge stored: [{args['concept']}] {args['body']}"
 
-    if name == "hint_session_reset":
-        _seen_hint_ids.clear()
+    if name == "knowledge_session_reset":
+        _seen_knowledge_ids.clear()
         return "Hint session reset."
 
     # existing tools below
@@ -216,7 +229,7 @@ def _build_instructions(cfg_path: str) -> str:
         )
         if not watched:
             return ""
-        return cfg.hints.instructions
+        return cfg.knowledge.instructions
     except Exception:
         return ""
 

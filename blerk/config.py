@@ -102,12 +102,12 @@ class Analyzer:
     rules: list[AnalyzerRule] = field(default_factory=list)
 
 
-_DEFAULT_HINT_EXTRACT_PROMPT = """\
-Review this coding session transcript and extract non-obvious lessons as hints.
+_DEFAULT_KNOWLEDGE_EXTRACT_PROMPT = """\
+Review this coding session transcript and extract non-obvious, reusable knowledge items.
 Focus on: bugs that took multiple attempts to fix, surprising behaviour, non-obvious constraints, gotchas.
 Skip trivial fixes and anything already well-known.
 
-For each hint output a JSON object with:
+For each item output a JSON object with:
   concept: short kebab-case tag (e.g. "path-normalization")
   pattern: fnmatch glob for relevant files (e.g. "src/indexing/**"), or "**" for project-wide
   body: one clear actionable sentence
@@ -116,11 +116,57 @@ Return a JSON array only, no other text. If nothing is worth saving, return [].
 
 {transcript}"""
 
+_DEFAULT_KNOWLEDGE_MERGE_PROMPT = """\
+Two related knowledge items were found. Merge them into one concise, actionable statement.
+
+Item A: {body_a}
+Item B: {body_b}
+
+Return a single JSON object: {{"concept": "...", "pattern": "...", "body": "..."}}"""
+
+_DEFAULT_CLASSIFY_PROMPT = """\
+Two knowledge items were found with high vector similarity.
+
+Item A: {body_a}
+Item B: {body_b}
+
+Classify their relationship and reply with JSON only:
+- Same or overlapping claim: {{"action": "merge", "concept": "...", "pattern": "...", "body": "..."}}
+- Opposing claims about the same subject: {{"action": "contradict"}}
+- Unrelated (false positive): {{"action": "skip"}}"""
+
 
 @dataclass
-class Hints:
+class KnowledgeExtractor:
+    chunk_size: int = 20
+    overlap: int = 4
+    dedup_threshold: float = 0.85
+    merge_prompt: str = _DEFAULT_KNOWLEDGE_MERGE_PROMPT
+    classify_prompt: str = field(default_factory=lambda: _DEFAULT_CLASSIFY_PROMPT)
+
+
+_DEFAULT_TASK_FILTER_PROMPT = """\
+You are reviewing a knowledge item extracted from a coding session transcript.
+Decide if it is a LASTING pattern/rule worth keeping, or a COMPLETED one-off task that is now stale.
+Reply with JSON only: {"action": "keep"} or {"action": "delete", "reason": "..."}
+
+Knowledge item:
+{body}"""
+
+
+@dataclass
+class KnowledgeRefiner:
+    type: str = ""
+    enabled: bool = True
+    prompt_template: str = field(default_factory=lambda: _DEFAULT_TASK_FILTER_PROMPT)
+
+
+@dataclass
+class Knowledge:
     instructions: str = ""
     llm: LLM = field(default_factory=LLM)
+    extractor: KnowledgeExtractor = field(default_factory=KnowledgeExtractor)
+    refiners: list[KnowledgeRefiner] = field(default_factory=list)
 
 
 @dataclass
@@ -152,7 +198,7 @@ class Config:
     reranker: Reranker = field(default_factory=Reranker)
     coordinator: Coordinator = field(default_factory=Coordinator)
     lint: Lint = field(default_factory=Lint)
-    hints: Hints = field(default_factory=Hints)
+    knowledge: Knowledge = field(default_factory=Knowledge)
     silent: bool = False
 
 
@@ -188,7 +234,7 @@ def defaults() -> Config:
             model="",
             enabled=False,
         ),
-        hints=Hints(
+        knowledge=Knowledge(
             llm=LLM(
                 enabled=False,
                 endpoint="http://localhost:11434",
@@ -197,15 +243,21 @@ def defaults() -> Config:
                 poll_ms=5000,
                 max_retries=3,
                 max_context_chars=32000,
-                prompt_template=_DEFAULT_HINT_EXTRACT_PROMPT,
+                prompt_template=_DEFAULT_KNOWLEDGE_EXTRACT_PROMPT,
             ),
+            extractor=KnowledgeExtractor(
+                chunk_size=20,
+                overlap=4,
+                dedup_threshold=0.85,
+            ),
+            refiners=[KnowledgeRefiner(type="task-filter")],
             instructions=(
                 "This project is indexed by blerk. "
                 "Run blerk summary for file counts, recent changes, and findings.\n"
-                "Search results include relevant hints shown once per context window. "
-                "After context compaction, call hint_session_reset so hints are shown again. "
-                "After resolving a bug that required more than one attempt, draft a one-sentence hint "
-                "with hint_store and propose it to the user before saving."
+                "Search results include relevant knowledge shown once per context window. "
+                "After context compaction, call knowledge_session_reset so knowledge is shown again. "
+                "After resolving a bug that required more than one attempt, draft a one-sentence knowledge item "
+                "with knowledge_store and propose it to the user before saving."
             ),
         ),
         embedder=Embedder(
@@ -259,6 +311,17 @@ def load(path: str) -> Config:
             for s in suppress_raw
         ]
 
+    if "knowledge" in data and "refiners" in data["knowledge"]:
+        refiners_raw = data["knowledge"].pop("refiners")
+        cfg.knowledge.refiners = [
+            KnowledgeRefiner(
+                type=r.get("type", ""),
+                enabled=r.get("enabled", True),
+                prompt_template=r.get("prompt_template", _DEFAULT_TASK_FILTER_PROMPT),
+            )
+            for r in refiners_raw
+        ]
+
     if "llm" in data:
         llm_data = data.pop("llm")
         if isinstance(llm_data, dict):
@@ -292,8 +355,8 @@ def load(path: str) -> Config:
                     llm.api_key = api_key
             if not cfg.reranker.api_key:
                 cfg.reranker.api_key = api_key
-            if not cfg.hints.llm.api_key:
-                cfg.hints.llm.api_key = api_key
+            if not cfg.knowledge.llm.api_key:
+                cfg.knowledge.llm.api_key = api_key
     except (FileNotFoundError, tomllib.TOMLDecodeError):
         pass
 

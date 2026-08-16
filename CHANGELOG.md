@@ -12,6 +12,26 @@ Blerk now stores and surfaces short notes ("hints") tied to file-glob patterns. 
 - A `PreCompact` hook enqueues the session transcript for async processing (`blerk hint-enqueue`).
 - The `hint-extractor` daemon picks up queued transcripts, calls an LLM to extract candidate hints, and stores them with `source="auto"`. Configure it under `[hints.llm]` in `config.toml`.
 
+### Knowledge refiners
+
+The `knowledge-refiner` daemon applies configurable processing passes over stored knowledge items. Two built-in refiner types are available.
+
+**task-filter**: Sends each item to the LLM with a prompt asking whether it is a lasting pattern or a completed one-off task. Items the LLM classifies as stale are deleted.
+
+**fact-check**: Searches the indexed codebase for code evidence related to the claim, then asks the LLM whether that evidence supports or refutes the claim. Items the LLM marks as refuted have `suppressed_at` set and stop appearing in search results. All checked items receive a `fact_checked_at` timestamp regardless of the verdict.
+
+Configure refiners in `[[knowledge.refiners]]` sections in `config.toml`. Each entry requires `type` and `enabled`. Set `prompt_template` to override the default LLM prompt for that refiner type.
+
+The daemon starts when the hub detects `knowledge.llm.enabled = true`. Run a one-shot pass with `blerk knowledge-refiner` or add `--dry-run` to preview actions without writing to the database. Use `--refiner TYPE` to run only one refiner type.
+
+### snippet_search
+
+`query.snippet_search(conn, cfg, query_text, directory, n)` is a new public function that runs the full hybrid search pipeline and returns verbose-formatted text with code snippets. The fact-check refiner uses it to retrieve code evidence without spawning a subprocess. It accepts the same connection and config objects used throughout the codebase.
+
+### DB schema: fact_checked_at (migration 19)
+
+A new `fact_checked_at` column on the `knowledge` table records when the fact-check refiner last processed an item. Items where `fact_checked_at IS NULL` have not been checked. Items with both `fact_checked_at` and `suppressed_at` set were checked and found to be refuted by the code.
+
 ### Content-addressed embeddings
 
 Embeddings are now keyed by a SHA256 hash of the block content instead of the block ID. Previously, switching git branches caused blerk to regenerate all vectors because the same source code returned with new block IDs. Now, when code reappears unchanged after a branch switch or revert, the embedder reuses the existing vector. The schema migration to v9 preserves existing vectors by joining through code_blocks to recover the content hash.

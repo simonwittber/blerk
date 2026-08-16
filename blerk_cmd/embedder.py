@@ -39,6 +39,59 @@ def embed_with_truncation(backend: str, endpoint: str, model: str, text: str, de
 
 
 
+def _process_knowledge_queue(conn: sqlite3.Connection, cfg: config.Config, silent: bool) -> None:
+    row = None
+    with db._write_lock:
+        row = conn.execute(
+            "SELECT id, knowledge_id FROM knowledge_embed_queue"
+            " WHERE status='pending' ORDER BY queued_at ASC LIMIT 1"
+        ).fetchone()
+        if row:
+            conn.execute(
+                "UPDATE knowledge_embed_queue SET status='processing' WHERE id=?", (row[0],)
+            )
+            conn.commit()
+
+    if not row:
+        return
+
+    queue_id, knowledge_id = row
+    k_row = conn.execute(
+        "SELECT body FROM knowledge WHERE id=?", (knowledge_id,)
+    ).fetchone()
+
+    if not k_row:
+        db.mark_queue_done(conn, "knowledge_embed_queue", queue_id)
+        conn.commit()
+        return
+
+    body = k_row[0]
+    try:
+        vec = embed_with_truncation(
+            cfg.embedder.backend, cfg.embedder.endpoint, cfg.embedder.model, body,
+            cfg.embedder.device, cfg.embedder.cache_dir,
+        )
+        blob = embedding.to_float32_blob(vec)
+        conn.execute(
+            "INSERT OR REPLACE INTO knowledge_embeddings(knowledge_id, vector, model)"
+            " VALUES (?,?,?)",
+            (knowledge_id, blob, cfg.embedder.model),
+        )
+        conn.execute(
+            "INSERT INTO knowledge_dedup_queue(knowledge_id) VALUES (?)", (knowledge_id,)
+        )
+        db.mark_queue_done(conn, "knowledge_embed_queue", queue_id)
+        conn.commit()
+        if not silent:
+            log.info("%s: embedded knowledge_id=%d", DAEMON, knowledge_id)
+    except Exception as e:
+        log.warning("knowledge embed %d: %s", knowledge_id, e)
+        try:
+            db.requeue(conn, "knowledge_embed_queue", queue_id, str(e), cfg.embedder.max_retries)
+        except sqlite3.Error as req_err:
+            log.warning("requeue knowledge_embed %d: %s", queue_id, req_err)
+
+
 def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> None:
     conn = db.open_db(cfg.db.path)
     try:
@@ -214,6 +267,8 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
                     failures_today = 0
                 rate_window.append(time.monotonic())
                 processed_today += 1
+
+        _process_knowledge_queue(conn, cfg, silent)
 
         cutoff = time.monotonic() - 60.0
         while rate_window and rate_window[0] < cutoff:

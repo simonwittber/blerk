@@ -361,6 +361,19 @@ def run_query(conn, blob: bytes, query_text: str, opts: QueryOptions) -> None:
             print(format_compact(results))
 
 
+def snippet_search(conn, cfg: "config.Config", query_text: str, directory: str, n: int = 10) -> str:
+    vec = embedding.embed(
+        cfg.embedder.backend, cfg.embedder.endpoint, cfg.embedder.model,
+        query_text, cfg.embedder.device, cfg.embedder.cache_dir,
+    )
+    blob = to_blob(vec)
+    opts = QueryOptions(n=n, directory=directory, verbose=True, embed_model=cfg.embedder.model)
+    results = query_symbols(conn, blob, query_text, opts)
+    if not results:
+        return ""
+    return format_verbose(conn, results)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=config.default_path())

@@ -27,7 +27,7 @@ DAEMONS = [
     ("fingerprinter", "blerk_cmd.fingerprinter"),
 ]
 
-DAEMON = "hint-extractor"
+DAEMON = "knowledge-extractor"
 
 log = logging.getLogger("hub")
 
@@ -163,9 +163,21 @@ def main() -> None:
         t.start()
         threads.append(t)
 
-    if cfg.hints.llm.enabled:
-        argv = build_argv("blerk_cmd.hint_extractor", args.config)
+    if cfg.knowledge.llm.enabled:
+        argv = build_argv("blerk_cmd.knowledge_extractor", args.config)
         t = threading.Thread(target=managed, args=(DAEMON, argv, shutdown), name=DAEMON, daemon=False)
+        t.start()
+        threads.append(t)
+
+        dedup_argv = build_argv("blerk_cmd.knowledge_dedup", args.config)
+        dedup_name = "knowledge-dedup"
+        t = threading.Thread(target=managed, args=(dedup_name, dedup_argv, shutdown), name=dedup_name, daemon=False)
+        t.start()
+        threads.append(t)
+
+        refiner_argv = build_argv("blerk_cmd.knowledge_refiner", args.config) + ["--daemon"]
+        refiner_name = "knowledge-refiner"
+        t = threading.Thread(target=managed, args=(refiner_name, refiner_argv, shutdown), name=refiner_name, daemon=False)
         t.start()
         threads.append(t)
 
