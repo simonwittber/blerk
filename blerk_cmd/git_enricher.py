@@ -30,6 +30,43 @@ def find_git_root(directory: str) -> str | None:
         directory = parent
 
 
+def find_common_git_root(directory: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", directory, "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        common_dir = result.stdout.strip()
+        if not os.path.isabs(common_dir):
+            common_dir = os.path.normpath(os.path.join(directory, common_dir))
+        return normalize_dir(os.path.dirname(common_dir))
+    except Exception:
+        return None
+
+
+def get_or_create_repository(conn: sqlite3.Connection, common_root: str) -> int:
+    row = conn.execute("SELECT id FROM repository WHERE path=?", (common_root,)).fetchone()
+    if row:
+        return int(row[0])
+
+    url = ""
+    try:
+        r = subprocess.run(
+            ["git", "-C", common_root, "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            url = r.stdout.strip()
+    except Exception:
+        pass
+
+    conn.execute("INSERT OR IGNORE INTO repository(path, url) VALUES(?, ?)", (common_root, url))
+    row = conn.execute("SELECT id FROM repository WHERE path=?", (common_root,)).fetchone()
+    return int(row[0])
+
+
 def parse_branch(refs: str) -> str:
     for part in refs.split(","):
         part = part.strip()
@@ -69,6 +106,8 @@ def process_row(
             log.warning("mark done git_queue %d: %s", row.id, e)
         return False, False
 
+    common_root = find_common_git_root(os.path.dirname(path)) or root
+
     try:
         proc = subprocess.run(
             ["git", "-C", root, "log", "-1", "--format=%H|%an|%D", "--", path],
@@ -102,10 +141,14 @@ def process_row(
     branch = parse_branch(refs)
 
     try:
+        repo_id = get_or_create_repository(conn, common_root)
         conn.execute(
-            "UPDATE files SET git_commit=?, git_author=?, git_branch=?, "
-            "git_enriched_at=unixepoch() WHERE id=?",
-            (commit, author, branch, row.target_id),
+            "INSERT INTO git_files(repository_id, file_id, git_branch, git_commit, git_author, git_enriched_at) "
+            "VALUES(?, ?, ?, ?, ?, unixepoch()) "
+            "ON CONFLICT(repository_id, file_id, git_branch) "
+            "DO UPDATE SET git_commit=excluded.git_commit, git_author=excluded.git_author, "
+            "git_enriched_at=excluded.git_enriched_at",
+            (repo_id, row.target_id, branch, commit, author),
         )
     except sqlite3.Error as e:
         try:

@@ -114,9 +114,10 @@ def test_process_row_enriches_file_from_real_repo(tmp_path):
 
         result = conn.execute(
             "SELECT git_commit, git_author, git_branch, git_enriched_at "
-            "FROM files WHERE id=?",
+            "FROM git_files WHERE file_id=?",
             (fid,),
         ).fetchone()
+        assert result is not None, "no git_files row created"
         commit, author, branch, enriched_at = result
         assert commit and len(commit) == 40
         assert author == "Test Author"

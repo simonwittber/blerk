@@ -131,6 +131,8 @@ def _scan_dir(
         if is_dir:
             if is_ignored(p, True, sets):
                 continue
+            if os.path.isfile(os.path.join(p, ".git")):
+                continue
             _scan_dir(p, sets, conn, all_sets)
         else:
             if not is_ignored(p, False, sets):
@@ -195,6 +197,8 @@ class _Handler(FileSystemEventHandler):
         path = event.src_path
         if event.is_directory:
             if self._ignored(path, True):
+                return
+            if os.path.isfile(os.path.join(path, ".git")):
                 return
             sets = self._get_sets()
             try:

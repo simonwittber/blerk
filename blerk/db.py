@@ -13,6 +13,13 @@ logger = logging.getLogger(__name__)
 _write_lock = threading.Lock()
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS repository (
+    id             INTEGER PRIMARY KEY,
+    path           TEXT    NOT NULL UNIQUE,
+    url            TEXT    NOT NULL DEFAULT '',
+    last_commit_at INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS files (
     id              INTEGER PRIMARY KEY,
     path            TEXT    NOT NULL UNIQUE,
@@ -23,6 +30,17 @@ CREATE TABLE IF NOT EXISTS files (
     git_author      TEXT,
     git_branch      TEXT,
     git_enriched_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS git_files (
+    id              INTEGER PRIMARY KEY,
+    git_branch      TEXT    NOT NULL DEFAULT '',
+    repository_id   INTEGER NOT NULL REFERENCES repository(id) ON DELETE CASCADE,
+    file_id         INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    git_commit      TEXT,
+    git_author      TEXT,
+    git_enriched_at INTEGER,
+    UNIQUE (repository_id, file_id, git_branch)
 );
 
 CREATE TABLE IF NOT EXISTS symbols (
@@ -332,7 +350,7 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
-_CURRENT_VERSION = 19
+_CURRENT_VERSION = 20
 
 
 def _get_version(conn: sqlite3.Connection) -> int:
@@ -873,6 +891,28 @@ def _migrate_18(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_20(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS repository (
+            id             INTEGER PRIMARY KEY,
+            path           TEXT    NOT NULL UNIQUE,
+            url            TEXT    NOT NULL DEFAULT '',
+            last_commit_at INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS git_files (
+            id              INTEGER PRIMARY KEY,
+            git_branch      TEXT    NOT NULL DEFAULT '',
+            repository_id   INTEGER NOT NULL REFERENCES repository(id) ON DELETE CASCADE,
+            file_id         INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            git_commit      TEXT,
+            git_author      TEXT,
+            git_enriched_at INTEGER,
+            UNIQUE (repository_id, file_id, git_branch)
+        );
+    """)
+
+
 _MIGRATIONS: dict[int, object] = {
     1: _migrate_1,
     2: _migrate_2,
@@ -893,6 +933,7 @@ _MIGRATIONS: dict[int, object] = {
     17: _migrate_17,
     18: _migrate_18,
     19: _migrate_19,
+    20: _migrate_20,
 }
 
 

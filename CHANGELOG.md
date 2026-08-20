@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Git worktree support
+
+Blerk now tracks git context separately from file content and skips worktree directories during indexing.
+
+**DB schema: repository and git_files (migration 20)**
+
+Two new tables replace the git columns on `files`. `repository` holds one row per git repo, keyed by the common git root path. `git_files` links a file to a repo and branch and carries the git metadata (`git_commit`, `git_author`, `git_enriched_at`). Files with the same content across branches or worktrees share one `files` row and get separate `git_files` rows. The old `git_*` columns on `files` remain for backward compatibility but are no longer written to.
+
+**git_enricher**
+
+The enricher calls `git rev-parse --git-common-dir` to resolve the worktree's `.git` file back to the shared repo root. All worktrees of the same repo map to the same `repository` row. The enricher writes git metadata to `git_files` via an upsert on `(repository_id, file_id, git_branch)`.
+
+**watch_folder**
+
+The scanner and file watcher now skip any directory that contains a `.git` file. A `.git` file (as opposed to a `.git` directory) marks a git worktree or submodule root.
+
+**purge**
+
+The `purge` command gains three new removal strategies, all enabled by default.
+
+- `--no-missing`: skip removing files that no longer exist on disk.
+- `--no-worktrees`: skip removing files whose paths fall under a non-main worktree, as reported by `git worktree list --porcelain`.
+- `--no-gitignored`: skip removing files now covered by `.gitignore` patterns found by walking the watched folders.
+
 ### Hints system
 
 Blerk now stores and surfaces short notes ("hints") tied to file-glob patterns. Hints appear automatically in `search` results when the matched files overlap with a hint's pattern, and are shown at most once per context window.
