@@ -42,7 +42,7 @@ def build_scope(conn, directory: str, excludes: list[str]) -> None:
         params.append(sql)
     where = ("WHERE " + " AND ".join(parts)) if parts else ""
     conn.execute(
-        f"CREATE TEMP TABLE _lint_files AS SELECT f.id AS file_id, f.path FROM files f {where}",
+        f"CREATE TEMP TABLE _lint_files AS SELECT f.file_id AS file_id, f.path FROM file_paths f {where}",
         params,
     )
     conn.execute("CREATE INDEX _lint_files_fid ON _lint_files(file_id)")
@@ -432,8 +432,8 @@ def wide_package(conn, directory: str, threshold: int, excludes: list[str] = [])
         JOIN symbols s1 ON s1.file_id = lf.file_id
         JOIN symbol_refs sr ON sr.caller_id = s1.id
         JOIN symbols s2 ON s2.id = sr.callee_id
-        JOIN files f2 ON f2.id = s2.file_id
-        WHERE f2.id != lf.file_id
+        JOIN file_paths f2 ON f2.file_id = s2.file_id
+        WHERE f2.file_id != lf.file_id
         """,
     ).fetchall()
     pkg_deps: dict[str, set[str]] = defaultdict(set)
@@ -456,8 +456,8 @@ def dep_spread(conn, directory: str, threshold: int, excludes: list[str] = []) -
         JOIN symbols s1 ON s1.file_id = lf.file_id
         JOIN symbol_refs sr ON sr.caller_id = s1.id
         JOIN symbols s2 ON s2.id = sr.callee_id
-        JOIN files f2 ON f2.id = s2.file_id
-        WHERE f2.id != lf.file_id
+        JOIN file_paths f2 ON f2.file_id = s2.file_id
+        WHERE f2.file_id != lf.file_id
         """,
     ).fetchall()
     dep_files: dict[str, set[str]] = defaultdict(set)

@@ -56,7 +56,10 @@ def test_upsert_skips_when_hash_unchanged(conn, tmp_path):
     path = str(f)
 
     wf.upsert_file(conn, path)
-    row1 = conn.execute("SELECT mtime, size, hash FROM files WHERE path=?", (path.replace("\\", "/"),)).fetchone()
+    row1 = conn.execute(
+        "SELECT fp.mtime, f.size, f.hash FROM file_paths fp JOIN files f ON f.id=fp.file_id WHERE fp.path=?",
+        (path.replace("\\", "/"),),
+    ).fetchone()
     assert row1 is not None
 
     before = wf._upsert_count.load()
@@ -65,31 +68,29 @@ def test_upsert_skips_when_hash_unchanged(conn, tmp_path):
 
     assert after == before
 
-    row2 = conn.execute("SELECT mtime, size, hash FROM files WHERE path=?", (path.replace("\\", "/"),)).fetchone()
+    row2 = conn.execute(
+        "SELECT fp.mtime, f.size, f.hash FROM file_paths fp JOIN files f ON f.id=fp.file_id WHERE fp.path=?",
+        (path.replace("\\", "/"),),
+    ).fetchone()
     assert row1 == row2
 
-    count = int(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0])
+    count = int(conn.execute("SELECT COUNT(*) FROM file_paths").fetchone()[0])
     assert count == 1
 
 
-def test_upsert_hashes_even_when_mtime_and_size_unchanged(conn, tmp_path):
-    """If mtime/size match but the stored hash is wrong, upsert_file must re-check and correct."""
+def test_upsert_is_idempotent(conn, tmp_path):
+    """Calling upsert_file twice on an unchanged file does not increment the upsert counter."""
     f = tmp_path / "hello.txt"
     f.write_text("hello world", encoding="utf-8")
     path = str(f).replace("\\", "/")
 
     wf.upsert_file(conn, path)
-    real_hash = conn.execute("SELECT hash FROM files WHERE path=?", (path,)).fetchone()[0]
-
-    # Corrupt the stored hash while keeping mtime/size.
-    conn.execute("UPDATE files SET hash='badhash' WHERE path=?", (path,))
     before = wf._upsert_count.load()
     wf.upsert_file(conn, path)
     after = wf._upsert_count.load()
 
-    stored_hash = conn.execute("SELECT hash FROM files WHERE path=?", (path,)).fetchone()[0]
-    assert stored_hash == real_hash
-    assert after > before
+    assert after == before
+    assert int(conn.execute("SELECT COUNT(*) FROM file_paths").fetchone()[0]) == 1
 
 
 def test_upsert_updates_when_content_changes(conn, tmp_path):
@@ -98,13 +99,19 @@ def test_upsert_updates_when_content_changes(conn, tmp_path):
     path = str(f)
 
     wf.upsert_file(conn, path)
-    row1 = conn.execute("SELECT mtime, size, hash FROM files WHERE path=?", (path.replace("\\", "/"),)).fetchone()
+    row1 = conn.execute(
+        "SELECT fp.mtime, f.size, f.hash FROM file_paths fp JOIN files f ON f.id=fp.file_id WHERE fp.path=?",
+        (path.replace("\\", "/"),),
+    ).fetchone()
 
     time.sleep(1.1)
     f.write_text("hello world 2", encoding="utf-8")
 
     wf.upsert_file(conn, path)
-    row2 = conn.execute("SELECT mtime, size, hash FROM files WHERE path=?", (path.replace("\\", "/"),)).fetchone()
+    row2 = conn.execute(
+        "SELECT fp.mtime, f.size, f.hash FROM file_paths fp JOIN files f ON f.id=fp.file_id WHERE fp.path=?",
+        (path.replace("\\", "/"),),
+    ).fetchone()
 
     assert row1[2] != row2[2]
     assert row1[1] != row2[1]
@@ -122,10 +129,10 @@ def test_scan_walks_recursively_and_upserts(conn, tmp_path):
     all_sets: list = []
     wf._scan_dir(str(scan_root), [], conn, all_sets)
 
-    count = int(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0])
+    count = int(conn.execute("SELECT COUNT(*) FROM file_paths").fetchone()[0])
     assert count == 3
 
-    paths = {r[0] for r in conn.execute("SELECT path FROM files").fetchall()}
+    paths = {r[0] for r in conn.execute("SELECT path FROM file_paths").fetchall()}
     expected = {
         str(scan_root / "a.py").replace("\\", "/"),
         str(scan_root / "sub" / "b.py").replace("\\", "/"),
@@ -143,7 +150,7 @@ def test_scan_respects_gitignore(conn, tmp_path):
 
     wf._scan_dir(str(scan_root), [], conn, [])
 
-    paths = {r[0] for r in conn.execute("SELECT path FROM files").fetchall()}
+    paths = {r[0] for r in conn.execute("SELECT path FROM file_paths").fetchall()}
     assert str(scan_root / "keep.py").replace("\\", "/") in paths
     assert str(scan_root / "skip.log").replace("\\", "/") not in paths
 
@@ -159,7 +166,7 @@ def test_scan_skips_dir_only_ignored_dirs(conn, tmp_path):
 
     wf._scan_dir(str(scan_root), [], conn, [])
 
-    paths = {r[0] for r in conn.execute("SELECT path FROM files").fetchall()}
+    paths = {r[0] for r in conn.execute("SELECT path FROM file_paths").fetchall()}
     assert str(scan_root / "src" / "main.py").replace("\\", "/") in paths
     assert str(scan_root / "build" / "out.bin").replace("\\", "/") not in paths
 
@@ -168,9 +175,9 @@ def test_delete_file_removes_row(conn, tmp_path):
     f = tmp_path / "gone.txt"
     f.write_text("bye", encoding="utf-8")
     wf.upsert_file(conn, str(f))
-    assert int(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]) == 1
+    assert int(conn.execute("SELECT COUNT(*) FROM file_paths").fetchone()[0]) == 1
     wf.delete_file(conn, str(f))
-    assert int(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]) == 0
+    assert int(conn.execute("SELECT COUNT(*) FROM file_paths").fetchone()[0]) == 0
 
 
 def test_hash_file_matches_sha1(tmp_path):

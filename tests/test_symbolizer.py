@@ -16,11 +16,10 @@ def _cfg(min_lines: int = 0) -> config.Config:
 
 
 def _insert_file(conn, path: str = "a/b.py") -> int:
-    cur = conn.execute(
-        "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-        (path, 0, "h"),
-    )
-    return int(cur.lastrowid)
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (path,))
+    fid = int(conn.execute("SELECT id FROM files WHERE hash=?", (path,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (path, fid))
+    return fid
 
 
 def test_process_symbols_inserts_symbols_and_refs(conn):

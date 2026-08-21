@@ -23,7 +23,7 @@ def detail(conn, name: str, path_filter: str = "") -> str:
                COALESCE(s.params, ''),
                s.nesting_depth, s.param_count
         FROM symbols s
-        JOIN files f ON f.id = s.file_id
+        JOIN file_paths f ON f.file_id = s.file_id
         WHERE s.name = ? {path_sql}
         ORDER BY f.path, s.line
         """,

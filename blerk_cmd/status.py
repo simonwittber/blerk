@@ -152,7 +152,7 @@ def status(conn, db_path: str = "", cfg: "config.Config | None" = None) -> str:
         return (best[0], stat, queue, rate, best[5], err)
 
 
-    total_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+    total_files = conn.execute("SELECT COUNT(*) FROM file_paths").fetchone()[0]
 
     lines: list[str] = []
 

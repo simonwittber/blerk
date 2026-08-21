@@ -23,7 +23,7 @@ def _resolve_file(conn, target: str) -> tuple[str, int, int] | None:
         candidates.append((target.replace("\\", "/"), 1))
 
     rows = conn.execute(
-        "SELECT path FROM files WHERE path LIKE ? OR path LIKE ?",
+        "SELECT path FROM file_paths WHERE path LIKE ? OR path LIKE ?",
         (f"%{norm_target}", f"%{norm_target}/%"),
     ).fetchall()
     for (path,) in rows:
@@ -57,7 +57,7 @@ def _resolve_symbol(conn, name: str, path_filter: str = "") -> list[tuple[str, i
         f"""
         SELECT f.path, s.line, COALESCE(s.end_line, s.line)
         FROM symbols s
-        JOIN files f ON f.id = s.file_id
+        JOIN file_paths f ON f.file_id = s.file_id
         WHERE s.name = ? {path_sql}
         ORDER BY f.path, s.line
         """,

@@ -20,10 +20,9 @@ def test_embedding_backend_switch_requires_requery(tmp_path):
     conn = db.open_db(db_path)
 
     try:
-        fid = int(conn.execute(
-            "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            ("test.py", 0, "h"),
-        ).lastrowid)
+        conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", ("test.py",))
+        fid = int(conn.execute("SELECT id FROM files WHERE hash=?", ("test.py",)).fetchone()[0])
+        conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", ("test.py", fid))
         sid = int(conn.execute(
             "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
             (fid, "func", "function", 1, 5),

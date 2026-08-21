@@ -24,11 +24,10 @@ from blerk_cmd.analyze import (
 
 def _insert_file(conn, tmp_path, name: str) -> int:
     p = str(tmp_path / f"{name}.py")
-    cur = conn.execute(
-        "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-        (p, 0, f"h_{name}"),
-    )
-    return int(cur.lastrowid)
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (p,))
+    fid = int(conn.execute("SELECT id FROM files WHERE hash=?", (p,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (p, fid))
+    return fid
 
 
 def _insert_symbol(
@@ -339,10 +338,10 @@ def test_reset_findings_with_directory_filter(conn, tmp_path):
     sub = tmp_path / "sub"
     sub.mkdir()
 
-    fid_in = int(conn.execute(
-        "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-        (str(sub / "in.py"), 0, "h1"),
-    ).lastrowid)
+    p_in = str(sub / "in.py")
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (p_in,))
+    fid_in = int(conn.execute("SELECT id FROM files WHERE hash=?", (p_in,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (p_in, fid_in))
     sid_in = int(conn.execute(
         "INSERT INTO symbols(file_id, name, kind, line, end_line)"
         " VALUES(?,?,?,?,?)",
@@ -354,10 +353,10 @@ def test_reset_findings_with_directory_filter(conn, tmp_path):
         (sid_in, 0, "pass", 1, 5),
     )
 
-    fid_out = int(conn.execute(
-        "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-        (str(tmp_path / "out.py"), 0, "h2"),
-    ).lastrowid)
+    p_out = str(tmp_path / "out.py")
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (p_out,))
+    fid_out = int(conn.execute("SELECT id FROM files WHERE hash=?", (p_out,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (p_out, fid_out))
     sid_out = int(conn.execute(
         "INSERT INTO symbols(file_id, name, kind, line, end_line)"
         " VALUES(?,?,?,?,?)",

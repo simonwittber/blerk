@@ -93,7 +93,7 @@ def _purge_folder(db_path: str, folder: str) -> None:
     try:
         conn = db.open_db(db_path)
         with db._write_lock:
-            conn.execute("DELETE FROM files WHERE path LIKE ?", (prefix + "%",))
+            conn.execute("DELETE FROM file_paths WHERE path LIKE ?", (prefix + "%",))
             conn.commit()
         conn.close()
         log.info("[hub] purged DB records for %s", folder)

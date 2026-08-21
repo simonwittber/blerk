@@ -72,7 +72,7 @@ def print_refs(conn, symbol_id: int) -> None:
         """
         SELECT s.name, f.path FROM symbol_refs r
         JOIN symbols s ON s.id = r.callee_id
-        JOIN files   f ON f.id = s.file_id
+        JOIN file_paths f ON f.file_id = s.file_id
         WHERE r.caller_id = ? LIMIT 10
         """,
         (symbol_id,),
@@ -84,7 +84,7 @@ def print_refs(conn, symbol_id: int) -> None:
         """
         SELECT s.name, f.path FROM symbol_refs r
         JOIN symbols s ON s.id = r.caller_id
-        JOIN files   f ON f.id = s.file_id
+        JOIN file_paths f ON f.file_id = s.file_id
         WHERE r.callee_id = ? LIMIT 10
         """,
         (symbol_id,),
@@ -107,7 +107,7 @@ def _vector_positions(conn, blob: bytes, k: int, opts: QueryOptions) -> dict[int
         FROM embeddings e
         JOIN code_blocks cb ON cb.content_hash = e.content_hash {model_sql}
         JOIN symbols s ON s.id = cb.symbol_id
-        JOIN files f ON f.id = s.file_id
+        JOIN file_paths f ON f.file_id = s.file_id
         {tag_sql}
         WHERE 1=1 {heading_sql} {ext_sql} {dir_sql}
         ORDER BY vec_distance_cosine(e.vector, ?) ASC
@@ -133,7 +133,7 @@ def _bm25_symbol_positions(conn, query_text: str, k: int, opts: QueryOptions) ->
             SELECT s.id
             FROM symbols_fts
             JOIN symbols s ON s.id = symbols_fts.rowid
-            JOIN files f ON f.id = s.file_id
+            JOIN file_paths f ON f.file_id = s.file_id
             {tag_sql}
             WHERE symbols_fts MATCH ?
               {heading_sql} {ext_sql} {dir_sql}
@@ -163,7 +163,7 @@ def _bm25_content_positions(conn, query_text: str, k: int, opts: QueryOptions) -
             FROM code_blocks_fts
             JOIN code_blocks cb ON cb.id = code_blocks_fts.rowid
             JOIN symbols s ON s.id = cb.symbol_id
-            JOIN files f ON f.id = s.file_id
+            JOIN file_paths f ON f.file_id = s.file_id
             {tag_sql}
             WHERE code_blocks_fts MATCH ?
               {heading_sql} {ext_sql} {dir_sql}
@@ -278,7 +278,7 @@ def query_symbols(
             COALESCE(s.description, ''),
             COALESCE(s.params, '')
         FROM symbols s
-        JOIN files f ON f.id = s.file_id
+        JOIN file_paths f ON f.file_id = s.file_id
         WHERE s.id IN ({placeholders})
         """,
         top_ids,

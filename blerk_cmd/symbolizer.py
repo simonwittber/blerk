@@ -318,26 +318,22 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
         if rows:
             status = "running"
             for row in rows:
-                path_row = conn.execute(
-                    "SELECT path FROM files WHERE id=?", (row.target_id,)
-                ).fetchone()
-                if not path_row:
+                path_rows = conn.execute(
+                    "SELECT path FROM file_paths WHERE file_id=?", (row.target_id,)
+                ).fetchall()
+                if not path_rows:
                     try:
                         db.mark_done(conn, QUEUE, row.id)
                     except sqlite3.Error as e:
                         log.warning("mark done symbol_queue %d: %s", row.id, e)
                     continue
-                path = path_row[0]
-
-                if not os.path.exists(path):
-                    log.info("%s: file removed, purging %s", DAEMON, path)
+                path = next((p for (p,) in path_rows if os.path.exists(p)), None)
+                if path is None:
+                    log.info("%s: no readable path for file_id %d, skipping", DAEMON, row.target_id)
                     try:
-                        with db._write_lock:
-                            conn.execute("DELETE FROM files WHERE id=?", (row.target_id,))
-                            conn.commit()
                         db.mark_done(conn, QUEUE, row.id)
                     except sqlite3.Error as e:
-                        log.warning("purge missing file %s: %s", path, e)
+                        log.warning("mark done symbol_queue %d: %s", row.id, e)
                     continue
 
                 t0 = time.monotonic()

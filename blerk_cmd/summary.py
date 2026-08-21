@@ -27,35 +27,35 @@ def summary(cfg: config.Config, directory: str = "") -> str:
         sym_dir_params = [f"%{norm}/%", f"%{norm}"]
 
     total_files = conn.execute(
-        f"SELECT COUNT(*) FROM files WHERE 1=1 {dir_sql}", dir_params
+        f"SELECT COUNT(*) FROM file_paths WHERE 1=1 {dir_sql}", dir_params
     ).fetchone()[0]
     total_syms = conn.execute(
-        f"SELECT COUNT(*) FROM symbols s JOIN files f ON f.id = s.file_id"
+        f"SELECT COUNT(*) FROM symbols s JOIN file_paths f ON f.file_id = s.file_id"
         f" WHERE s.kind != 'heading' {sym_dir_sql}", sym_dir_params
     ).fetchone()[0]
     embedded = conn.execute(
         f"SELECT COUNT(DISTINCT s.id) FROM embeddings e"
         f" JOIN code_blocks cb ON cb.content_hash = e.content_hash"
-        f" JOIN symbols s ON s.id = cb.symbol_id JOIN files f ON f.id = s.file_id"
+        f" JOIN symbols s ON s.id = cb.symbol_id JOIN file_paths f ON f.file_id = s.file_id"
         f" WHERE s.kind != 'heading' {sym_dir_sql}", sym_dir_params
     ).fetchone()[0]
     describable = conn.execute(
-        f"SELECT COUNT(*) FROM symbols s JOIN files f ON f.id = s.file_id"
+        f"SELECT COUNT(*) FROM symbols s JOIN file_paths f ON f.file_id = s.file_id"
         f" WHERE s.kind IN ('function','method') {sym_dir_sql}", sym_dir_params
     ).fetchone()[0]
     described = conn.execute(
-        f"SELECT COUNT(*) FROM symbols s JOIN files f ON f.id = s.file_id"
+        f"SELECT COUNT(*) FROM symbols s JOIN file_paths f ON f.file_id = s.file_id"
         f" WHERE s.kind IN ('function','method') AND s.description IS NOT NULL {sym_dir_sql}",
         sym_dir_params
     ).fetchone()[0]
     recent = conn.execute(
-        f"SELECT path FROM files WHERE mtime > unixepoch() - 604800 {dir_sql}"
+        f"SELECT path FROM file_paths WHERE mtime > unixepoch() - 604800 {dir_sql}"
         f" ORDER BY mtime DESC LIMIT 10", dir_params
     ).fetchall()
     findings = conn.execute(
         f"SELECT r.severity, COUNT(*) FROM findings fi"
         f" JOIN analyzer_rules r ON r.id = fi.rule_id"
-        f" JOIN symbols s ON s.id = fi.symbol_id JOIN files f ON f.id = s.file_id"
+        f" JOIN symbols s ON s.id = fi.symbol_id JOIN file_paths f ON f.file_id = s.file_id"
         f" WHERE 1=1 {sym_dir_sql}"
         f" GROUP BY r.severity ORDER BY r.severity", sym_dir_params
     ).fetchall()

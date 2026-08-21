@@ -13,7 +13,7 @@ from blerk_cmd.util import normalize_dir
 
 
 QUEUE = "git_queue"
-TARGET_COL = "file_id"
+TARGET_COL = "file_path_id"
 DAEMON = "git-enricher"
 
 log = logging.getLogger("git-enricher")
@@ -86,16 +86,17 @@ def process_row(
     row: db.QueueRow,
     silent: bool = False,
 ) -> tuple[bool, bool]:
-    path_row = conn.execute(
-        "SELECT path FROM files WHERE id=?", (row.target_id,)
+    fp_row = conn.execute(
+        "SELECT fp.path, fp.file_id FROM file_paths fp WHERE fp.id=?",
+        (row.target_id,),
     ).fetchone()
-    if not path_row:
+    if not fp_row:
         try:
             db.mark_done(conn, QUEUE, row.id)
         except sqlite3.Error as e:
             log.warning("mark done git_queue %d: %s", row.id, e)
         return False, False
-    path = path_row[0]
+    path, file_id = fp_row[0], fp_row[1]
     t0 = time.monotonic()
 
     root = find_git_root(os.path.dirname(path))
@@ -107,6 +108,7 @@ def process_row(
         return False, False
 
     common_root = find_common_git_root(os.path.dirname(path)) or root
+    rel_path = normalize_dir(os.path.relpath(path, root))
 
     try:
         proc = subprocess.run(
@@ -143,12 +145,12 @@ def process_row(
     try:
         repo_id = get_or_create_repository(conn, common_root)
         conn.execute(
-            "INSERT INTO git_files(repository_id, file_id, git_branch, git_commit, git_author, git_enriched_at) "
-            "VALUES(?, ?, ?, ?, ?, unixepoch()) "
-            "ON CONFLICT(repository_id, file_id, git_branch) "
-            "DO UPDATE SET git_commit=excluded.git_commit, git_author=excluded.git_author, "
-            "git_enriched_at=excluded.git_enriched_at",
-            (repo_id, row.target_id, branch, commit, author),
+            "INSERT INTO git_files(repository_id, file_id, rel_path, git_branch, git_commit, git_author, git_enriched_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, unixepoch()) "
+            "ON CONFLICT(repository_id, rel_path, git_branch) "
+            "DO UPDATE SET file_id=excluded.file_id, git_commit=excluded.git_commit, "
+            "git_author=excluded.git_author, git_enriched_at=excluded.git_enriched_at",
+            (repo_id, file_id, rel_path, branch, commit, author),
         )
     except sqlite3.Error as e:
         try:

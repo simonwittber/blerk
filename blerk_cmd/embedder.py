@@ -129,7 +129,7 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
                     " COALESCE(s.params, ''), s.kind, s.file_id, s.line, s.nesting_depth"
                     " FROM code_blocks cb"
                     " JOIN symbols s ON s.id = cb.symbol_id"
-                    " JOIN files f ON f.id = s.file_id"
+                    " JOIN file_paths f ON f.file_id = s.file_id"
                     " WHERE cb.id=?",
                     (row.target_id,),
                 ).fetchone()

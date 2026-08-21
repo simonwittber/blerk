@@ -110,11 +110,11 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
             for row in rows:
                 blk_row = conn.execute(
                     "SELECT cb.description, cb.block_index,"
-                    " s.id, s.name, s.kind, f.path,"
+                    " s.id, s.name, s.kind, fp.path,"
                     " COALESCE(cb.start_line, s.line), COALESCE(cb.end_line, s.end_line, s.line)"
                     " FROM code_blocks cb"
                     " JOIN symbols s ON s.id = cb.symbol_id"
-                    " JOIN files f ON f.id = s.file_id"
+                    " JOIN file_paths fp ON fp.file_id = s.file_id"
                     " WHERE cb.id=?",
                     (row.target_id,),
                 ).fetchone()

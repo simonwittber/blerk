@@ -12,11 +12,9 @@ from blerk_cmd.lint_rules import build_scope, duplicate_symbol
 
 
 def _insert_symbol(conn, path: str, name: str, snippet: str, kind: str = "function") -> int:
-    cur = conn.execute(
-        "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-        (path, 0, f"h_{name}"),
-    )
-    fid = int(cur.lastrowid)
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (path,))
+    fid = int(conn.execute("SELECT id FROM files WHERE hash=?", (path,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (path, fid))
     cur = conn.execute(
         "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
         (fid, name, kind, 1, 10),

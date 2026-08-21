@@ -10,11 +10,10 @@ from blerk import db
 
 
 def _insert_file(conn, path: str, hash_: str) -> int:
-    cur = conn.execute(
-        "INSERT INTO files(path, mtime, hash) VALUES(?, ?, ?)",
-        (path, 0, hash_),
-    )
-    return int(cur.lastrowid)
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (hash_,))
+    fid = int(conn.execute("SELECT id FROM files WHERE hash=?", (hash_,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (path, fid))
+    return fid
 
 
 def _count(conn, table: str) -> int:
@@ -62,17 +61,27 @@ def test_open_creates_parent_dir(tmp_path):
         c.close()
 
 
-def test_trigger_files_insert_queues_symbol_and_git(conn):
+def test_trigger_files_insert_queues_symbol(conn):
     _insert_file(conn, "/tmp/a.go", "hash1")
     assert _count(conn, "symbol_queue") == 1
+
+
+def test_trigger_file_paths_insert_queues_git(conn):
+    _insert_file(conn, "/tmp/a.go", "hash1")
     assert _count(conn, "git_queue") == 1
 
 
-def test_trigger_files_update_only_on_hash_change(conn):
-    fid = _insert_file(conn, "/tmp/a.go", "hash1")
-    conn.execute("UPDATE files SET mtime=? WHERE id=?", (123, fid))
+def test_trigger_path_mtime_update_no_resymbolization(conn):
+    _insert_file(conn, "/tmp/a.go", "hash1")
+    conn.execute("UPDATE file_paths SET mtime=123 WHERE path='/tmp/a.go'")
     assert _count(conn, "symbol_queue") == 1
-    conn.execute("UPDATE files SET hash=? WHERE id=?", ("hash2", fid))
+
+
+def test_trigger_path_content_change_requeus_symbolization(conn):
+    _insert_file(conn, "/tmp/a.go", "hash1")
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES('hash2', 0)")
+    fid2 = conn.execute("SELECT id FROM files WHERE hash='hash2'").fetchone()[0]
+    conn.execute("UPDATE file_paths SET file_id=? WHERE path='/tmp/a.go'", (fid2,))
     assert _count(conn, "symbol_queue") == 2
     assert _count(conn, "git_queue") == 1
 
@@ -112,7 +121,7 @@ def test_cascade_delete_file(conn):
         "INSERT INTO embeddings(content_hash, model, vector, embedded_at) VALUES(?,?,?,?)",
         (content_hash, "m", b"\x00\x00\x00\x00", 0),
     )
-    conn.execute("DELETE FROM files WHERE id=?", (fid,))
+    conn.execute("DELETE FROM file_paths WHERE file_id=?", (fid,))
     # Embeddings are content-addressed and not cascade-deleted with the file.
     for tbl in ["symbols", "code_blocks", "symbol_queue", "git_queue"]:
         assert _count(conn, tbl) == 0, tbl

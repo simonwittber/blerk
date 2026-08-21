@@ -324,10 +324,10 @@ class TestNoHeadingsSql:
 # ---------------------------------------------------------------------------
 
 def _insert_file(conn, path: str) -> int:
-    cur = conn.execute(
-        "INSERT INTO files(path, mtime, hash) VALUES(?,0,'h')", (path,)
-    )
-    return int(cur.lastrowid)
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (path,))
+    fid = int(conn.execute("SELECT id FROM files WHERE hash=?", (path,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (path, fid))
+    return fid
 
 
 def _insert_sym(conn, fid: int, name: str) -> int:
@@ -346,7 +346,7 @@ def test_ext_sql_filters_in_query(conn):
 
     sql_clause, params = _ext_sql([".py"])
     rows = conn.execute(
-        f"SELECT s.name FROM symbols s JOIN files f ON f.id=s.file_id WHERE 1=1 {sql_clause}",
+        f"SELECT s.name FROM symbols s JOIN file_paths f ON f.file_id=s.file_id WHERE 1=1 {sql_clause}",
         params,
     ).fetchall()
     names = [r[0] for r in rows]
@@ -365,7 +365,7 @@ def test_tag_clause_filters_by_tag(conn):
 
     join_clause, params = _tag_clause({"lang": "python"})
     rows = conn.execute(
-        f"SELECT s.name FROM symbols s JOIN files f ON f.id=s.file_id {join_clause}",
+        f"SELECT s.name FROM symbols s JOIN file_paths f ON f.file_id=s.file_id {join_clause}",
         params,
     ).fetchall()
     names = [r[0] for r in rows]

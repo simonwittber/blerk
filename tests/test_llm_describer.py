@@ -126,9 +126,10 @@ def test_build_prompt_preserves_template_literal_braces(tmp_path):
 def test_run_skips_already_described_block(tmp_path):
     db_path = str(tmp_path / "test.db")
     conn = db.open_db(db_path)
-    cur = conn.execute("INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-                       (str(tmp_path / "a.py"), 0, "h"))
-    fid = int(cur.lastrowid)
+    p = str(tmp_path / "a.py")
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (p,))
+    fid = int(conn.execute("SELECT id FROM files WHERE hash=?", (p,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (p, fid))
     cur = conn.execute(
         "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
         (fid, "foo", "function", 1, 5),
@@ -178,11 +179,10 @@ def test_code_block_insert_enqueues_embed_and_describe(tmp_path):
     db_path = str(tmp_path / "test.db")
     conn = db.open_db(db_path)
     try:
-        cur = conn.execute(
-            "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            (str(tmp_path / "a.py"), 0, "h"),
-        )
-        fid = int(cur.lastrowid)
+        p = str(tmp_path / "a.py")
+        conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (p,))
+        fid = int(conn.execute("SELECT id FROM files WHERE hash=?", (p,)).fetchone()[0])
+        conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (p, fid))
 
         cur = conn.execute(
             "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",

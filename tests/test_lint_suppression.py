@@ -5,8 +5,11 @@ from blerk_cmd.lint_rules import build_scope, long_function
 
 
 def _insert_file(conn, path: str) -> int:
-    cur = conn.execute("INSERT INTO files(path, mtime, hash) VALUES(?,0,'h')", (path.replace("\\", "/"),))
-    return int(cur.lastrowid)
+    p = path.replace("\\", "/")
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (p,))
+    fid = int(conn.execute("SELECT id FROM files WHERE hash=?", (p,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (p, fid))
+    return fid
 
 
 def _insert_long_fn(conn, file_id: int, name: str, start: int = 1, length: int = 50) -> int:

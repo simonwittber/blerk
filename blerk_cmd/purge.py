@@ -12,7 +12,7 @@ def purge(conn, ignore_file: str, dry_run: bool = False) -> int:
     patterns = ignore_match.load_ignore_file(ignore_file)
     ignore_set = ignore_match.IgnoreSet(dir="/", patterns=patterns)
 
-    rows = conn.execute("SELECT id, path FROM files").fetchall()
+    rows = conn.execute("SELECT id, path FROM file_paths").fetchall()
     to_delete: list[int] = []
     for file_id, path in rows:
         norm = path.replace("\\", "/")
@@ -25,15 +25,15 @@ def purge(conn, ignore_file: str, dry_run: bool = False) -> int:
         return 0
 
     if not dry_run:
-        placeholders = ",".join("?" * len(to_delete))
-        conn.execute(f"DELETE FROM files WHERE id IN ({placeholders})", to_delete)
+        ph = ",".join("?" * len(to_delete))
+        conn.execute(f"DELETE FROM file_paths WHERE id IN ({ph})", to_delete)
         conn.commit()
 
     return len(to_delete)
 
 
 def purge_missing(conn, dry_run: bool = False) -> int:
-    rows = conn.execute("SELECT id, path FROM files").fetchall()
+    rows = conn.execute("SELECT id, path FROM file_paths").fetchall()
     to_delete: list[int] = []
     for file_id, path in rows:
         if not os.path.exists(path):
@@ -46,7 +46,7 @@ def purge_missing(conn, dry_run: bool = False) -> int:
 
     if not dry_run:
         placeholders = ",".join("?" * len(to_delete))
-        conn.execute(f"DELETE FROM files WHERE id IN ({placeholders})", to_delete)
+        conn.execute(f"DELETE FROM file_paths WHERE id IN ({placeholders})", to_delete)
         conn.commit()
 
     return len(to_delete)
@@ -86,7 +86,7 @@ def purge_worktrees(conn, folders: list[str], dry_run: bool = False) -> int:
     if not worktree_roots:
         return 0
 
-    rows = conn.execute("SELECT id, path FROM files").fetchall()
+    rows = conn.execute("SELECT id, path FROM file_paths").fetchall()
     to_delete: list[int] = []
     for file_id, path in rows:
         norm = os.path.normpath(path)
@@ -102,7 +102,7 @@ def purge_worktrees(conn, folders: list[str], dry_run: bool = False) -> int:
 
     if not dry_run:
         placeholders = ",".join("?" * len(to_delete))
-        conn.execute(f"DELETE FROM files WHERE id IN ({placeholders})", to_delete)
+        conn.execute(f"DELETE FROM file_paths WHERE id IN ({placeholders})", to_delete)
         conn.commit()
 
     return len(to_delete)
@@ -151,7 +151,7 @@ def purge_gitignored(conn, folders: list[str], dry_run: bool = False) -> int:
     if not all_sets:
         return 0
 
-    rows = conn.execute("SELECT id, path FROM files").fetchall()
+    rows = conn.execute("SELECT id, path FROM file_paths").fetchall()
     to_delete: list[int] = []
     for file_id, path in rows:
         if ignore_match.is_ignored(path, is_dir=False, sets=all_sets):
@@ -164,7 +164,7 @@ def purge_gitignored(conn, folders: list[str], dry_run: bool = False) -> int:
 
     if not dry_run:
         placeholders = ",".join("?" * len(to_delete))
-        conn.execute(f"DELETE FROM files WHERE id IN ({placeholders})", to_delete)
+        conn.execute(f"DELETE FROM file_paths WHERE id IN ({placeholders})", to_delete)
         conn.commit()
 
     return len(to_delete)

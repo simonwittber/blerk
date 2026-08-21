@@ -11,11 +11,10 @@ from blerk_cmd.query import QueryOptions, to_blob, truncate
 
 
 def _seed_file(conn, path: str) -> int:
-    cur = conn.execute(
-        "INSERT INTO files (path, mtime, size, hash) VALUES (?, 0, 0, '')",
-        (path,),
-    )
-    return cur.lastrowid
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (path,))
+    fid = int(conn.execute("SELECT id FROM files WHERE hash=?", (path,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (path, fid))
+    return fid
 
 
 def _seed_symbol(

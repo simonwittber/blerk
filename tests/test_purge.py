@@ -17,16 +17,15 @@ from blerk_cmd.purge import (
 
 
 def _insert_file(conn: sqlite3.Connection, path: str) -> int:
-    conn.execute(
-        "INSERT INTO files(path, mtime, size, hash) VALUES (?, 0, 0, 'abc')",
-        (path,),
-    )
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (path,))
+    fid = int(conn.execute("SELECT id FROM files WHERE hash=?", (path,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (path, fid))
     conn.commit()
-    return conn.execute("SELECT id FROM files WHERE path=?", (path,)).fetchone()[0]
+    return fid
 
 
 def _file_exists(conn: sqlite3.Connection, path: str) -> bool:
-    return conn.execute("SELECT 1 FROM files WHERE path=?", (path,)).fetchone() is not None
+    return conn.execute("SELECT 1 FROM file_paths WHERE path=?", (path,)).fetchone() is not None
 
 
 # --- purge_missing ---

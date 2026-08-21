@@ -21,8 +21,8 @@ def deps(conn, directory: str = "") -> str:
         FROM symbol_refs r
         JOIN symbols s_caller ON s_caller.id = r.caller_id
         JOIN symbols s_callee ON s_callee.id = r.callee_id
-        JOIN files f_caller ON f_caller.id = s_caller.file_id
-        JOIN files f_callee ON f_callee.id = s_callee.file_id
+        JOIN file_paths f_caller ON f_caller.file_id = s_caller.file_id
+        JOIN file_paths f_callee ON f_callee.file_id = s_callee.file_id
         WHERE f_caller.path != f_callee.path
           {dir_sql}
         ORDER BY f_caller.path, f_callee.path

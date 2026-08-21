@@ -56,7 +56,7 @@ def _sample_rows(conn, n_samples: int, pinned_ids: list[int] | None):
             f"""
             SELECT s.id, s.name, s.kind, COALESCE(s.params, ''), s.description, f.path
             FROM symbols s
-            JOIN files f ON f.id = s.file_id
+            JOIN file_paths f ON f.file_id = s.file_id
             JOIN embeddings e ON e.symbol_id = s.id
             WHERE s.id IN ({placeholders})
               AND s.description IS NOT NULL AND s.description != ''

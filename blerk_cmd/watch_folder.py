@@ -66,22 +66,39 @@ def upsert_file(conn: sqlite3.Connection, path: str) -> None:
     try:
         with _conn_lock:
             row = conn.execute(
-                "SELECT hash FROM files WHERE path=?", (stored,)
+                "SELECT fp.mtime, f.hash FROM file_paths fp"
+                " JOIN files f ON f.id = fp.file_id WHERE fp.path=?",
+                (stored,),
             ).fetchone()
     except sqlite3.Error as e:
         log.warning("upsert file select %s: %s", stored, e)
         return
-    if row and row[0] == h:
+    if row and row[0] == mtime and row[1] == h:
         return
 
     try:
         with _conn_lock:
             conn.execute(
-                "INSERT INTO files(path, mtime, size, hash) VALUES(?,?,?,?) "
-                "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, size=excluded.size, hash=excluded.hash "
-                "WHERE excluded.hash != files.hash",
-                (stored, mtime, size, h),
+                "INSERT OR IGNORE INTO files(hash, size) VALUES(?, ?)",
+                (h, size),
             )
+            file_row = conn.execute("SELECT id FROM files WHERE hash=?", (h,)).fetchone()
+            if file_row is None:
+                return
+            file_id = file_row[0]
+            existing = conn.execute(
+                "SELECT file_id FROM file_paths WHERE path=?", (stored,)
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO file_paths(path, mtime, file_id) VALUES(?, ?, ?)",
+                    (stored, mtime, file_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE file_paths SET mtime=?, file_id=? WHERE path=?",
+                    (mtime, file_id, stored),
+                )
     except sqlite3.Error as e:
         log.warning("upsert file %s: %s", stored, e)
         return
@@ -92,7 +109,7 @@ def delete_file(conn: sqlite3.Connection, path: str) -> None:
     stored = normalize_dir(path)
     try:
         with _conn_lock:
-            conn.execute("DELETE FROM files WHERE path=?", (stored,))
+            conn.execute("DELETE FROM file_paths WHERE path=?", (stored,))
     except sqlite3.Error as e:
         log.warning("delete file %s: %s", stored, e)
 

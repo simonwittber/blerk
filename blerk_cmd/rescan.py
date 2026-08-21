@@ -22,18 +22,18 @@ def rescan(conn, directory: str = "", exts: list[str] | None = None) -> int:
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    row = conn.execute(f"SELECT COUNT(*) FROM files {where}", params).fetchone()
+    row = conn.execute(f"SELECT COUNT(DISTINCT file_id) FROM file_paths {where}", params).fetchone()
     n = int(row[0]) if row else 0
     if n == 0:
         return 0
 
     conn.execute(
-        f"DELETE FROM symbol_queue WHERE file_id IN (SELECT id FROM files {where})",
+        f"DELETE FROM symbol_queue WHERE file_id IN (SELECT DISTINCT file_id FROM file_paths {where})",
         params,
     )
     conn.execute(
-        f"INSERT INTO symbol_queue(file_id, priority, queued_at) "
-        f"SELECT id, 10, unixepoch() FROM files {where}",
+        f"INSERT OR IGNORE INTO symbol_queue(file_id, priority, queued_at) "
+        f"SELECT DISTINCT file_id, 10, unixepoch() FROM file_paths {where}",
         params,
     )
     return n

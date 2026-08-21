@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import sqlite3
@@ -21,26 +20,30 @@ CREATE TABLE IF NOT EXISTS repository (
 );
 
 CREATE TABLE IF NOT EXISTS files (
-    id              INTEGER PRIMARY KEY,
-    path            TEXT    NOT NULL UNIQUE,
-    mtime           INTEGER NOT NULL,
-    size            INTEGER NOT NULL DEFAULT 0,
-    hash            TEXT    NOT NULL,
-    git_commit      TEXT,
-    git_author      TEXT,
-    git_branch      TEXT,
-    git_enriched_at INTEGER
+    id   INTEGER PRIMARY KEY,
+    hash TEXT NOT NULL UNIQUE,
+    size INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS file_paths (
+    id      INTEGER PRIMARY KEY,
+    path    TEXT    NOT NULL UNIQUE,
+    mtime   INTEGER NOT NULL DEFAULT 0,
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_paths_file ON file_paths(file_id);
 
 CREATE TABLE IF NOT EXISTS git_files (
     id              INTEGER PRIMARY KEY,
-    git_branch      TEXT    NOT NULL DEFAULT '',
     repository_id   INTEGER NOT NULL REFERENCES repository(id) ON DELETE CASCADE,
     file_id         INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    rel_path        TEXT    NOT NULL DEFAULT '',
+    git_branch      TEXT    NOT NULL DEFAULT '',
     git_commit      TEXT,
     git_author      TEXT,
     git_enriched_at INTEGER,
-    UNIQUE (repository_id, file_id, git_branch)
+    UNIQUE (repository_id, rel_path, git_branch)
 );
 
 CREATE TABLE IF NOT EXISTS symbols (
@@ -99,7 +102,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
 
 CREATE TABLE IF NOT EXISTS symbol_queue (
     id        INTEGER PRIMARY KEY,
-    file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    file_id   INTEGER NOT NULL UNIQUE REFERENCES files(id) ON DELETE CASCADE,
     status    TEXT    NOT NULL DEFAULT 'pending',
     priority  INTEGER NOT NULL DEFAULT 1,
     attempts  INTEGER NOT NULL DEFAULT 0,
@@ -108,13 +111,13 @@ CREATE TABLE IF NOT EXISTS symbol_queue (
 );
 
 CREATE TABLE IF NOT EXISTS git_queue (
-    id        INTEGER PRIMARY KEY,
-    file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-    status    TEXT    NOT NULL DEFAULT 'pending',
-    priority  INTEGER NOT NULL DEFAULT 1,
-    attempts  INTEGER NOT NULL DEFAULT 0,
-    queued_at INTEGER NOT NULL DEFAULT (unixepoch()),
-    error     TEXT
+    id           INTEGER PRIMARY KEY,
+    file_path_id INTEGER NOT NULL REFERENCES file_paths(id) ON DELETE CASCADE,
+    status       TEXT    NOT NULL DEFAULT 'pending',
+    priority     INTEGER NOT NULL DEFAULT 1,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    queued_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+    error        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS code_block_describe_queue (
@@ -220,22 +223,32 @@ CREATE TABLE IF NOT EXISTS findings (
 CREATE INDEX IF NOT EXISTS idx_findings_rule ON findings(rule_id);
 CREATE INDEX IF NOT EXISTS idx_findings_symbol ON findings(symbol_id);
 
-CREATE TRIGGER IF NOT EXISTS findings_stale_on_file_change
-AFTER UPDATE ON files WHEN OLD.hash != NEW.hash
+CREATE TRIGGER IF NOT EXISTS findings_stale_on_content_change
+AFTER UPDATE ON file_paths WHEN OLD.file_id != NEW.file_id
 BEGIN
-  UPDATE findings SET stale = 1
-  WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id = NEW.id);
+    UPDATE findings SET stale = 1
+    WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id = OLD.file_id);
 END;
 
 CREATE TRIGGER IF NOT EXISTS files_after_insert
 AFTER INSERT ON files BEGIN
-    INSERT INTO symbol_queue(file_id) VALUES (NEW.id);
-    INSERT INTO git_queue(file_id) VALUES (NEW.id);
+    INSERT OR IGNORE INTO symbol_queue(file_id) VALUES (NEW.id);
 END;
 
-CREATE TRIGGER IF NOT EXISTS files_after_update
-AFTER UPDATE ON files WHEN OLD.hash != NEW.hash BEGIN
-    INSERT INTO symbol_queue(file_id, queued_at) VALUES (NEW.id, unixepoch());
+CREATE TRIGGER IF NOT EXISTS file_paths_after_insert
+AFTER INSERT ON file_paths BEGIN
+    INSERT INTO git_queue(file_path_id) VALUES (NEW.id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS file_paths_after_update_content
+AFTER UPDATE ON file_paths WHEN OLD.file_id != NEW.file_id BEGIN
+    INSERT OR IGNORE INTO symbol_queue(file_id, queued_at) VALUES (NEW.file_id, unixepoch());
+END;
+
+CREATE TRIGGER IF NOT EXISTS file_paths_after_delete_orphan
+AFTER DELETE ON file_paths BEGIN
+    DELETE FROM files WHERE id = OLD.file_id
+    AND NOT EXISTS (SELECT 1 FROM file_paths WHERE file_id = OLD.file_id);
 END;
 
 CREATE TRIGGER IF NOT EXISTS code_blocks_embed_insert
@@ -249,6 +262,71 @@ AFTER INSERT ON code_blocks
 BEGIN
     INSERT INTO code_block_describe_queue(block_id) VALUES (NEW.id);
 END;
+
+CREATE TABLE IF NOT EXISTS queue_history (
+    id          INTEGER PRIMARY KEY,
+    queue_name  TEXT    NOT NULL,
+    queue_count INTEGER NOT NULL,
+    timestamp   INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_queue_history_queue_time ON queue_history(queue_name, timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS transcripts (
+    id        INTEGER PRIMARY KEY,
+    path      TEXT    NOT NULL DEFAULT '',
+    cwd       TEXT    NOT NULL DEFAULT '',
+    content   TEXT    NOT NULL DEFAULT '',
+    stored_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS knowledge (
+    id             INTEGER PRIMARY KEY,
+    concept        TEXT    NOT NULL,
+    pattern        TEXT    NOT NULL,
+    body           TEXT    NOT NULL,
+    source         TEXT    NOT NULL DEFAULT 'explicit',
+    importance     INTEGER NOT NULL DEFAULT 1,
+    created_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+    queue_id       INTEGER,
+    surfaced_count INTEGER NOT NULL DEFAULT 0,
+    refined_at     INTEGER,
+    suppressed_at  INTEGER,
+    fact_checked_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_embeddings (
+    id           INTEGER PRIMARY KEY,
+    knowledge_id INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+    vector       BLOB    NOT NULL,
+    model        TEXT    NOT NULL,
+    created_at   INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_embed_queue (
+    id           INTEGER PRIMARY KEY,
+    knowledge_id INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+    status       TEXT    NOT NULL DEFAULT 'pending',
+    queued_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+    retries      INTEGER NOT NULL DEFAULT 0,
+    error        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_dedup_queue (
+    id           INTEGER PRIMARY KEY,
+    knowledge_id INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+    status       TEXT    NOT NULL DEFAULT 'pending',
+    queued_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+    retries      INTEGER NOT NULL DEFAULT 0,
+    error        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_contradictions (
+    id          INTEGER PRIMARY KEY,
+    id_a        INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+    id_b        INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+    detected_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL DEFAULT 0
@@ -350,7 +428,7 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
-_CURRENT_VERSION = 20
+_CURRENT_VERSION = 21
 
 
 def _get_version(conn: sqlite3.Connection) -> int:
@@ -366,586 +444,16 @@ def _set_version(conn: sqlite3.Connection, version: int) -> None:
     conn.execute("INSERT INTO schema_version(version) VALUES(?)", (version,))
 
 
-def _migrate_1(conn: sqlite3.Connection) -> None:
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(symbols)")}
-    for col, defn in [
-        ("nesting_depth", "INTEGER NOT NULL DEFAULT 0"),
-        ("param_count",   "INTEGER NOT NULL DEFAULT 0"),
-    ]:
-        if col not in existing:
-            conn.execute(f"ALTER TABLE symbols ADD COLUMN {col} {defn}")
-    conn.execute("DROP TRIGGER IF EXISTS symbols_description_insert")
-    conn.executescript(
-        "CREATE TRIGGER IF NOT EXISTS symbols_description_insert "
-        "AFTER INSERT ON symbols "
-        "WHEN NEW.kind IN ('function', 'method') AND NEW.description IS NULL "
-        "BEGIN INSERT INTO description_queue(symbol_id) VALUES (NEW.id); END;"
-    )
-
-
-def _migrate_2(conn: sqlite3.Connection) -> None:
-    sym_cols = {row[1] for row in conn.execute("PRAGMA table_info(symbols)")}
-    if "snippet" not in sym_cols:
-        return
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO fingerprint_queue(symbol_id)
-        SELECT s.id FROM symbols s
-        WHERE s.kind IN ('function', 'method')
-          AND s.snippet IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM fingerprints f WHERE f.symbol_id = s.id)
-        """
-    )
-
-
-def _migrate_3(conn: sqlite3.Connection) -> None:
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(symbols)")}
-    if "ext" not in existing:
-        conn.execute("ALTER TABLE symbols ADD COLUMN ext TEXT")
-    rows = conn.execute(
-        "SELECT s.id, f.path FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.ext IS NULL"
-    ).fetchall()
-    updates = [(os.path.splitext(path)[1].lower(), sym_id) for sym_id, path in rows]
-    if updates:
-        conn.executemany("UPDATE symbols SET ext = ? WHERE id = ?", updates)
-
-
-def _migrate_4(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
-        CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
-        CREATE INDEX IF NOT EXISTS idx_symbols_kind_param_count ON symbols(kind, param_count);
-        CREATE INDEX IF NOT EXISTS idx_symbols_kind_nesting ON symbols(kind, nesting_depth);
-        CREATE INDEX IF NOT EXISTS idx_symbols_kind_file ON symbols(kind, file_id);
-        CREATE INDEX IF NOT EXISTS idx_fingerprints_kind_symbol ON fingerprints(kind, symbol_id);
-    """)
-
-
-def _migrate_5(conn: sqlite3.Connection) -> None:
-    conn.execute("DELETE FROM symbol_tags WHERE key IN ('confusing', 'confusing_reason')")
-
-
-def _migrate_6(conn: sqlite3.Connection) -> None:
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(findings)")}
-    if "stale" not in existing:
-        conn.execute("ALTER TABLE findings ADD COLUMN stale BOOLEAN NOT NULL DEFAULT 0")
-    conn.executescript("""
-        CREATE TRIGGER IF NOT EXISTS findings_stale_on_file_change
-        AFTER UPDATE ON files WHEN OLD.hash != NEW.hash
-        BEGIN
-          UPDATE findings SET stale = 1
-          WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id = NEW.id);
-        END;
-    """)
-
-
-def _migrate_7(conn: sqlite3.Connection) -> None:
-    # Add content_hash to symbols
-    existing_sym = {row[1] for row in conn.execute("PRAGMA table_info(symbols)")}
-    if "content_hash" not in existing_sym:
-        conn.execute("ALTER TABLE symbols ADD COLUMN content_hash TEXT")
-
-    # Create code_blocks, queues, FTS
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS code_blocks (
-            id           INTEGER PRIMARY KEY,
-            symbol_id    INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
-            block_index  INTEGER NOT NULL,
-            content      TEXT    NOT NULL,
-            start_line   INTEGER NOT NULL,
-            end_line     INTEGER NOT NULL,
-            description  TEXT,
-            described_at INTEGER,
-            UNIQUE (symbol_id, block_index)
-        );
-        CREATE INDEX IF NOT EXISTS idx_code_blocks_symbol ON code_blocks(symbol_id);
-
-        CREATE TABLE IF NOT EXISTS code_block_describe_queue (
-            id        INTEGER PRIMARY KEY,
-            block_id  INTEGER NOT NULL REFERENCES code_blocks(id) ON DELETE CASCADE,
-            status    TEXT    NOT NULL DEFAULT 'pending',
-            priority  INTEGER NOT NULL DEFAULT 1,
-            attempts  INTEGER NOT NULL DEFAULT 0,
-            queued_at INTEGER NOT NULL DEFAULT (unixepoch()),
-            error     TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS code_block_embed_queue (
-            id        INTEGER PRIMARY KEY,
-            block_id  INTEGER NOT NULL REFERENCES code_blocks(id) ON DELETE CASCADE,
-            status    TEXT    NOT NULL DEFAULT 'pending',
-            priority  INTEGER NOT NULL DEFAULT 1,
-            attempts  INTEGER NOT NULL DEFAULT 0,
-            queued_at INTEGER NOT NULL DEFAULT (unixepoch()),
-            error     TEXT
-        );
-    """)
-
-    # Recreate embeddings with block_id if it still has symbol_id
-    emb_cols = {row[1] for row in conn.execute("PRAGMA table_info(embeddings)")}
-    if "symbol_id" in emb_cols:
-        conn.executescript("""
-            DROP TABLE IF EXISTS _embeddings_old;
-            ALTER TABLE embeddings RENAME TO _embeddings_old;
-            CREATE TABLE embeddings (
-                id          INTEGER PRIMARY KEY,
-                block_id    INTEGER NOT NULL REFERENCES code_blocks(id) ON DELETE CASCADE,
-                model       TEXT    NOT NULL,
-                vector      BLOB    NOT NULL,
-                embedded_at INTEGER NOT NULL
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_block_model ON embeddings(block_id, model);
-            DROP TABLE IF EXISTS _embeddings_old;
-        """)
-
-    # Drop old triggers
-    conn.executescript("""
-        DROP TRIGGER IF EXISTS symbols_description_insert;
-        DROP TRIGGER IF EXISTS symbols_embedding_insert;
-        DROP TRIGGER IF EXISTS symbols_description_update;
-        DROP TRIGGER IF EXISTS symbols_fingerprint_insert;
-        DROP TRIGGER IF EXISTS code_blocks_embed_insert;
-        DROP TRIGGER IF EXISTS code_blocks_describe_insert;
-    """)
-
-    # Add new code_blocks triggers
-    conn.executescript("""
-        CREATE TRIGGER IF NOT EXISTS code_blocks_embed_insert
-        AFTER INSERT ON code_blocks
-        BEGIN
-            INSERT INTO code_block_embed_queue(block_id) VALUES (NEW.id);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS code_blocks_describe_insert
-        AFTER INSERT ON code_blocks
-        BEGIN
-            INSERT INTO code_block_describe_queue(block_id) VALUES (NEW.id);
-        END;
-    """)
-
-    # Rebuild symbols_fts without snippet
-    conn.executescript("""
-        DROP TRIGGER IF EXISTS symbols_fts_insert;
-        DROP TRIGGER IF EXISTS symbols_fts_update;
-        DROP TRIGGER IF EXISTS symbols_fts_delete;
-        DROP TABLE IF EXISTS symbols_fts;
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
-            name,
-            description,
-            content=symbols,
-            content_rowid=id
-        );
-
-        CREATE TRIGGER IF NOT EXISTS symbols_fts_insert
-        AFTER INSERT ON symbols BEGIN
-            INSERT INTO symbols_fts(rowid, name, description)
-            VALUES (NEW.id, NEW.name, NEW.description);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS symbols_fts_update
-        AFTER UPDATE ON symbols BEGIN
-            INSERT INTO symbols_fts(symbols_fts, rowid, name, description)
-            VALUES ('delete', OLD.id, OLD.name, OLD.description);
-            INSERT INTO symbols_fts(rowid, name, description)
-            VALUES (NEW.id, NEW.name, NEW.description);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS symbols_fts_delete
-        AFTER DELETE ON symbols BEGIN
-            INSERT INTO symbols_fts(symbols_fts, rowid, name, description)
-            VALUES ('delete', OLD.id, OLD.name, OLD.description);
-        END;
-    """)
-
-    conn.execute(
-        "INSERT INTO symbols_fts(rowid, name, description)"
-        " SELECT id, name, COALESCE(description, '') FROM symbols"
-    )
-
-    # Create code_blocks_fts
-    conn.executescript("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS code_blocks_fts USING fts5(
-            content,
-            content=code_blocks,
-            content_rowid=id
-        );
-
-        CREATE TRIGGER IF NOT EXISTS code_blocks_fts_insert
-        AFTER INSERT ON code_blocks BEGIN
-            INSERT INTO code_blocks_fts(rowid, content) VALUES (NEW.id, NEW.content);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS code_blocks_fts_update
-        AFTER UPDATE ON code_blocks BEGIN
-            INSERT INTO code_blocks_fts(code_blocks_fts, rowid, content)
-            VALUES ('delete', OLD.id, OLD.content);
-            INSERT INTO code_blocks_fts(rowid, content) VALUES (NEW.id, NEW.content);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS code_blocks_fts_delete
-        AFTER DELETE ON code_blocks BEGIN
-            INSERT INTO code_blocks_fts(code_blocks_fts, rowid, content)
-            VALUES ('delete', OLD.id, OLD.content);
-        END;
-    """)
-
-    # Populate code_blocks from existing snippet data
-    try:
-        conn.execute("SELECT snippet FROM symbols LIMIT 0")
-        snippet_accessible = True
-    except sqlite3.OperationalError:
-        snippet_accessible = False
-
-    if snippet_accessible:
-        already_populated = conn.execute("SELECT COUNT(*) FROM code_blocks").fetchone()[0] > 0
-        if not already_populated:
-            conn.execute("""
-                INSERT OR IGNORE INTO code_blocks(symbol_id, block_index, content, start_line, end_line)
-                SELECT id, 0, snippet, line, COALESCE(end_line, line)
-                FROM symbols
-                WHERE snippet IS NOT NULL AND snippet != ''
-            """)
-            conn.execute(
-                "INSERT INTO code_blocks_fts(rowid, content)"
-                " SELECT id, content FROM code_blocks WHERE block_index = 0"
-            )
-
-        # Backfill content_hash from snippet before dropping the column, so that
-        # the symbolizer treats these symbols as unchanged on re-symbolization.
-        # Without this, NULL content_hash causes every symbol to be classified as
-        # "changed" on restart, rebuilding code_blocks and re-queuing embeddings.
-        rows = conn.execute(
-            "SELECT id, snippet FROM symbols WHERE content_hash IS NULL AND snippet IS NOT NULL"
-        ).fetchall()
-        if rows:
-            updates = [
-                (hashlib.sha256(snippet.encode("utf-8", errors="replace")).hexdigest()[:16], sym_id)
-                for sym_id, snippet in rows
-            ]
-            conn.executemany("UPDATE symbols SET content_hash=? WHERE id=?", updates)
-
-        try:
-            conn.execute("ALTER TABLE symbols DROP COLUMN snippet")
-        except sqlite3.OperationalError:
-            pass
-
-    # Drop old queues (empty, no longer needed)
-    conn.executescript("""
-        DROP TABLE IF EXISTS description_queue;
-        DROP TABLE IF EXISTS embedding_queue;
-    """)
-
-
-def _migrate_8(conn: sqlite3.Connection) -> None:
-    # Add queue_history table for tracking ETC
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS queue_history (
-            id        INTEGER PRIMARY KEY,
-            queue_name TEXT    NOT NULL,
-            queue_count INTEGER NOT NULL,
-            timestamp  INTEGER NOT NULL DEFAULT (unixepoch())
-        )
-    """)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_queue_history_queue_time ON queue_history(queue_name, timestamp DESC)"
-    )
-
-
-def _migrate_9(conn: sqlite3.Connection) -> None:
-    # Add content_hash to code_blocks
-    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(code_blocks)")}
-    if "content_hash" not in existing_cols:
-        conn.execute("ALTER TABLE code_blocks ADD COLUMN content_hash TEXT")
-
-    # Backfill content_hash for all existing blocks
-    rows = conn.execute("SELECT id, content FROM code_blocks WHERE content_hash IS NULL").fetchall()
-    if rows:
-        updates = [
-            (hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16], block_id)
-            for block_id, content in rows
-        ]
-        conn.executemany("UPDATE code_blocks SET content_hash=? WHERE id=?", updates)
-
-    # Recreate embeddings table keyed by content_hash instead of block_id.
-    # Only needed when the existing table still has block_id (pre-v9 schema).
-    embed_cols = {row[1] for row in conn.execute("PRAGMA table_info(embeddings)")}
-    if "block_id" in embed_cols:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS embeddings_new (
-                id           INTEGER PRIMARY KEY,
-                content_hash TEXT    NOT NULL,
-                model        TEXT    NOT NULL,
-                vector       BLOB    NOT NULL,
-                embedded_at  INTEGER NOT NULL,
-                UNIQUE (content_hash, model)
-            )
-        """)
-        conn.execute("""
-            INSERT OR IGNORE INTO embeddings_new(id, content_hash, model, vector, embedded_at)
-            SELECT e.id, cb.content_hash, e.model, e.vector, e.embedded_at
-            FROM embeddings e
-            JOIN code_blocks cb ON cb.id = e.block_id
-            WHERE cb.content_hash IS NOT NULL
-        """)
-        conn.execute("DROP TABLE IF EXISTS embeddings")
-        conn.execute("ALTER TABLE embeddings_new RENAME TO embeddings")
-
-    # Re-queue blocks that have no embedding after the migration
-    conn.execute("""
-        INSERT OR IGNORE INTO code_block_embed_queue(block_id, status, priority)
-        SELECT cb.id, 'pending', 1
-        FROM code_blocks cb
-        WHERE cb.content_hash IS NOT NULL
-        AND NOT EXISTS (
-            SELECT 1 FROM embeddings e WHERE e.content_hash = cb.content_hash
-        )
-        AND cb.id NOT IN (
-            SELECT block_id FROM code_block_embed_queue
-            WHERE status IN ('pending', 'processing')
-        )
-    """)
-
-
-def _migrate_10(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS hints (
-            id         INTEGER PRIMARY KEY,
-            concept    TEXT    NOT NULL,
-            pattern    TEXT    NOT NULL,
-            body       TEXT    NOT NULL,
-            source     TEXT    NOT NULL DEFAULT 'explicit',
-            created_at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-        CREATE VIRTUAL TABLE IF NOT EXISTS hints_fts
-            USING fts5(concept, body, content=hints, content_rowid=id);
-        CREATE TRIGGER IF NOT EXISTS hints_fts_insert
-            AFTER INSERT ON hints BEGIN
-                INSERT INTO hints_fts(rowid, concept, body) VALUES (new.id, new.concept, new.body);
-            END;
-        CREATE TRIGGER IF NOT EXISTS hints_fts_delete
-            BEFORE DELETE ON hints BEGIN
-                INSERT INTO hints_fts(hints_fts, rowid, concept, body)
-                    VALUES ('delete', old.id, old.concept, old.body);
-            END;
-        CREATE TRIGGER IF NOT EXISTS hints_fts_update
-            AFTER UPDATE ON hints BEGIN
-                INSERT INTO hints_fts(hints_fts, rowid, concept, body)
-                    VALUES ('delete', old.id, old.concept, old.body);
-                INSERT INTO hints_fts(rowid, concept, body) VALUES (new.id, new.concept, new.body);
-            END;
-    """)
-
-
-def _migrate_11(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS hint_extract_queue (
-            id              INTEGER PRIMARY KEY,
-            transcript_path TEXT    NOT NULL,
-            cwd             TEXT    NOT NULL DEFAULT '',
-            status          TEXT    NOT NULL DEFAULT 'pending',
-            priority        INTEGER NOT NULL DEFAULT 10,
-            attempts        INTEGER NOT NULL DEFAULT 0,
-            queued_at       INTEGER NOT NULL DEFAULT (unixepoch()),
-            error           TEXT
-        );
-    """)
-
-
-def _migrate_12(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS transcripts (
-            id        INTEGER PRIMARY KEY,
-            path      TEXT    NOT NULL DEFAULT '',
-            cwd       TEXT    NOT NULL DEFAULT '',
-            content   TEXT    NOT NULL DEFAULT '',
-            stored_at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-
-        CREATE TRIGGER IF NOT EXISTS transcripts_after_insert
-            AFTER INSERT ON transcripts
-        BEGIN
-            INSERT INTO hint_extract_queue(transcript_id, priority)
-            VALUES (new.id, 10);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS transcripts_after_update
-            AFTER UPDATE OF content ON transcripts
-        BEGIN
-            DELETE FROM hints
-                WHERE queue_id IN (
-                    SELECT id FROM hint_extract_queue WHERE transcript_id = new.id
-                );
-            UPDATE hint_extract_queue
-                SET status='pending', attempts=0, error=NULL
-                WHERE transcript_id = new.id;
-        END;
-
-        ALTER TABLE hint_extract_queue ADD COLUMN transcript_id INTEGER REFERENCES transcripts(id);
-        ALTER TABLE hints ADD COLUMN queue_id INTEGER REFERENCES hint_extract_queue(id) ON DELETE SET NULL;
-    """)
-
-
-def _migrate_14(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
-        DROP TRIGGER IF EXISTS hints_fts_insert;
-        DROP TRIGGER IF EXISTS hints_fts_delete;
-        DROP TRIGGER IF EXISTS hints_fts_update;
-        DROP TABLE IF EXISTS hints_fts;
-
-        CREATE TABLE IF NOT EXISTS knowledge (
-            id         INTEGER PRIMARY KEY,
-            concept    TEXT    NOT NULL,
-            pattern    TEXT    NOT NULL,
-            body       TEXT    NOT NULL,
-            source     TEXT    NOT NULL DEFAULT 'explicit',
-            importance INTEGER NOT NULL DEFAULT 1,
-            created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-            queue_id   INTEGER
-        );
-
-        INSERT OR IGNORE INTO knowledge(id, concept, pattern, body, source, created_at, queue_id)
-            SELECT id, concept, pattern, body, source, created_at, queue_id FROM hints;
-
-        DROP TABLE IF EXISTS hints;
-
-        CREATE TABLE IF NOT EXISTS knowledge_embeddings (
-            id           INTEGER PRIMARY KEY,
-            knowledge_id INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
-            vector       BLOB    NOT NULL,
-            model        TEXT    NOT NULL,
-            created_at   INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-
-        DROP TABLE IF EXISTS hint_extract_queue;
-
-        DROP TRIGGER IF EXISTS transcripts_after_insert;
-        DROP TRIGGER IF EXISTS transcripts_after_update;
-    """)
-
-
-def _migrate_13(conn: sqlite3.Connection) -> None:
-    # transcript_path is NOT NULL with no default; fix the auto-enqueue trigger
-    # to also populate it so the constraint is satisfied.
-    conn.executescript("""
-        DROP TRIGGER IF EXISTS transcripts_after_insert;
-        CREATE TRIGGER IF NOT EXISTS transcripts_after_insert
-            AFTER INSERT ON transcripts
-        BEGIN
-            INSERT INTO hint_extract_queue(transcript_id, transcript_path, cwd, priority)
-            VALUES (new.id, new.path, new.cwd, 10);
-        END;
-    """)
-
-
-def _migrate_15(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS knowledge_embed_queue (
-            id           INTEGER PRIMARY KEY,
-            knowledge_id INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
-            status       TEXT    NOT NULL DEFAULT 'pending',
-            queued_at    INTEGER NOT NULL DEFAULT (unixepoch()),
-            retries      INTEGER NOT NULL DEFAULT 0,
-            error        TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS knowledge_dedup_queue (
-            id           INTEGER PRIMARY KEY,
-            knowledge_id INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
-            status       TEXT    NOT NULL DEFAULT 'pending',
-            queued_at    INTEGER NOT NULL DEFAULT (unixepoch()),
-            retries      INTEGER NOT NULL DEFAULT 0,
-            error        TEXT
-        );
-    """)
-
-
-def _migrate_16(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        "ALTER TABLE knowledge ADD COLUMN surfaced_count INTEGER NOT NULL DEFAULT 0"
-    )
-
-
-def _migrate_17(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        "ALTER TABLE knowledge ADD COLUMN refined_at INTEGER"
-    )
-
-
-def _migrate_19(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        "ALTER TABLE knowledge ADD COLUMN fact_checked_at INTEGER"
-    )
-
-
-def _migrate_18(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        "ALTER TABLE knowledge ADD COLUMN suppressed_at INTEGER"
-    )
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS knowledge_contradictions (
-            id          INTEGER PRIMARY KEY,
-            id_a        INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
-            id_b        INTEGER NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
-            detected_at INTEGER NOT NULL DEFAULT (unixepoch())
-        );
-    """)
-
-
-def _migrate_20(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS repository (
-            id             INTEGER PRIMARY KEY,
-            path           TEXT    NOT NULL UNIQUE,
-            url            TEXT    NOT NULL DEFAULT '',
-            last_commit_at INTEGER NOT NULL DEFAULT 0
-        );
-
-        CREATE TABLE IF NOT EXISTS git_files (
-            id              INTEGER PRIMARY KEY,
-            git_branch      TEXT    NOT NULL DEFAULT '',
-            repository_id   INTEGER NOT NULL REFERENCES repository(id) ON DELETE CASCADE,
-            file_id         INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-            git_commit      TEXT,
-            git_author      TEXT,
-            git_enriched_at INTEGER,
-            UNIQUE (repository_id, file_id, git_branch)
-        );
-    """)
-
-
-_MIGRATIONS: dict[int, object] = {
-    1: _migrate_1,
-    2: _migrate_2,
-    3: _migrate_3,
-    4: _migrate_4,
-    5: _migrate_5,
-    6: _migrate_6,
-    7: _migrate_7,
-    8: _migrate_8,
-    9: _migrate_9,
-    10: _migrate_10,
-    11: _migrate_11,
-    12: _migrate_12,
-    13: _migrate_13,
-    14: _migrate_14,
-    15: _migrate_15,
-    16: _migrate_16,
-    17: _migrate_17,
-    18: _migrate_18,
-    19: _migrate_19,
-    20: _migrate_20,
-}
-
-
 def _init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     version = _get_version(conn)
-    if version < _CURRENT_VERSION:
-        for v in range(version + 1, _CURRENT_VERSION + 1):
-            fn = _MIGRATIONS.get(v)
-            if fn:
-                fn(conn)  # type: ignore[call-arg]
+    if version == 0:
         _set_version(conn, _CURRENT_VERSION)
+    elif version < _CURRENT_VERSION:
+        raise RuntimeError(
+            f"Database schema version {version} is too old to migrate automatically. "
+            "Delete the database file and let blerk recreate it."
+        )
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_content_hash_model"
         " ON embeddings(content_hash, model)"

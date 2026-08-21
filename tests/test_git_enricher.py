@@ -92,19 +92,23 @@ def test_process_row_enriches_file_from_real_repo(tmp_path):
     db_path = str(tmp_path / "test.db")
     conn = db.open_db(db_path)
     try:
-        cur = conn.execute(
-            "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            (str(file_path), 0, "h"),
+        conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES('h', 0)")
+        fid = int(conn.execute("SELECT id FROM files WHERE hash='h'").fetchone()[0])
+        conn.execute(
+            "INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)",
+            (str(file_path), fid),
         )
-        fid = int(cur.lastrowid)
+        fp_id = int(conn.execute(
+            "SELECT id FROM file_paths WHERE path=?", (str(file_path),)
+        ).fetchone()[0])
 
         queue_row = conn.execute(
-            "SELECT id FROM git_queue WHERE file_id=?", (fid,)
+            "SELECT id FROM git_queue WHERE file_path_id=?", (fp_id,)
         ).fetchone()
         assert queue_row is not None
         queue_id = int(queue_row[0])
 
-        rows = db.claim_batch(conn, "git_queue", "file_id", 10)
+        rows = db.claim_batch(conn, "git_queue", "file_path_id", 10)
         row = next(r for r in rows if r.id == queue_id)
 
         cfg = config.defaults()

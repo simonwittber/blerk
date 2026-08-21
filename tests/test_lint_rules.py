@@ -14,8 +14,10 @@ from blerk_cmd.lint_rules import (
 # ---------------------------------------------------------------------------
 
 def _insert_file(conn, path: str) -> int:
-    cur = conn.execute("INSERT INTO files(path, mtime, hash) VALUES(?,0,'h')", (path,))
-    return int(cur.lastrowid)
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (path,))
+    fid = int(conn.execute("SELECT id FROM files WHERE hash=?", (path,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (path, fid))
+    return fid
 
 
 def _insert_symbol(conn, file_id: int, name: str, kind: str,

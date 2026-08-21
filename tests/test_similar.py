@@ -65,10 +65,9 @@ def test_no_matches_strict_threshold(tmp_path):
     db_path = str(tmp_path / "test.db")
     conn = db.open_db(db_path)
     try:
-        fid = int(conn.execute(
-            "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            ("code.py", 0, "h"),
-        ).lastrowid)
+        conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", ("code.py",))
+        fid = int(conn.execute("SELECT id FROM files WHERE hash=?", ("code.py",)).fetchone()[0])
+        conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", ("code.py", fid))
 
         sid1 = _insert_symbol(conn, fid, "func1", line=1)
         bid1 = _insert_block(conn, sid1)
@@ -98,10 +97,9 @@ def test_similar_blocks_found(tmp_path):
     db_path = str(tmp_path / "test.db")
     conn = db.open_db(db_path)
     try:
-        fid = int(conn.execute(
-            "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            ("code.py", 0, "h"),
-        ).lastrowid)
+        conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", ("code.py",))
+        fid = int(conn.execute("SELECT id FROM files WHERE hash=?", ("code.py",)).fetchone()[0])
+        conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", ("code.py", fid))
 
         sid1 = _insert_symbol(conn, fid, "func1", line=1)
         bid1 = _insert_block(conn, sid1)
@@ -132,14 +130,12 @@ def test_extension_filtering(tmp_path):
     db_path = str(tmp_path / "test.db")
     conn = db.open_db(db_path)
     try:
-        fid_py = int(conn.execute(
-            "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            ("code.py", 0, "h"),
-        ).lastrowid)
-        fid_go = int(conn.execute(
-            "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            ("code.go", 0, "h"),
-        ).lastrowid)
+        conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", ("code.py",))
+        fid_py = int(conn.execute("SELECT id FROM files WHERE hash=?", ("code.py",)).fetchone()[0])
+        conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", ("code.py", fid_py))
+        conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", ("code.go",))
+        fid_go = int(conn.execute("SELECT id FROM files WHERE hash=?", ("code.go",)).fetchone()[0])
+        conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", ("code.go", fid_go))
 
         sid1 = _insert_symbol(conn, fid_py, "func_py", line=1)
         bid1 = _insert_block(conn, sid1)
@@ -170,10 +166,9 @@ def test_multiple_embedding_models_selects_most_frequent(tmp_path):
     db_path = str(tmp_path / "test.db")
     conn = db.open_db(db_path)
     try:
-        fid = int(conn.execute(
-            "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            ("code.py", 0, "h"),
-        ).lastrowid)
+        conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", ("code.py",))
+        fid = int(conn.execute("SELECT id FROM files WHERE hash=?", ("code.py",)).fetchone()[0])
+        conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", ("code.py", fid))
 
         sid1 = _insert_symbol(conn, fid, "func1")
         bid1 = _insert_block(conn, sid1)
@@ -207,10 +202,9 @@ def test_union_find_groups_clusters(tmp_path):
     db_path = str(tmp_path / "test.db")
     conn = db.open_db(db_path)
     try:
-        fid = int(conn.execute(
-            "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-            ("code.py", 0, "h"),
-        ).lastrowid)
+        conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", ("code.py",))
+        fid = int(conn.execute("SELECT id FROM files WHERE hash=?", ("code.py",)).fetchone()[0])
+        conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", ("code.py", fid))
 
         # Create a chain: A~B, B~C (so A,B,C form one cluster)
         sid_a = _insert_symbol(conn, fid, "funcA", line=1)

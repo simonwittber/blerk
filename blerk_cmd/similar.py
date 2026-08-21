@@ -33,7 +33,7 @@ def similar(conn, directory: str, threshold: float, exts: list[str] | None = Non
         f"""
         SELECT s.id, s.name, f.path, s.line, e.vector, e.model
         FROM symbols s
-        JOIN files f ON f.id = s.file_id
+        JOIN file_paths f ON f.file_id = s.file_id
         JOIN code_blocks cb ON cb.symbol_id = s.id
         JOIN embeddings e ON e.content_hash = cb.content_hash
         {where}
@@ -79,7 +79,7 @@ def similar(conn, directory: str, threshold: float, exts: list[str] | None = Non
             f"""
             SELECT s.id, vec_distance_cosine(e.vector, ?) AS dist
             FROM symbols s
-            JOIN files f ON f.id = s.file_id
+            JOIN file_paths f ON f.file_id = s.file_id
             JOIN code_blocks cb ON cb.symbol_id = s.id
             JOIN embeddings e ON e.content_hash = cb.content_hash
             {where}

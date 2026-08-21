@@ -58,7 +58,7 @@ def _fetch_symbols(
                COALESCE((SELECT content FROM code_blocks WHERE symbol_id=s.id AND block_index=0), ''),
                s.description
         FROM symbols s
-        JOIN files f ON f.id = s.file_id
+        JOIN file_paths f ON f.file_id = s.file_id
         WHERE {where}
         ORDER BY s.id
         {limit_clause}
@@ -211,7 +211,7 @@ def _reset_findings(conn, rule_ids: list[int], scope: Scope) -> int:
             WHERE rule_id IN ({id_placeholders})
               AND symbol_id IN (
                 SELECT s.id FROM symbols s
-                JOIN files f ON f.id = s.file_id
+                JOIN file_paths f ON f.file_id = s.file_id
                 WHERE {where}
               )
             """,
@@ -351,9 +351,9 @@ def _fetch_files_in_scope(conn, scope: Scope, exts: list[str]) -> list[tuple]:
     where = " AND ".join(filters)
     return conn.execute(
         f"""
-        SELECT DISTINCT f.id, f.path
-        FROM files f
-        JOIN symbols s ON s.file_id = f.id
+        SELECT DISTINCT f.file_id, f.path
+        FROM file_paths f
+        JOIN symbols s ON s.file_id = f.file_id
         WHERE {where}
         ORDER BY f.path
         """,

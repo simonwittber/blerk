@@ -98,10 +98,10 @@ def test_text_no_truncation_when_max_is_zero():
 
 
 def _insert_block(conn, tmp_path, sym_name: str = "foo") -> tuple[int, int]:
-    fid = int(conn.execute(
-        "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-        (str(tmp_path / "a.py"), 0, "h"),
-    ).lastrowid)
+    p = str(tmp_path / "a.py")
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (p,))
+    fid = int(conn.execute("SELECT id FROM files WHERE hash=?", (p,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (p, fid))
     sid = int(conn.execute(
         "INSERT INTO symbols(file_id, name, kind, line, end_line) VALUES(?,?,?,?,?)",
         (fid, sym_name, "function", 1, 5),

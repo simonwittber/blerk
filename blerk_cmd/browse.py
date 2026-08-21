@@ -20,7 +20,7 @@ def _unindexed_subdirs(conn, directory: str) -> list[str]:
             continue
         child_norm = normalize_dir(str(child))
         row = conn.execute(
-            "SELECT 1 FROM files WHERE path LIKE ? LIMIT 1",
+            "SELECT 1 FROM file_paths WHERE path LIKE ? LIMIT 1",
             (f"{child_norm}/%",),
         ).fetchone()
         if row is None:
@@ -51,7 +51,7 @@ def browse(
             f"""
             SELECT DISTINCT f.path
             FROM symbols s
-            JOIN files f ON f.id = s.file_id
+            JOIN file_paths f ON f.file_id = s.file_id
             {tag_sql}
             WHERE s.kind != 'heading'
               {ext_sql} {dir_sql}
@@ -71,7 +71,7 @@ def browse(
         f"""
         SELECT f.path, s.kind, s.name, s.line, s.end_line, COALESCE(s.params, '')
         FROM symbols s
-        JOIN files f ON f.id = s.file_id
+        JOIN file_paths f ON f.file_id = s.file_id
         {tag_sql}
         WHERE s.kind != 'heading'
           {ext_sql} {dir_sql}

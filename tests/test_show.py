@@ -28,11 +28,10 @@ def sample_file(tmp_path):
 def conn(tmp_path, sample_file):
     db_path = tmp_path / "index.db"
     conn = db.open_db(str(db_path))
-    conn.execute(
-        "INSERT INTO files(path, mtime, size, hash) VALUES (?, ?, ?, ?)",
-        (str(sample_file).replace("\\", "/"), 1, sample_file.stat().st_size, "abc"),
-    )
-    file_id = conn.execute("SELECT id FROM files WHERE path=?", (str(sample_file).replace("\\", "/"),)).fetchone()[0]
+    p = str(sample_file).replace("\\", "/")
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, ?)", ("abc", sample_file.stat().st_size))
+    file_id = int(conn.execute("SELECT id FROM files WHERE hash=?", ("abc",)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, ?, ?)", (p, 1, file_id))
     conn.executemany(
         "INSERT INTO symbols(file_id, name, kind, line, end_line, params) VALUES (?, ?, ?, ?, ?, ?)",
         [
@@ -105,11 +104,10 @@ class TestMainCli:
 
         # Populate DB so command can find symbol 'foo'.
         conn = db.open_db(str(tmp_path / "index.db"))
-        conn.execute(
-            "INSERT INTO files(path, mtime, size, hash) VALUES (?, ?, ?, ?)",
-            (str(sample_file).replace("\\", "/"), 1, sample_file.stat().st_size, "abc"),
-        )
-        file_id = conn.execute("SELECT id FROM files WHERE path=?", (str(sample_file).replace("\\", "/"),)).fetchone()[0]
+        p = str(sample_file).replace("\\", "/")
+        conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, ?)", ("abc", sample_file.stat().st_size))
+        file_id = int(conn.execute("SELECT id FROM files WHERE hash=?", ("abc",)).fetchone()[0])
+        conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, ?, ?)", (p, 1, file_id))
         conn.execute(
             "INSERT INTO symbols(file_id, name, kind, line, end_line, params) VALUES (?, ?, ?, ?, ?, ?)",
             (file_id, "foo", "function", 1, 3, ""),

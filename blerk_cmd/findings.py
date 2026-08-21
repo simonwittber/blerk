@@ -53,7 +53,7 @@ def _fetch_findings(
         JOIN analyzer_rules ar ON ar.id = fn.rule_id
         JOIN analyzers a ON a.id = ar.analyzer_id
         JOIN symbols s ON s.id = fn.symbol_id
-        JOIN files f ON f.id = s.file_id
+        JOIN file_paths f ON f.file_id = s.file_id
         WHERE {where}
         ORDER BY ar.severity, f.path, s.line
         """,

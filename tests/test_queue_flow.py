@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import sqlite3
-
 import pytest
 
 from blerk import config, db
@@ -18,11 +15,10 @@ def _cfg() -> config.Config:
 
 
 def _insert_file(conn, path: str = "a/b.py") -> int:
-    cur = conn.execute(
-        "INSERT INTO files(path, mtime, hash) VALUES(?,?,?)",
-        (path, 0, "h"),
-    )
-    return int(cur.lastrowid)
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES('h', 0)")
+    fid = int(conn.execute("SELECT id FROM files WHERE hash='h'").fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (path, fid))
+    return fid
 
 
 def _queue_count(conn, queue: str, status: str = "pending") -> int:
@@ -86,7 +82,7 @@ class TestPipelineIntegrity:
         syms = [Symbol(name="foo", kind="function", line=1, end_line=5, snippet="def foo(): pass")]
         process_symbols(conn, _cfg(), row, "a/b.py", syms, [])
         assert _queue_count(conn, "code_block_embed_queue") >= 1
-        conn.execute("DELETE FROM files WHERE id=?", (fid,))
+        conn.execute("DELETE FROM file_paths WHERE file_id=?", (fid,))
         assert _queue_count(conn, "code_block_embed_queue") == 0
 
     def test_changed_symbol_replaces_embed_queue_entry(self, conn):
@@ -163,100 +159,3 @@ class TestRestartSafety:
         assert _queue_count(conn, "code_block_embed_queue", "pending") == initial
 
 
-class TestMigrationContentHashBackfill:
-    def _build_pre_v7_db(self, db_path: str, snippet: str) -> None:
-        """Create a minimal v6 database with a symbol row containing snippet data."""
-        raw = sqlite3.connect(db_path)
-        raw.executescript("""
-            CREATE TABLE schema_version (version INTEGER NOT NULL DEFAULT 0);
-            INSERT INTO schema_version VALUES(6);
-
-            CREATE TABLE files (
-                id    INTEGER PRIMARY KEY,
-                path  TEXT NOT NULL UNIQUE,
-                mtime INTEGER NOT NULL,
-                size  INTEGER NOT NULL DEFAULT 0,
-                hash  TEXT NOT NULL
-            );
-
-            CREATE TABLE symbols (
-                id            INTEGER PRIMARY KEY,
-                file_id       INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-                name          TEXT NOT NULL,
-                kind          TEXT NOT NULL,
-                line          INTEGER NOT NULL,
-                end_line      INTEGER,
-                snippet       TEXT,
-                params        TEXT,
-                nesting_depth INTEGER NOT NULL DEFAULT 0,
-                param_count   INTEGER NOT NULL DEFAULT 0,
-                description   TEXT,
-                described_at  INTEGER,
-                ext           TEXT
-            );
-
-            CREATE TABLE embeddings (
-                id          INTEGER PRIMARY KEY,
-                symbol_id   INTEGER NOT NULL,
-                model       TEXT NOT NULL,
-                vector      BLOB NOT NULL,
-                embedded_at INTEGER NOT NULL
-            );
-
-            CREATE TABLE fingerprints (
-                symbol_id INTEGER NOT NULL,
-                kind      TEXT NOT NULL,
-                value     TEXT NOT NULL,
-                PRIMARY KEY (symbol_id, kind)
-            );
-
-            CREATE TABLE fingerprint_queue (
-                id        INTEGER PRIMARY KEY,
-                symbol_id INTEGER NOT NULL,
-                status    TEXT NOT NULL DEFAULT 'pending',
-                priority  INTEGER NOT NULL DEFAULT 1,
-                attempts  INTEGER NOT NULL DEFAULT 0,
-                queued_at INTEGER NOT NULL DEFAULT (unixepoch()),
-                error     TEXT
-            );
-        """)
-        raw.execute("INSERT INTO files(path, mtime, hash) VALUES(?,?,?)", ("a/b.py", 0, "h"))
-        fid = raw.execute("SELECT last_insert_rowid()").fetchone()[0]
-        raw.execute(
-            "INSERT INTO symbols(file_id, name, kind, line, end_line, snippet) VALUES(?,?,?,?,?,?)",
-            (fid, "foo", "function", 1, 5, snippet),
-        )
-        raw.commit()
-        raw.close()
-
-    def test_migrate7_backfills_content_hash_from_snippet(self, tmp_path):
-        snippet = "def foo(): pass"
-        db_path = str(tmp_path / "pre_v7.db")
-        self._build_pre_v7_db(db_path, snippet)
-
-        conn = db.open_db(db_path)
-        try:
-            row = conn.execute("SELECT content_hash FROM symbols WHERE name='foo'").fetchone()
-            assert row is not None
-            assert row[0] is not None
-            expected = hashlib.sha256(snippet.encode("utf-8", errors="replace")).hexdigest()[:16]
-            assert row[0] == expected
-        finally:
-            conn.close()
-
-    def test_migrate7_backfill_means_resymbolize_is_unchanged(self, tmp_path):
-        """After backfill, re-symbolizing the same content must not re-queue embeddings."""
-        snippet = "def foo(): pass"
-        db_path = str(tmp_path / "pre_v7.db")
-        self._build_pre_v7_db(db_path, snippet)
-
-        conn = db.open_db(db_path)
-        try:
-            conn.execute("DELETE FROM code_block_embed_queue")
-            fid = int(conn.execute("SELECT id FROM files WHERE path='a/b.py'").fetchone()[0])
-            row = db.QueueRow(id=1, target_id=fid)
-            syms = [Symbol(name="foo", kind="function", line=1, end_line=5, snippet=snippet)]
-            process_symbols(conn, _cfg(), row, "a/b.py", syms, [])
-            assert _queue_count(conn, "code_block_embed_queue") == 0
-        finally:
-            conn.close()

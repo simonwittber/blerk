@@ -15,12 +15,12 @@ def db_path(tmp_path):
 
 
 def _insert_file(db_path: str, path: str) -> int:
+    import hashlib
+    h = hashlib.md5(path.encode()).hexdigest()
     conn = db.open_db(db_path)
-    cur = conn.execute(
-        "INSERT INTO files(path, mtime, size, hash) VALUES(?,?,?,?)",
-        (path, 0, 0, "x"),
-    )
-    fid = int(cur.lastrowid)
+    conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (h,))
+    fid = int(conn.execute("SELECT id FROM files WHERE hash=?", (h,)).fetchone()[0])
+    conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (path, fid))
     conn.close()
     return fid
 
@@ -40,7 +40,7 @@ def test_purge_folder_removes_matching_files(db_path):
     _purge_folder(db_path, "/project/src")
 
     conn = db.open_db(db_path)
-    remaining = [r[0] for r in conn.execute("SELECT path FROM files").fetchall()]
+    remaining = [r[0] for r in conn.execute("SELECT path FROM file_paths").fetchall()]
     conn.close()
     assert remaining == ["/other/c.py"]
 
