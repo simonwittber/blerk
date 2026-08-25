@@ -16,6 +16,7 @@ class Watch:
     folders: list[str] = field(default_factory=list)
     debounce_ms: int = 0
     ignore_file: str = ""
+    rescan_interval_s: int = 300
 
 
 @dataclass

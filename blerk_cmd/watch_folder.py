@@ -260,6 +260,33 @@ class _Handler(FileSystemEventHandler):
             self._deb.add(dest, "create")
 
 
+def _start_rescan_thread(
+    folder: str,
+    conn: sqlite3.Connection,
+    root_sets: list,
+    all_sets: list,
+    interval_s: int,
+    shutdown: threading.Event,
+    client,
+    silent: bool,
+) -> threading.Thread:
+    def run() -> None:
+        while not shutdown.wait(timeout=interval_s):
+            if shutdown.is_set():
+                return
+            prev = _upsert_count.load()
+            _scan_dir(folder, root_sets, conn, all_sets)
+            delta = _upsert_count.load() - prev
+            if not silent and delta:
+                log.info("rescan: %d updated", delta)
+            if delta and client:
+                client.notify("symbol_queue")
+
+    t = threading.Thread(target=run, name="watch-rescan", daemon=True)
+    t.start()
+    return t
+
+
 def watch_folder(
     folder: str,
     conn: sqlite3.Connection,
@@ -269,6 +296,7 @@ def watch_folder(
     shutdown: threading.Event,
     db_path: str = "",
     silent: bool = False,
+    rescan_interval_s: int = 300,
 ):
     ignore_path = ignore_flag
 
@@ -326,6 +354,8 @@ def watch_folder(
     observer = Observer()
     observer.schedule(handler, folder, recursive=True)
     observer.start()
+    if rescan_interval_s > 0:
+        _start_rescan_thread(folder, conn, root_sets, all_sets, rescan_interval_s, shutdown, client, silent)
     return observer, debouncer
 
 
@@ -397,7 +427,7 @@ def main() -> None:
     ignore_path = args.ignore or cfg.watch.ignore_file
     folders = [args.folder] if args.folder else cfg.watch.folders
     for folder in folders:
-        result = watch_folder(folder, conn, ignore_path, debounce_s, args.scan, shutdown, cfg.db.path, silent)
+        result = watch_folder(folder, conn, ignore_path, debounce_s, args.scan, shutdown, cfg.db.path, silent, cfg.watch.rescan_interval_s)
         if result is not None:
             obs, deb = result
             observers.append(obs)
