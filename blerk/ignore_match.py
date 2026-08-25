@@ -122,6 +122,8 @@ def is_ignored(path: str, is_dir: bool, sets: list[IgnoreSet]) -> bool:
         except ValueError:
             continue
         rel = to_slash(rel).lower()
+        if rel.startswith(".."):
+            continue
         parts = rel.split("/")
         for p in s.patterns:
             if p.dir_only and not is_dir:
