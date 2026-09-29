@@ -4,30 +4,22 @@ import argparse
 import sys
 
 from blerk import config, db
-from blerk_cmd.query import _ext_sql
-from blerk_cmd.util import normalize_dir
+from blerk_cmd.util import Scope, index_root, scope_clause
 
 
-def list_tags(conn, directory: str = "", exts: list[str] | None = None) -> str:
-    ext_sql, ext_params = _ext_sql(exts or [])
-
-    dir_sql = ""
-    dir_params: list[str] = []
-    if directory:
-        norm = normalize_dir(directory).rstrip("/")
-        dir_sql = "AND (f.path LIKE ? OR f.path LIKE ?)"
-        dir_params = [f"%{norm}/%", f"%{norm}"]
+def list_tags(conn, directory: str = "", exts: list[str] | None = None, root: str = "") -> str:
+    scope_sql, scope_params = scope_clause(Scope(directory=directory, exts=exts or [], root=root))
 
     rows = conn.execute(
         f"""
         SELECT DISTINCT t.key, t.value
         FROM symbol_tags t
         JOIN symbols s ON s.id = t.symbol_id
-        JOIN files f ON f.id = s.file_id
-        WHERE 1=1 {ext_sql} {dir_sql}
+        JOIN file_paths f ON f.file_id = s.file_id
+        WHERE 1=1 {scope_sql}
         ORDER BY t.key, t.value
         """,
-        (*ext_params, *dir_params),
+        scope_params,
     ).fetchall()
 
     if not rows:
@@ -46,14 +38,15 @@ def list_tags(conn, directory: str = "", exts: list[str] | None = None) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="List all tag keys and values in the index.")
     parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("directory", help="restrict to this directory")
+    parser.add_argument("directory", nargs="?", default="",
+                        help="restrict to this directory, relative to the index root or absolute (default: the whole root)")
     parser.add_argument("--ext", action="append", default=[], dest="exts",
                         metavar="EXT", help="restrict to file extension, e.g. .cs (repeatable)")
     args = parser.parse_args(argv)
 
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
-    print(list_tags(conn, normalize_dir(args.directory), args.exts))
+    print(list_tags(conn, args.directory, args.exts, index_root(cfg)))
     conn.close()
     return 0
 

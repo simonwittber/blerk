@@ -4,16 +4,11 @@ import argparse
 import sys
 
 from blerk import config, db
-from blerk_cmd.util import normalize_dir
+from blerk_cmd.util import Scope, index_root, scope_clause, to_relative
 
 
-def deps(conn, directory: str = "") -> str:
-    dir_sql = ""
-    dir_params: list[str] = []
-    if directory:
-        norm = directory.replace("\\", "/").rstrip("/")
-        dir_sql = "AND f_caller.path LIKE ?"
-        dir_params = [f"%{norm}/%"]
+def deps(conn, directory: str = "", root: str = "") -> str:
+    scope_sql, scope_params = scope_clause(Scope(directory=directory, root=root), "f_caller.path")
 
     rows = conn.execute(
         f"""
@@ -24,29 +19,24 @@ def deps(conn, directory: str = "") -> str:
         JOIN file_paths f_caller ON f_caller.file_id = s_caller.file_id
         JOIN file_paths f_callee ON f_callee.file_id = s_callee.file_id
         WHERE f_caller.path != f_callee.path
-          {dir_sql}
+          {scope_sql}
         ORDER BY f_caller.path, f_callee.path
         """,
-        dir_params,
+        scope_params,
     ).fetchall()
 
     if not rows:
-        return "No dependency data found. Ensure engine=treesitter and symbol_refs are populated."
-
-    # Strip common directory prefix for compact display.
-    prefix = ""
-    if directory:
-        prefix = directory.replace("\\", "/").rstrip("/") + "/"
-
-    def rel(path: str) -> str:
-        p = path.replace("\\", "/")
-        return p[len(prefix):] if prefix and p.startswith(prefix) else p
+        where = directory or (root or "the index")
+        return (
+            f"No dependency data in {where}."
+            " Ensure engine=treesitter and symbol_refs are populated."
+        )
 
     # Group callees by caller file.
     graph: dict[str, list[str]] = {}
     for caller_path, callee_path in rows:
-        c = rel(caller_path)
-        graph.setdefault(c, []).append(rel(callee_path))
+        caller = to_relative(caller_path, root)
+        graph.setdefault(caller, []).append(to_relative(callee_path, root))
 
     lines = [f"{caller} -> {', '.join(callees)}" for caller, callees in sorted(graph.items())]
     return "\n".join(lines)
@@ -55,13 +45,13 @@ def deps(conn, directory: str = "") -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Show file-level dependency graph.")
     parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("directory", help="restrict to this directory")
+    parser.add_argument("directory", nargs="?", default="",
+                        help="restrict to this directory, relative to the index root or absolute (default: the whole root)")
     args = parser.parse_args(argv)
 
-    directory = normalize_dir(args.directory)
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
-    print(deps(conn, directory))
+    print(deps(conn, args.directory, index_root(cfg)))
     conn.close()
     return 0
 

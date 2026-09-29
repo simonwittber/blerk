@@ -36,26 +36,26 @@ max_retries = 3
 {llm_section}
 
 [embedder]
-backend = {embed_backend!r}
-endpoint = {embed_endpoint!r}
-model = {embed_model!r}
+backend = {embed_backend}
+endpoint = {embed_endpoint}
+model = {embed_model}
 batch_size = 10
 poll_ms = 2000
 max_retries = 3
 max_embed_chars = 2000
-device = {embed_device!r}
-cache_dir = {embed_cache_dir!r}
+device = {embed_device}
+cache_dir = {embed_cache_dir}
 
 [reranker]
-enabled = {reranker_enabled!r}
-endpoint = {reranker_endpoint!r}
-model = {reranker_model!r}
-api_key = {reranker_api_key!r}
+enabled = {reranker_enabled}
+endpoint = {reranker_endpoint}
+model = {reranker_model}
+api_key = {reranker_api_key}
 """
 
 _SECRETS_TEMPLATE = """\
 [llm]
-api_key = {api_key!r}
+api_key = {api_key}
 """
 
 _DEFAULT_IGNORE = """\
@@ -232,9 +232,21 @@ def _prompt_folders() -> list[str]:
     return folders
 
 
+def _toml_string(value: str) -> str:
+    """Quote a value as a TOML basic string.
+    Python's repr() is not usable here: it emits a single-quoted literal that TOML reads without escape processing, so backslashes end up doubled.
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _toml_bool(value: bool) -> str:
+    """TOML booleans are lowercase, unlike Python's True/False."""
+    return "true" if value else "false"
+
+
 def _toml_string_list(items: list[str]) -> str:
-    escaped = [v.replace("\\", "\\\\") for v in items]
-    inner = ", ".join(f'"{v}"' for v in escaped)
+    inner = ", ".join(_toml_string(v) for v in items)
     return f"[{inner}]"
 
 
@@ -477,8 +489,8 @@ def main(argv: list[str] | None = None) -> int:
     if llm_enabled:
         llm_section = f"""[[llm]]
 enabled = true
-endpoint = {llm_endpoint!r}
-model = {llm_model!r}
+endpoint = {_toml_string(llm_endpoint)}
+model = {_toml_string(llm_model)}
 batch_size = 5
 poll_ms = 3000
 max_retries = 3
@@ -491,26 +503,26 @@ prompt_template = "You are writing documentation for other programmers. Describe
     config_content = _CONFIG_TEMPLATE.format(
         folders=_toml_string_list(folders),
         llm_section=llm_section,
-        embed_backend=embed_backend,
-        embed_endpoint=embed_endpoint,
-        embed_model=embed_model,
-        embed_device=embed_device,
-        embed_cache_dir=embed_cache_dir,
-        reranker_enabled=reranker_enabled,
-        reranker_endpoint=reranker_endpoint,
-        reranker_model=reranker_model,
-        reranker_api_key=reranker_api_key,
+        embed_backend=_toml_string(embed_backend),
+        embed_endpoint=_toml_string(embed_endpoint),
+        embed_model=_toml_string(embed_model),
+        embed_device=_toml_string(embed_device),
+        embed_cache_dir=_toml_string(embed_cache_dir),
+        reranker_enabled=_toml_bool(reranker_enabled),
+        reranker_endpoint=_toml_string(reranker_endpoint),
+        reranker_model=_toml_string(reranker_model),
+        reranker_api_key=_toml_string(reranker_api_key),
     )
     if dry_run:
         print("-- config.toml (dry run) --")
         print(config_content)
         print("-- secrets.toml (dry run) --")
-        print(_SECRETS_TEMPLATE.format(api_key=api_key))
+        print(_SECRETS_TEMPLATE.format(api_key=_toml_string(api_key)))
     else:
         config_path.write_text(config_content, encoding="utf-8")
         print(f"  wrote  {config_path}")
 
-        secrets_content = _SECRETS_TEMPLATE.format(api_key=api_key)
+        secrets_content = _SECRETS_TEMPLATE.format(api_key=_toml_string(api_key))
         secrets_path.write_text(secrets_content, encoding="utf-8")
         print(f"  wrote  {secrets_path}")
 

@@ -180,10 +180,19 @@ def test_run_query_no_description_or_snippet(tmp_path, capsys):
     assert "snippet:" not in out
 
 
-def test_run_query_empty_db_prints_nothing(tmp_path, capsys):
+def test_run_query_empty_db_names_the_scope(tmp_path, capsys):
     conn = _open(tmp_path)
     query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "anything", QueryOptions(n=10))
-    assert capsys.readouterr().out == ""
+    assert "No results in the whole index." in capsys.readouterr().out
+
+
+def test_run_query_empty_scope_names_the_directory(tmp_path, capsys):
+    conn = _open(tmp_path)
+    opts = QueryOptions(n=10, directory="src/core", root="/repo")
+    query.run_query(conn, to_blob([1.0, 0.0, 0.0]), "anything", opts)
+    out = capsys.readouterr().out
+    assert "No results in src/core." in out
+    assert "/repo" in out
 
 
 # --- ext filter ---
@@ -287,14 +296,24 @@ def test_run_query_with_refs(tmp_path, capsys):
 
 # --- main ---
 
-def test_main_empty_db_prints_nothing(tmp_path, capsys, monkeypatch):
+def test_main_empty_db_names_the_scope(tmp_path, capsys, monkeypatch):
     db_path = tmp_path / "empty.db"
     db.open_db(str(db_path)).close()
     cfg_path = _write_config(tmp_path, db_path)
     monkeypatch.setattr(embedding, "embed", lambda *a, **kw: [1.0, 0.0, 0.0])
 
     assert query.main(["--config", str(cfg_path), "hello", "."]) == 0
-    assert capsys.readouterr().out == ""
+    assert "No results in ." in capsys.readouterr().out
+
+
+def test_main_directory_is_optional(tmp_path, capsys, monkeypatch):
+    db_path = tmp_path / "empty.db"
+    db.open_db(str(db_path)).close()
+    cfg_path = _write_config(tmp_path, db_path)
+    monkeypatch.setattr(embedding, "embed", lambda *a, **kw: [1.0, 0.0, 0.0])
+
+    assert query.main(["--config", str(cfg_path), "hello"]) == 0
+    assert "No results" in capsys.readouterr().out
 
 
 def test_main_end_to_end(tmp_path, capsys, monkeypatch):

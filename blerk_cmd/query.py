@@ -4,11 +4,13 @@ import argparse
 import sqlite3
 import struct
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from typing import NamedTuple
 
+import httpx
+
 from blerk import config, db, embedding
-from blerk_cmd.util import normalize_dir
+from blerk_cmd.util import Scope, index_root, scope_clause, scope_readings, to_relative
 
 
 @dataclass
@@ -22,6 +24,11 @@ class QueryOptions:
     refs: bool = False
     verbose: bool = False
     embed_model: str = ""
+    root: str = ""
+    loose: bool = False
+
+    def scope(self) -> Scope:
+        return Scope(directory=self.directory, exts=self.exts or [], root=self.root, loose=self.loose)
 
 # RRF smoothing constant: 60 is the standard value that prevents top ranks from dominating.
 _RRF_K = 60
@@ -36,20 +43,6 @@ def truncate(s: str, n: int) -> str:
     if len(s) <= n:
         return s
     return s[:n - 3] + "..."
-
-
-def _ext_sql(exts: list[str]) -> tuple[str, list[str]]:
-    if not exts:
-        return "", []
-    parts = " OR ".join("f.path LIKE ?" for _ in exts)
-    return f"AND ({parts})", [f"%{e}" for e in exts]
-
-
-def _dir_clause(directory: str) -> tuple[str, list[str]]:
-    if not directory:
-        return "", []
-    norm = normalize_dir(directory)
-    return "AND f.path LIKE ?", [f"%{norm}%"]
 
 
 def _no_headings_sql(exts: list[str]) -> str:
@@ -95,8 +88,7 @@ def print_refs(conn, symbol_id: int) -> None:
 
 def _vector_positions(conn, blob: bytes, k: int, opts: QueryOptions) -> dict[int, int]:
     exts = opts.exts or []
-    ext_sql, ext_params = _ext_sql(exts)
-    dir_sql, dir_params = _dir_clause(opts.directory)
+    scope_sql, scope_params = scope_clause(opts.scope())
     heading_sql = _no_headings_sql(exts)
     tag_sql, tag_params = _tag_clause(opts.tags or {})
     model_sql = "AND e.model = ?" if opts.embed_model else ""
@@ -109,11 +101,11 @@ def _vector_positions(conn, blob: bytes, k: int, opts: QueryOptions) -> dict[int
         JOIN symbols s ON s.id = cb.symbol_id
         JOIN file_paths f ON f.file_id = s.file_id
         {tag_sql}
-        WHERE 1=1 {heading_sql} {ext_sql} {dir_sql}
+        WHERE 1=1 {heading_sql} {scope_sql}
         ORDER BY vec_distance_cosine(e.vector, ?) ASC
         LIMIT ?
         """,
-        (*model_params, *tag_params, *ext_params, *dir_params, blob, k),
+        (*model_params, *tag_params, *scope_params, blob, k),
     ).fetchall()
     return {row[0]: rank for rank, row in enumerate(rows)}
 
@@ -123,8 +115,7 @@ def _bm25_symbol_positions(conn, query_text: str, k: int, opts: QueryOptions) ->
     if not query_text.strip():
         return {}
     exts = opts.exts or []
-    ext_sql, ext_params = _ext_sql(exts)
-    dir_sql, dir_params = _dir_clause(opts.directory)
+    scope_sql, scope_params = scope_clause(opts.scope())
     heading_sql = _no_headings_sql(exts)
     tag_sql, tag_params = _tag_clause(opts.tags or {})
     try:
@@ -136,11 +127,11 @@ def _bm25_symbol_positions(conn, query_text: str, k: int, opts: QueryOptions) ->
             JOIN file_paths f ON f.file_id = s.file_id
             {tag_sql}
             WHERE symbols_fts MATCH ?
-              {heading_sql} {ext_sql} {dir_sql}
+              {heading_sql} {scope_sql}
             ORDER BY symbols_fts.rank
             LIMIT ?
             """,
-            (*tag_params, query_text, *ext_params, *dir_params, k),
+            (*tag_params, query_text, *scope_params, k),
         ).fetchall()
     except sqlite3.OperationalError:
         return {}
@@ -152,8 +143,7 @@ def _bm25_content_positions(conn, query_text: str, k: int, opts: QueryOptions) -
     if not query_text.strip():
         return {}
     exts = opts.exts or []
-    ext_sql, ext_params = _ext_sql(exts)
-    dir_sql, dir_params = _dir_clause(opts.directory)
+    scope_sql, scope_params = scope_clause(opts.scope())
     heading_sql = _no_headings_sql(exts)
     tag_sql, tag_params = _tag_clause(opts.tags or {})
     try:
@@ -166,11 +156,11 @@ def _bm25_content_positions(conn, query_text: str, k: int, opts: QueryOptions) -
             JOIN file_paths f ON f.file_id = s.file_id
             {tag_sql}
             WHERE code_blocks_fts MATCH ?
-              {heading_sql} {ext_sql} {dir_sql}
+              {heading_sql} {scope_sql}
             ORDER BY code_blocks_fts.rank
             LIMIT ?
             """,
-            (*tag_params, query_text, *ext_params, *dir_params, k),
+            (*tag_params, query_text, *scope_params, k),
         ).fetchall()
     except sqlite3.OperationalError:
         return {}
@@ -324,11 +314,12 @@ def query_symbols(
     ]
 
 
-def format_verbose(conn, results: list[QueryResult], refs: bool = False) -> str:
+def format_verbose(conn, results: list[QueryResult], refs: bool = False, root: str = "") -> str:
     lines: list[str] = []
     for i, r in enumerate(results):
         sig = f"({r.params})" if r.params else ""
-        header = f"[{i + 1}] {r.kind} {r.name}{sig}  {r.path}:{r.line}-{r.end_line}  score:{r.score:.3f}"
+        path = to_relative(r.path, root)
+        header = f"[{i + 1}] {r.kind} {r.name}{sig}  {path}:{r.line}-{r.end_line}  score:{r.score:.3f}"
         if r.description:
             header += f"  {r.description}"
         lines.append(header)
@@ -344,21 +335,49 @@ def format_verbose(conn, results: list[QueryResult], refs: bool = False) -> str:
     return "\n".join(lines)
 
 
-def format_compact(results: list[QueryResult]) -> str:
+def format_compact(results: list[QueryResult], root: str = "") -> str:
     lines: list[str] = []
     for r in results:
         sig = f"({r.params})" if r.params else ""
-        lines.append(f"{r.kind} {r.name}{sig}  {r.path}:{r.line}-{r.end_line}")
+        lines.append(f"{r.kind} {r.name}{sig}  {to_relative(r.path, root)}:{r.line}-{r.end_line}")
     return "\n".join(lines)
 
 
+def query_scoped(conn, blob: bytes, query_text: str, opts: QueryOptions) -> tuple[list[QueryResult], bool]:
+    """Run the query against each reading of the directory argument until one matches.
+
+    The second element is True when a widened reading is what produced the results.
+    """
+    for i, scope in enumerate(scope_readings(opts.scope())):
+        attempt = replace(opts, root=scope.root, loose=scope.loose)
+        results = query_symbols(conn, blob, query_text, attempt)
+        if results:
+            return results, i > 0
+    return [], False
+
+
 def run_query(conn, blob: bytes, query_text: str, opts: QueryOptions) -> None:
-    results = query_symbols(conn, blob, query_text, opts)
-    if results:
-        if opts.verbose or opts.refs:
-            print(format_verbose(conn, results, opts.refs))
-        else:
-            print(format_compact(results))
+    results, loose = query_scoped(conn, blob, query_text, opts)
+    if not results:
+        print(no_results(opts))
+        return
+    if loose:
+        print(f"Nothing sits directly under '{opts.directory}', so this matches anywhere in the path.")
+    if opts.verbose or opts.refs:
+        print(format_verbose(conn, results, opts.refs, opts.root))
+    else:
+        print(format_compact(results, opts.root))
+
+
+def no_results(opts: QueryOptions) -> str:
+    """Describe the scope that was searched, so a caller can tell a bad path from an empty one."""
+    where = opts.directory or (opts.root or "the whole index")
+    line = f"No results in {where}."
+    if opts.root:
+        line += f" Index root: {opts.root}."
+    if opts.exts:
+        line += f" Extensions: {', '.join(opts.exts)}."
+    return line
 
 
 def snippet_search(conn, cfg: "config.Config", query_text: str, directory: str, n: int = 10) -> str:
@@ -367,11 +386,12 @@ def snippet_search(conn, cfg: "config.Config", query_text: str, directory: str, 
         query_text, cfg.embedder.device, cfg.embedder.cache_dir,
     )
     blob = to_blob(vec)
-    opts = QueryOptions(n=n, directory=directory, verbose=True, embed_model=cfg.embedder.model)
-    results = query_symbols(conn, blob, query_text, opts)
+    root = index_root(cfg)
+    opts = QueryOptions(n=n, directory=directory, verbose=True, embed_model=cfg.embedder.model, root=root)
+    results, _ = query_scoped(conn, blob, query_text, opts)
     if not results:
         return ""
-    return format_verbose(conn, results)
+    return format_verbose(conn, results, root=root)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -385,7 +405,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tag", action="append", default=[], dest="tags",
                         metavar="KEY=VALUE", help="filter by symbol tag, e.g. visibility=public (repeatable)")
     parser.add_argument("query", help="query text")
-    parser.add_argument("directory", help="restrict to this directory path substring")
+    parser.add_argument("directory", nargs="?", default="",
+                        help="restrict to this directory, relative to the index root or absolute (default: the whole root)")
     args = parser.parse_args(argv)
 
     cfg = config.load(args.config)
@@ -410,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
         refs=args.refs,
         tags=tag_filter or None,
         embed_model=cfg.embedder.model,
+        root=index_root(cfg),
     )
     run_query(conn, blob, args.query, opts)
     return 0

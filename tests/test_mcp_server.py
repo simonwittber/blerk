@@ -7,6 +7,7 @@ import sys
 import pytest
 
 import blerk_cmd.mcp_server as mcp_mod
+from blerk import db as blerk_db
 
 
 # ---------------------------------------------------------------------------
@@ -18,8 +19,22 @@ def _drive(monkeypatch, requests: list[dict]) -> list[dict]:
     stdin_data = "\n".join(json.dumps(r) for r in requests) + "\n"
     monkeypatch.setattr(sys, "stdin", io.StringIO(stdin_data))
     monkeypatch.setattr(mcp_mod, "_send", lambda obj: collected.append(obj))
+    # main() opens the configured database, so refuse it here to keep the developer's real index out of these tests.
+    monkeypatch.setattr(blerk_db, "open_db", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no db in tests")))
     mcp_mod.main()
     return collected
+
+
+@pytest.fixture(autouse=True)
+def isolated_server_state(monkeypatch):
+    """Keep these tests off the developer's real index.
+
+    Without this the knowledge table of the live database leaks hints into the asserted output.
+    """
+    monkeypatch.setattr(mcp_mod, "_conn", None)
+    monkeypatch.setattr(mcp_mod, "_root", "/repo")
+    monkeypatch.setattr(mcp_mod, "_seen_knowledge_ids", set())
+    yield
 
 
 # ---------------------------------------------------------------------------
@@ -48,9 +63,17 @@ class TestCall:
         args = list(calls[0])
         assert int(args[args.index("-n") + 1]) == 1
 
-    def test_search_empty_result_fallback(self, monkeypatch):
+    def test_search_empty_result_names_the_scope(self, monkeypatch):
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
-        assert mcp_mod._call("search", {"query": "x", "directory": "."}) == "No results found."
+        result = mcp_mod._call("search", {"query": "x", "directory": "src/core"})
+        assert "No results in src/core." in result
+        assert "/repo" in result
+
+    def test_search_without_directory_omits_the_positional(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("search", {"query": "x"})
+        assert list(calls[0]) == ["query", "x", "-n", "10"]
 
     def test_search_directory_passed(self, monkeypatch):
         calls = []
@@ -66,9 +89,16 @@ class TestCall:
         args = list(calls[0])
         assert args.count("--ext") == 2
 
-    def test_browse_fallback(self, monkeypatch):
+    def test_browse_empty_result_names_the_scope(self, monkeypatch):
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
-        assert mcp_mod._call("browse", {"directory": "."}) == "No indexed files found."
+        result = mcp_mod._call("browse", {"directory": "src/core"})
+        assert "No indexed files in src/core." in result
+
+    def test_browse_roots_flag(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
+        mcp_mod._call("browse", {"roots": True})
+        assert list(calls[0]) == ["browse", "--roots"]
 
     def test_browse_symbols_flag_added(self, monkeypatch):
         calls = []
@@ -89,16 +119,17 @@ class TestCall:
         assert "detail" in calls[0]
         assert "my_fn" in calls[0]
 
-    def test_detail_file_path_passed(self, monkeypatch):
+    def test_detail_file_passed(self, monkeypatch):
         calls = []
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: calls.append(a) or "ok")
-        mcp_mod._call("detail", {"name": "my_fn", "file_path": "src/a.py"})
+        mcp_mod._call("detail", {"name": "my_fn", "file": "src/a.py"})
         assert "--file" in calls[0]
         assert "src/a.py" in calls[0]
 
-    def test_deps_fallback(self, monkeypatch):
+    def test_deps_empty_result_names_the_scope(self, monkeypatch):
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
-        assert mcp_mod._call("deps", {"directory": "."}) == "No dependencies found."
+        result = mcp_mod._call("deps", {"directory": "src/core"})
+        assert "No dependencies in src/core." in result
 
     def test_deps_directory_passed(self, monkeypatch):
         calls = []
@@ -148,9 +179,9 @@ class TestMain:
         monkeypatch.setattr(mcp_mod, "_run", lambda *a: "")
         responses = _drive(monkeypatch, [
             {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
-             "params": {"name": "browse", "arguments": {"directory": "."}}}
+             "params": {"name": "browse", "arguments": {"directory": "src/core"}}}
         ])
-        assert responses[0]["result"]["content"][0]["text"] == "No indexed files found."
+        assert "No indexed files in src/core." in responses[0]["result"]["content"][0]["text"]
 
     def test_unknown_method_with_id_returns_error(self, monkeypatch):
         responses = _drive(monkeypatch, [

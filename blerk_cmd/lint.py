@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from blerk import config, db
 from blerk_cmd.lint_rules import RULES, Violation, build_scope
-from blerk_cmd.util import normalize_dir
+from blerk_cmd.util import Scope, index_root, scope_directory, to_relative
 
 
 @dataclass
@@ -101,9 +101,9 @@ def fetch_confusing(conn) -> list[ConfusingSymbol]:
 
 
 def print_results(directory: str, violations: list[Violation], symbol_count: int,
-                  confusing: list[ConfusingSymbol] | None = None) -> None:
+                  confusing: list[ConfusingSymbol] | None = None, root: str = "") -> None:
     for path, line, rule, display, score in violations:
-        loc = f"{path}:{line}"
+        loc = f"{to_relative(path, root)}:{line}"
         print(f"  {loc:<60} {rule:<22}  {score:5.1f}x  {display}")
     total = len(violations)
     per100 = round(total * 100.0 / symbol_count, 2) if symbol_count else 0.0
@@ -113,7 +113,7 @@ def print_results(directory: str, violations: list[Violation], symbol_count: int
     if confusing:
         print("  confusing:")
         for path, line, name, reason in confusing:
-            loc = f"{path}:{line}"
+            loc = f"{to_relative(path, root)}:{line}"
             suffix = f"  {reason}" if reason else ""
             print(f"    {loc:<60} {name}{suffix}")
 
@@ -121,7 +121,8 @@ def print_results(directory: str, violations: list[Violation], symbol_count: int
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lint code using the blerk index.")
     parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("directory", help="directory to lint")
+    parser.add_argument("directory", nargs="?", default="",
+                        help="directory to lint, relative to the index root or absolute (default: the whole root)")
     parser.add_argument("--exclude", action="append", dest="excludes", default=[], metavar="PATTERN",
                         help="exclude paths matching glob pattern (repeatable)")
     parser.add_argument("--timing", action="store_true", help="print per-rule timing to stderr")
@@ -143,8 +144,10 @@ def main(argv: list[str] | None = None) -> int:
         val = getattr(args, attr)
         thresholds[rule.name] = 0 if (rule.default < 0 and val) else (-1 if rule.default < 0 else val)
 
-    directory = normalize_dir(args.directory)
     cfg = config.load(args.config)
+    root = index_root(cfg)
+    # os.walk and the SQL filter both need the absolute form, so resolve the argument once here.
+    directory = scope_directory(Scope(directory=args.directory, root=root)) or root
     conn = db.open_db(cfg.db.path)
 
     violations = lint(conn, directory, thresholds, args.excludes, timing=args.timing)
@@ -155,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     conn.execute("DROP TABLE IF EXISTS _lint_files")
     conn.close()
 
-    print_results(directory, violations, symbol_count, confusing)
+    print_results(to_relative(directory, root), violations, symbol_count, confusing, root)
     return 0
 
 

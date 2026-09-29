@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import os
 import tomllib
 from dataclasses import dataclass, field, fields, is_dataclass, replace as dc_replace
 from pathlib import Path
+
+from blerk.paths import resolve_path
 
 
 @dataclass
@@ -338,11 +339,7 @@ def load(path: str) -> Config:
 
     cfg.db.path = expand_home(cfg.db.path)
     cfg.analyzers_file = expand_home(cfg.analyzers_file)
-    def _realpath_slash(p: str) -> str:
-        real = os.path.realpath(p)
-        return real.replace("\\", "/") if os.path.exists(real) else p.replace("\\", "/")
-
-    cfg.watch.folders = [_realpath_slash(expand_home(p)) for p in cfg.watch.folders]
+    cfg.watch.folders = [resolve_path(expand_home(p)) for p in cfg.watch.folders]
     cfg.watch.ignore_file = expand_home(cfg.watch.ignore_file)
 
     secrets_path = expand_home(cfg.secrets_file)

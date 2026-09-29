@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 
 from blerk import config, coordinator, daemon_util, db
-from blerk_cmd.util import normalize_dir
+from blerk_cmd.util import resolve_path, to_slash
 
 
 QUEUE = "git_queue"
@@ -20,7 +20,7 @@ log = logging.getLogger("git-enricher")
 
 
 def find_git_root(directory: str) -> str | None:
-    directory = normalize_dir(directory)
+    directory = resolve_path(directory)
     while True:
         if os.path.exists(os.path.join(directory, ".git")):
             return directory
@@ -41,7 +41,7 @@ def find_common_git_root(directory: str) -> str | None:
         common_dir = result.stdout.strip()
         if not os.path.isabs(common_dir):
             common_dir = os.path.normpath(os.path.join(directory, common_dir))
-        return normalize_dir(os.path.dirname(common_dir))
+        return resolve_path(os.path.dirname(common_dir))
     except Exception:
         return None
 
@@ -108,7 +108,7 @@ def process_row(
         return False, False
 
     common_root = find_common_git_root(os.path.dirname(path)) or root
-    rel_path = normalize_dir(os.path.relpath(path, root))
+    rel_path = to_slash(os.path.relpath(path, root))
 
     try:
         proc = subprocess.run(

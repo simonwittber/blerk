@@ -12,6 +12,7 @@ build/
 .venv/
 venv/
 env/
+uv.lock
 
 # Testing
 .pytest_cache/

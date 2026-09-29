@@ -4,11 +4,11 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dc_replace
 
 from blerk import config, db
 from blerk_cmd.llm_describer import describe
-from blerk_cmd.util import Scope, build_path_filters, placeholders
+from blerk_cmd.util import Scope, index_root, placeholders, scope_filters, to_relative
 
 
 @dataclass
@@ -24,9 +24,6 @@ class Finding:
     stale: bool = False
 
 
-_build_path_filters = build_path_filters
-
-
 def _fetch_symbols(
     conn,
     rule_ids: list[int],
@@ -35,7 +32,7 @@ def _fetch_symbols(
     min_lines: int,
     limit: int,
 ) -> list[tuple]:
-    path_filters, path_params = _build_path_filters(scope)
+    path_filters, path_params = scope_filters(scope)
 
     filters = [
         f"s.kind IN ({placeholders(len(kinds))})",
@@ -166,7 +163,7 @@ def _parse_response(
     return results
 
 
-def _print_text(findings: list[Finding], checked: int, unit: str = "symbols") -> None:
+def _print_text(findings: list[Finding], checked: int, unit: str = "symbols", root: str = "") -> None:
     total = len(findings)
     print(f"FINDINGS  ({checked} {unit} checked, {total} findings)")
     if not findings:
@@ -178,13 +175,13 @@ def _print_text(findings: list[Finding], checked: int, unit: str = "symbols") ->
         key=lambda f: (order.get(f.severity, 9), f.file_path, f.line),
     )
     for f in sorted_findings:
-        loc = f"{f.file_path}:{f.line}"
+        loc = f"{to_relative(f.file_path, root)}:{f.line}"
         print(f"{f.severity:<8} {f.rule_name:<32} [{f.confidence:.2f}]  {loc}  {f.symbol_name}")
         print(f"         {f.message}")
         print()
 
 
-def _print_json(findings: list[Finding]) -> None:
+def _print_json(findings: list[Finding], root: str = "") -> None:
     out = [
         {
             "rule": f.rule_name,
@@ -192,7 +189,7 @@ def _print_json(findings: list[Finding]) -> None:
             "message": f.message,
             "confidence": f.confidence,
             "symbol_name": f.symbol_name,
-            "file_path": f.file_path,
+            "file_path": to_relative(f.file_path, root),
             "line": f.line,
         }
         for f in findings
@@ -202,7 +199,7 @@ def _print_json(findings: list[Finding]) -> None:
 
 def _reset_findings(conn, rule_ids: list[int], scope: Scope) -> int:
     id_placeholders = ",".join("?" * len(rule_ids))
-    path_filters, path_params = _build_path_filters(scope)
+    path_filters, path_params = scope_filters(scope)
     if path_filters:
         where = " AND ".join(path_filters)
         result = conn.execute(
@@ -244,11 +241,7 @@ def run(
 
     active_rule_ids = [rule_name_to_id[r.name] for r in active_rules if r.name in rule_name_to_id]
 
-    effective_scope = Scope(
-        directory=scope.directory,
-        exts=scope.exts or analyzer.extensions,
-        excludes=scope.excludes,
-    )
+    effective_scope = dc_replace(scope, exts=scope.exts or analyzer.extensions)
     symbols = _fetch_symbols(
         conn,
         active_rule_ids,
@@ -345,8 +338,8 @@ _MAX_FILE_PROMPT_CHARS = 12_000
 
 
 def _fetch_files_in_scope(conn, scope: Scope, exts: list[str]) -> list[tuple]:
-    effective = Scope(directory=scope.directory, exts=scope.exts or exts, excludes=scope.excludes)
-    path_filters, path_params = _build_path_filters(effective)
+    effective = dc_replace(scope, exts=scope.exts or exts)
+    path_filters, path_params = scope_filters(effective)
     filters = ["EXISTS (SELECT 1 FROM code_blocks cb WHERE cb.symbol_id = s.id)"] + path_filters
     where = " AND ".join(filters)
     return conn.execute(
@@ -508,7 +501,8 @@ def run_file_mode(
                 for item in parsed:
                     sym_id = name_to_id.get(item["symbol"])
                     if sym_id is None:
-                        log.warning("analyze: unrecognised symbol %r from LLM for %s", item["symbol"], path)
+                        print(f"  unrecognised symbol {item['symbol']!r} from LLM for {path}",
+                              file=sys.stderr, flush=True)
                         continue
                     conn.execute(
                         "INSERT OR REPLACE INTO findings(symbol_id, rule_id, message, confidence, stale)"
@@ -538,7 +532,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=config.default_path())
     parser.add_argument("--analyzer", action="append", dest="analyzers", default=[], metavar="NAME",
                         help="run only this analyzer (repeatable; default: all)")
-    parser.add_argument("directory", help="restrict to this directory")
+    parser.add_argument("directory", nargs="?", default="",
+                        help="restrict to this directory, relative to the index root or absolute (default: the whole root)")
     parser.add_argument("--ext", action="append", dest="exts", default=[], metavar="EXT")
     parser.add_argument("--exclude", action="append", dest="excludes", default=[], metavar="PATTERN",
                         help="exclude paths matching glob pattern (repeatable)")
@@ -551,9 +546,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reset", action="store_true",
                         help="delete existing findings for selected analyzers, then exit")
     args = parser.parse_args(argv)
-    scope = Scope(directory=args.directory, exts=args.exts, excludes=args.excludes)
 
     cfg = config.load(args.config)
+    root = index_root(cfg)
+    scope = Scope(directory=args.directory, exts=args.exts, excludes=args.excludes, root=root)
     conn = db.open_db(cfg.db.path)
 
     try:
@@ -621,9 +617,9 @@ def main(argv: list[str] | None = None) -> int:
 
         unit = "items" if len(modes) > 1 else (modes.pop() if modes else "symbols")
         if args.output == "json":
-            _print_json(all_findings)
+            _print_json(all_findings, root)
         else:
-            _print_text(all_findings, total_checked, unit)
+            _print_text(all_findings, total_checked, unit, root)
 
     finally:
         conn.close()

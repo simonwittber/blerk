@@ -4,22 +4,11 @@ import argparse
 import sys
 
 from blerk import config, db
-from blerk_cmd.util import normalize_dir
+from blerk_cmd.util import Scope, index_root, scope_filters
 
 
-def rescan(conn, directory: str = "", exts: list[str] | None = None) -> int:
-    conditions: list[str] = []
-    params: list[str] = []
-
-    if directory:
-        norm = normalize_dir(directory).rstrip("/")
-        conditions.append("(path LIKE ? OR path LIKE ?)")
-        params += [f"%{norm}/%", f"%{norm}"]
-
-    for ext in (exts or []):
-        conditions.append("path LIKE ?")
-        params.append(f"%{ext}")
-
+def rescan(conn, directory: str = "", exts: list[str] | None = None, root: str = "") -> int:
+    conditions, params = scope_filters(Scope(directory=directory, exts=exts or [], root=root), "path")
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
     row = conn.execute(f"SELECT COUNT(DISTINCT file_id) FROM file_paths {where}", params).fetchone()
@@ -42,14 +31,15 @@ def rescan(conn, directory: str = "", exts: list[str] | None = None) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Re-queue files for symbolization.")
     parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("path", help="directory to rescan")
+    parser.add_argument("path", nargs="?", default="",
+                        help="directory to rescan, relative to the index root or absolute (default: the whole root)")
     parser.add_argument("--ext", action="append", default=[], dest="exts",
                         metavar="EXT", help="restrict to file extension, e.g. .cs (repeatable)")
     args = parser.parse_args(argv)
 
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
-    n = rescan(conn, args.path, args.exts)
+    n = rescan(conn, args.path, args.exts, index_root(cfg))
     conn.close()
 
     if n == 0:

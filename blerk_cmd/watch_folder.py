@@ -13,8 +13,8 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from blerk import config, coordinator, daemon_util, db
-from blerk.ignore_match import IgnoreSet, is_ignored, load_ignore_file, to_slash
-from blerk_cmd.util import normalize_dir
+from blerk.ignore_match import IgnoreSet, is_ignored, load_ignore_file
+from blerk_cmd.util import resolve_path
 
 _conn_lock = db._write_lock
 
@@ -57,7 +57,7 @@ def upsert_file(conn: sqlite3.Connection, path: str) -> None:
     mtime = int(st.st_mtime)
     size = int(st.st_size)
 
-    stored = normalize_dir(path)
+    stored = resolve_path(path)
     try:
         h = hash_file(real)
     except OSError:
@@ -106,7 +106,7 @@ def upsert_file(conn: sqlite3.Connection, path: str) -> None:
 
 
 def delete_file(conn: sqlite3.Connection, path: str) -> None:
-    stored = normalize_dir(path)
+    stored = resolve_path(path)
     try:
         with _conn_lock:
             conn.execute("DELETE FROM file_paths WHERE path=?", (stored,))

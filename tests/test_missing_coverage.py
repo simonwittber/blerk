@@ -12,8 +12,10 @@ from blerk import db
 from blerk.symbols.types import count_params, _insert_markers, _build_stripped, Symbol
 from blerk_cmd.analyze import _build_prompt, _parse_response
 from blerk_cmd.fingerprinter import simhash
-from blerk_cmd.query import _ext_sql, _dir_clause, _tag_clause, _no_headings_sql
-from blerk_cmd.util import build_path_filters, normalize_dir, Scope
+from blerk_cmd.query import _tag_clause, _no_headings_sql
+from blerk_cmd.util import (
+    Scope, resolve_path, scope_clause, scope_filters, scope_readings, to_relative, to_slash,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -70,56 +72,113 @@ class TestInsertMarkers:
 
 
 # ---------------------------------------------------------------------------
-# blerk_cmd.util — build_path_filters / normalize_dir
+# blerk_cmd.util — scope_filters / resolve_path / to_relative
 # ---------------------------------------------------------------------------
 
-class TestBuildPathFilters:
+class TestScopeFilters:
     def test_empty_scope_returns_no_filters(self):
-        filters, params = build_path_filters(Scope())
+        filters, params = scope_filters(Scope())
         assert filters == []
         assert params == []
 
-    def test_directory_filter_both_slash_styles(self):
-        scope = Scope(directory="C:/foo/bar")
-        filters, params = build_path_filters(scope)
+    def test_absolute_directory_is_prefix_anchored(self):
+        filters, params = scope_filters(Scope(directory="C:/foo/bar"))
         assert len(filters) == 1
-        joined = " ".join(params)
-        assert "C:/foo/bar" in joined or "C:\\foo\\bar" in joined
+        assert params == ["C:/foo/bar", "C:/foo/bar/%"]
+
+    def test_anchoring_does_not_match_a_longer_sibling(self, conn):
+        _insert_file(conn, "/src/blerk/a.py")
+        _insert_file(conn, "/src/blerk_cmd/b.py")
+        sql, params = scope_clause(Scope(directory="/src/blerk"), "path")
+        rows = conn.execute(f"SELECT path FROM file_paths WHERE 1=1 {sql}", params).fetchall()
+        assert [r[0] for r in rows] == ["/src/blerk/a.py"]
+
+    def test_relative_directory_joins_to_root(self):
+        _, params = scope_filters(Scope(directory="blerk_cmd", root="/repo"))
+        assert params == ["/repo/blerk_cmd", "/repo/blerk_cmd/%"]
+
+    def test_relative_directory_without_root_matches_any_ending(self):
+        _, params = scope_filters(Scope(directory="blerk_cmd"))
+        assert params == ["%/blerk_cmd", "%/blerk_cmd/%"]
+
+    def test_loose_directory_is_an_unanchored_substring(self):
+        _, params = scope_filters(Scope(directory="/src/blerk", loose=True))
+        assert params == ["%/src/blerk%"]
 
     def test_ext_filter_adds_like_clause(self):
-        scope = Scope(exts=[".py", ".go"])
-        filters, params = build_path_filters(scope)
+        _, params = scope_filters(Scope(exts=[".py", ".go"]))
         assert any(".py" in p for p in params)
         assert any(".go" in p for p in params)
 
+    def test_column_name_is_applied(self):
+        filters, _ = scope_filters(Scope(exts=[".py"]), "path")
+        assert "f.path" not in filters[0]
+        assert "path LIKE ?" in filters[0]
+
     def test_exclude_converts_glob_wildcards(self):
-        scope = Scope(excludes=["**/generated/*"])
-        filters, params = build_path_filters(scope)
+        filters, params = scope_filters(Scope(excludes=["**/generated/*"]))
         assert any("NOT LIKE" in f for f in filters)
         assert any("%" in p for p in params)
 
     def test_multiple_excludes(self):
-        scope = Scope(excludes=["*.gen.py", "vendor/*"])
-        filters, params = build_path_filters(scope)
-        not_like_count = sum(1 for f in filters if "NOT LIKE" in f)
-        assert not_like_count == 2
+        filters, _ = scope_filters(Scope(excludes=["*.gen.py", "vendor/*"]))
+        assert sum(1 for f in filters if "NOT LIKE" in f) == 2
 
     def test_question_mark_glob_becomes_sql_underscore(self):
-        scope = Scope(excludes=["?.py"])
-        _, params = build_path_filters(scope)
+        _, params = scope_filters(Scope(excludes=["?.py"]))
         assert any("_.py" in p for p in params)
 
 
-class TestNormalizeDir:
-    def test_non_empty_returns_realpath(self, tmp_path):
-        result = normalize_dir(str(tmp_path))
+class TestScopeReadings:
+    def test_no_directory_has_a_single_reading(self):
+        assert len(scope_readings(Scope(root="/repo"))) == 1
+
+    def test_rooted_directory_widens_twice(self):
+        readings = scope_readings(Scope(directory="Scripts", root="/repo"))
+        assert [(r.root, r.loose) for r in readings] == [("/repo", False), ("", False), ("/repo", True)]
+
+    def test_without_a_root_only_loose_is_added(self):
+        readings = scope_readings(Scope(directory="Scripts"))
+        assert [(r.root, r.loose) for r in readings] == [("", False), ("", True)]
+
+    def test_an_already_loose_scope_is_not_widened(self):
+        assert len(scope_readings(Scope(directory="Scripts", root="/repo", loose=True))) == 1
+
+    def test_widening_finds_a_fragment_that_is_not_under_the_root(self, conn):
+        _insert_file(conn, "/repo/game/Assets/Scripts/a.cs")
+        for scope in scope_readings(Scope(directory="Scripts", root="/repo")):
+            sql, params = scope_clause(scope, "path")
+            rows = conn.execute(f"SELECT path FROM file_paths WHERE 1=1 {sql}", params).fetchall()
+            if rows:
+                break
+        assert [r[0] for r in rows] == ["/repo/game/Assets/Scripts/a.cs"]
+
+
+class TestResolvePath:
+    def test_existing_path_returns_realpath(self, tmp_path):
         import os
-        assert result == os.path.realpath(str(tmp_path)).replace("\\", "/")
-        assert normalize_dir("nonexistent_xyz_abc") == "nonexistent_xyz_abc"
+        assert resolve_path(str(tmp_path)) == os.path.realpath(str(tmp_path)).replace("\\", "/")
+
+    def test_missing_path_is_returned_as_written(self):
+        assert resolve_path("nonexistent_xyz_abc") == "nonexistent_xyz_abc"
 
     def test_empty_string_returns_empty(self):
-        result = normalize_dir("")
-        assert result == ""
+        assert resolve_path("") == ""
+
+    def test_to_slash_does_not_touch_the_filesystem(self):
+        assert to_slash("a\\b\\c") == "a/b/c"
+        assert to_slash("a/b/") == "a/b"
+
+
+class TestToRelative:
+    def test_strips_the_root_prefix(self):
+        assert to_relative("/repo/blerk_cmd/query.py", "/repo") == "blerk_cmd/query.py"
+
+    def test_path_outside_the_root_is_unchanged(self):
+        assert to_relative("/other/a.py", "/repo") == "/other/a.py"
+
+    def test_no_root_is_a_no_op(self):
+        assert to_relative("/repo/a.py", "") == "/repo/a.py"
 
 
 # ---------------------------------------------------------------------------
@@ -244,42 +303,33 @@ class TestSimhash:
 # blerk_cmd.query — SQL helper functions
 # ---------------------------------------------------------------------------
 
-class TestExtSql:
-    def test_empty_list_returns_empty(self):
-        sql, params = _ext_sql([])
+class TestScopeClause:
+    def test_empty_scope_returns_empty(self):
+        sql, params = scope_clause(Scope())
         assert sql == ""
         assert params == []
 
     def test_single_ext(self):
-        sql, params = _ext_sql([".py"])
+        sql, params = scope_clause(Scope(exts=[".py"]))
         assert "LIKE ?" in sql
-        assert params == ["%  .py".replace("  ", "")]
+        assert params == ["%.py"]
 
     def test_multiple_exts_joined_with_or(self):
-        sql, params = _ext_sql([".py", ".go"])
+        sql, params = scope_clause(Scope(exts=[".py", ".go"]))
         assert " OR " in sql
         assert len(params) == 2
 
-    def test_params_have_leading_percent(self):
-        _, params = _ext_sql([".ts"])
+    def test_ext_params_have_leading_percent(self):
+        _, params = scope_clause(Scope(exts=[".ts"]))
         assert all(p.startswith("%") for p in params)
 
-
-class TestDirClause:
-    def test_empty_directory_returns_empty(self):
-        sql, params = _dir_clause("")
-        assert sql == ""
-        assert params == []
-
-    def test_non_empty_directory_adds_like(self):
-        sql, params = _dir_clause("/some/path")
-        assert "LIKE ?" in sql
-        assert len(params) == 1
-        assert "/some/path" in params[0]
+    def test_clause_is_prefixed_with_and(self):
+        sql, _ = scope_clause(Scope(directory="/some/path"))
+        assert sql.startswith("AND ")
 
     def test_backslashes_normalised(self):
-        _, params = _dir_clause("C:\\Users\\foo")
-        assert "\\" not in params[0]
+        _, params = scope_clause(Scope(directory="C:\\Users\\foo"))
+        assert all("\\" not in p for p in params)
 
 
 class TestTagClause:
@@ -318,7 +368,7 @@ class TestNoHeadingsSql:
 
 
 # ---------------------------------------------------------------------------
-# blerk_cmd.query — _dir_clause and _ext_sql via SQL roundtrip
+# blerk_cmd.util — scope_clause via SQL roundtrip
 # Note: These are already unit-tested above; we add one DB roundtrip test
 # to confirm the clauses actually filter correctly when used in a query.
 # ---------------------------------------------------------------------------
@@ -338,13 +388,13 @@ def _insert_sym(conn, fid: int, name: str) -> int:
     return int(cur.lastrowid)
 
 
-def test_ext_sql_filters_in_query(conn):
+def test_scope_ext_filters_in_query(conn):
     fid_py = _insert_file(conn, "/src/foo.py")
     fid_go = _insert_file(conn, "/src/bar.go")
     _insert_sym(conn, fid_py, "foo")
     _insert_sym(conn, fid_go, "bar")
 
-    sql_clause, params = _ext_sql([".py"])
+    sql_clause, params = scope_clause(Scope(exts=[".py"]))
     rows = conn.execute(
         f"SELECT s.name FROM symbols s JOIN file_paths f ON f.file_id=s.file_id WHERE 1=1 {sql_clause}",
         params,

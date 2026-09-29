@@ -5,26 +5,23 @@ import sys
 from pathlib import Path
 
 from blerk import config, db
-from blerk_cmd.query import _ext_sql, _tag_clause
-from blerk_cmd.util import normalize_dir
+from blerk_cmd.query import _tag_clause
+from blerk_cmd.util import Scope, index_root, scope_clause, scope_directory, to_relative
 
 
-def _unindexed_subdirs(conn, directory: str) -> list[str]:
-    root = Path(normalize_dir(directory))
-    if not root.is_dir():
+def _unindexed_subdirs(conn, directory: str, root: str) -> list[str]:
+    start = Path(scope_directory(Scope(directory=directory, root=root)))
+    if not start.is_dir():
         return []
-    norm = normalize_dir(str(root)).rstrip("/")
     unindexed: list[str] = []
-    for child in sorted(root.iterdir()):
+    for child in sorted(start.iterdir()):
         if not child.is_dir():
             continue
-        child_norm = normalize_dir(str(child))
-        row = conn.execute(
-            "SELECT 1 FROM file_paths WHERE path LIKE ? LIMIT 1",
-            (f"{child_norm}/%",),
-        ).fetchone()
+        child_scope = Scope(directory=str(child))
+        filters, params = scope_clause(child_scope, "path")
+        row = conn.execute(f"SELECT 1 FROM file_paths WHERE 1=1 {filters} LIMIT 1", params).fetchone()
         if row is None:
-            unindexed.append(child_norm)
+            unindexed.append(to_relative(str(child).replace("\\", "/"), root))
     return unindexed
 
 
@@ -34,17 +31,11 @@ def browse(
     exts: list[str] | None = None,
     symbols: bool = False,
     tags: dict[str, str] | None = None,
+    root: str = "",
 ) -> str:
-    exts = exts or []
-    ext_sql, ext_params = _ext_sql(exts)
+    scope = Scope(directory=directory, exts=exts or [], root=root)
+    scope_sql, scope_params = scope_clause(scope)
     tag_sql, tag_params = _tag_clause(tags or {})
-
-    dir_sql = ""
-    dir_params: list[str] = []
-    if directory:
-        norm = normalize_dir(directory).rstrip("/")
-        dir_sql = "AND (f.path LIKE ? OR f.path LIKE ?)"
-        dir_params = [f"%{norm}/%", f"%{norm}"]
 
     if not symbols:
         rows = conn.execute(
@@ -54,15 +45,15 @@ def browse(
             JOIN file_paths f ON f.file_id = s.file_id
             {tag_sql}
             WHERE s.kind != 'heading'
-              {ext_sql} {dir_sql}
+              {scope_sql}
             ORDER BY f.path
             """,
-            (*tag_params, *ext_params, *dir_params),
+            (*tag_params, *scope_params),
         ).fetchall()
         if not rows:
-            return "No indexed files found."
-        result = "\n".join(r[0] for r in rows)
-        unindexed = _unindexed_subdirs(conn, directory)
+            return _nothing_found(directory, root, "files")
+        result = "\n".join(to_relative(r[0], root) for r in rows)
+        unindexed = _unindexed_subdirs(conn, directory, root)
         if unindexed:
             result += "\n" + "\n".join(f"[not indexed] {d}" for d in unindexed)
         return result
@@ -74,14 +65,14 @@ def browse(
         JOIN file_paths f ON f.file_id = s.file_id
         {tag_sql}
         WHERE s.kind != 'heading'
-          {ext_sql} {dir_sql}
+          {scope_sql}
         ORDER BY f.path, s.line
         """,
-        (*tag_params, *ext_params, *dir_params),
+        (*tag_params, *scope_params),
     ).fetchall()
 
     if not rows:
-        return "No indexed symbols found."
+        return _nothing_found(directory, root, "symbols")
 
     lines: list[str] = []
     current_path = None
@@ -92,7 +83,7 @@ def browse(
         if path != current_path:
             if current_path is not None:
                 lines.append("")
-            lines.append(path)
+            lines.append(to_relative(path, root))
             current_path = path
             containers = []
 
@@ -113,10 +104,26 @@ def browse(
             containers.append((end, depth + 1))
 
     result = "\n".join(lines)
-    unindexed = _unindexed_subdirs(conn, directory)
+    unindexed = _unindexed_subdirs(conn, directory, root)
     if unindexed:
         result += "\n" + "\n".join(f"[not indexed] {d}" for d in unindexed)
     return result
+
+
+def _nothing_found(directory: str, root: str, what: str) -> str:
+    """Name the scope that was searched, so a caller can tell a wrong path from an empty directory."""
+    where = directory or (root or "the index")
+    line = f"No indexed {what} in {where}."
+    if root:
+        line += f" Index root: {root}."
+    return line
+
+
+def roots(cfg: config.Config) -> str:
+    """List the watch folders that make up the index."""
+    if not cfg.watch.folders:
+        return "No watch folders configured."
+    return "Index roots:\n" + "\n".join(f"  {f}" for f in cfg.watch.folders)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -124,7 +131,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=config.default_path())
     parser.add_argument("--ext", action="append", default=[], dest="exts",
                         metavar="EXT", help="restrict to file extension, e.g. .py (repeatable)")
-    parser.add_argument("directory", help="restrict to this directory")
+    parser.add_argument("directory", nargs="?", default="",
+                        help="restrict to this directory, relative to the index root or absolute (default: the whole root)")
+    parser.add_argument("--roots", action="store_true", help="list the index roots and exit")
     parser.add_argument("--symbols", action="store_true",
                         help="show the full indented symbol tree instead of filenames only")
     parser.add_argument("--tag", action="append", default=[], dest="tags",
@@ -137,10 +146,14 @@ def main(argv: list[str] | None = None) -> int:
             k, v = t.split("=", 1)
             tag_filter[k.strip()] = v.strip()
 
-    directory = normalize_dir(args.directory)
     cfg = config.load(args.config)
+    if args.roots:
+        print(roots(cfg))
+        return 0
+
+    root = index_root(cfg)
     conn = db.open_db(cfg.db.path)
-    print(browse(conn, directory, args.exts, symbols=args.symbols, tags=tag_filter or None))
+    print(browse(conn, args.directory, args.exts, symbols=args.symbols, tags=tag_filter or None, root=root))
     return 0
 
 

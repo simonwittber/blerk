@@ -3,28 +3,19 @@ from __future__ import annotations
 import sys
 
 from blerk import config, db
-from blerk_cmd.util import normalize_dir
+from blerk_cmd.util import Scope, index_root, scope_clause, to_relative
 
 
-def summary(cfg: config.Config, directory: str = "") -> str:
+def summary(cfg: config.Config, directory: str = "", root: str = "") -> str:
     try:
         conn = db.open_db(cfg.db.path)
     except Exception:
         return ""
 
-    dir_sql = ""
-    dir_params: list = []
-    if directory:
-        norm = normalize_dir(directory).rstrip("/")
-        dir_sql = "AND (path LIKE ? OR path LIKE ?)"
-        dir_params = [f"%{norm}/%", f"%{norm}"]
-
-    sym_dir_sql = ""
-    sym_dir_params: list = []
-    if directory:
-        norm = normalize_dir(directory).rstrip("/")
-        sym_dir_sql = "AND (f.path LIKE ? OR f.path LIKE ?)"
-        sym_dir_params = [f"%{norm}/%", f"%{norm}"]
+    # The same scope is applied twice because file_paths is queried both directly and through a join alias.
+    scope = Scope(directory=directory, root=root)
+    dir_sql, dir_params = scope_clause(scope, "path")
+    sym_dir_sql, sym_dir_params = scope_clause(scope, "f.path")
 
     total_files = conn.execute(
         f"SELECT COUNT(*) FROM file_paths WHERE 1=1 {dir_sql}", dir_params
@@ -64,14 +55,14 @@ def summary(cfg: config.Config, directory: str = "") -> str:
     emb_pct = int(embedded / total_syms * 100) if total_syms else 0
     desc_pct = int(described / describable * 100) if describable else 0
 
-    lines: list[str] = [f"Blerk index: {directory or 'all'}", ""]
+    lines: list[str] = [f"Blerk index: {directory or root or 'all'}", ""]
     lines.append(f"Files: {total_files:,} | Symbols: {total_syms:,} | Embeddings: {emb_pct}% | Descriptions: {desc_pct}%")
 
     if recent:
         lines.append("")
         lines.append("Recent changes (7 days):")
         for (path,) in recent:
-            lines.append(f"  {path}")
+            lines.append(f"  {to_relative(path, root)}")
 
     if findings:
         lines.append("")
@@ -85,7 +76,8 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(description="Print a project index snapshot.")
     parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("directory", help="restrict to this directory")
+    parser.add_argument("directory", nargs="?", default="",
+                        help="restrict to this directory, relative to the index root or absolute (default: the whole root)")
     args = parser.parse_args(argv)
 
     try:
@@ -94,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"blerk: {e}", file=sys.stderr)
         return 1
 
-    text = summary(cfg, normalize_dir(args.directory))
+    text = summary(cfg, args.directory, index_root(cfg))
     if not text:
         print("blerk: database not found.")
         return 1

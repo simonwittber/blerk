@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
-import os
 import re
 import subprocess
 import sys
@@ -15,6 +14,24 @@ if TYPE_CHECKING:
 
 _seen_knowledge_ids: set[int] = set()
 _conn: "_sqlite3.Connection | None" = None
+_root: str = ""
+
+_DIRECTORY_ARG = {
+    "type": "string",
+    "description": (
+        "Directory to restrict to, written relative to the index root exactly as you would for reading a file"
+        " (for example 'blerk_cmd' or 'src/indexing'). An absolute path also works."
+        " Omit it to search the whole index root. Results come back as root-relative paths."
+    ),
+}
+
+_FILE_ARG = {
+    "type": "string",
+    "description": (
+        "File to restrict to, relative to the index root (for example 'blerk_cmd/query.py')."
+        " An absolute path, or a bare file name, also works."
+    ),
+}
 
 _TOOLS = [
     {
@@ -24,24 +41,28 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
-                "directory": {"type": "string"},
+                "directory": _DIRECTORY_ARG,
                 "file_extensions": {"type": "array", "items": {"type": "string"}},
                 "n": {"type": "integer"},
             },
-            "required": ["query", "directory"],
+            "required": ["query"],
         },
     },
     {
         "name": "browse",
-        "description": "List indexed source files. Set symbols=true for an indented symbol tree.",
+        "description": (
+            "List indexed source files. Set symbols=true for an indented symbol tree."
+            " Call with no arguments to list the index roots."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "directory": {"type": "string"},
+                "directory": _DIRECTORY_ARG,
                 "file_extensions": {"type": "array", "items": {"type": "string"}},
                 "symbols": {"type": "boolean"},
+                "roots": {"type": "boolean", "description": "List the index roots instead of any files."},
             },
-            "required": ["directory"],
+            "required": [],
         },
     },
     {
@@ -51,7 +72,7 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
-                "file_path": {"type": "string"},
+                "file": _FILE_ARG,
             },
             "required": ["name"],
         },
@@ -62,9 +83,9 @@ _TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "directory": {"type": "string"},
+                "directory": _DIRECTORY_ARG,
             },
-            "required": ["directory"],
+            "required": [],
         },
     },
     {
@@ -93,7 +114,7 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "target": {"type": "string", "description": "file path or exact symbol name"},
-                "file": {"type": "string", "description": "restrict symbol lookup to a file path substring"},
+                "file": _FILE_ARG,
                 "lines": {"type": "integer", "description": "maximum number of source lines to display"},
             },
             "required": ["target"],
@@ -106,8 +127,8 @@ _PATH_RE = re.compile(r"\s{2,}(\S+):\d+-\d+")
 
 
 def _pattern_matches(path: str, pattern: str) -> bool:
-    from blerk_cmd.util import normalize_dir
-    pattern = normalize_dir(pattern)
+    from blerk_cmd.util import to_slash
+    pattern = to_slash(pattern)
     parts = path.split("/")
     for i in range(len(parts)):
         if fnmatch.fnmatch("/".join(parts[i:]), pattern):
@@ -146,6 +167,23 @@ def _hints_for_paths(paths: list[str]) -> str:
     return "\nHints:\n" + "\n".join(matched)
 
 
+def _directory_args(args: dict) -> list[str]:
+    """Return the directory as a positional argument list, empty when the caller did not scope the call."""
+    directory = (args.get("directory") or "").strip()
+    return [directory] if directory else []
+
+
+def _empty(what: str, args: dict) -> str:
+    """Say what scope came up empty, so the caller can tell a wrong path from an empty directory."""
+    directory = (args.get("directory") or "").strip()
+    where = directory or (_root or "the index")
+    line = f"No {what} in {where}."
+    if _root:
+        line += f" Index root: {_root}."
+    line += " Paths are relative to the index root; call browse with roots=true to list the roots."
+    return line
+
+
 def _run(*args: str) -> str:
     result = subprocess.run(
         ["blerk"] + list(args),
@@ -181,30 +219,31 @@ def _call(name: str, args: dict) -> str:  # noqa: C901
         cmd = ["query", args["query"], "-n", str(n)]
         for ext in args.get("file_extensions", []):
             cmd += ["--ext", ext]
-        cmd.append(args["directory"])
-        output = _run(*cmd) or "No results found."
-        from blerk_cmd.util import normalize_dir
-        paths = [normalize_dir(p) for p in _PATH_RE.findall(output)]
+        cmd += _directory_args(args)
+        output = _run(*cmd) or _empty("results", args)
+        from blerk_cmd.util import to_slash
+        paths = [to_slash(p) for p in _PATH_RE.findall(output)]
         return output + _hints_for_paths(paths)
 
     if name == "browse":
+        if args.get("roots"):
+            return _run("browse", "--roots")
         cmd = ["browse"]
         for ext in args.get("file_extensions", []):
             cmd += ["--ext", ext]
         if args.get("symbols"):
             cmd.append("--symbols")
-        cmd.append(args["directory"])
-        return _run(*cmd) or "No indexed files found."
+        cmd += _directory_args(args)
+        return _run(*cmd) or _empty("indexed files", args)
 
     if name == "detail":
         cmd = ["detail", args["name"]]
-        if args.get("file_path"):
-            cmd += ["--file", args["file_path"]]
+        if args.get("file"):
+            cmd += ["--file", args["file"]]
         return _run(*cmd)
 
     if name == "deps":
-        cmd = ["deps", args["directory"]]
-        return _run(*cmd) or "No dependencies found."
+        return _run("deps", *_directory_args(args)) or _empty("dependencies", args)
 
     if name == "show":
         cmd = ["show", args["target"]]
@@ -218,18 +257,22 @@ def _call(name: str, args: dict) -> str:  # noqa: C901
 
 
 def _build_instructions(cfg_path: str) -> str:
+    """Return the server instructions, naming the index root this session is working inside."""
+    global _root
     try:
         from blerk import config
-        from blerk_cmd.util import normalize_dir
+        from blerk_cmd.util import index_root
         cfg = config.load(cfg_path)
-        cwd = normalize_dir(os.getcwd())
-        watched = any(
-            cwd.startswith(normalize_dir(f).rstrip("/"))
-            for f in cfg.watch.folders
-        )
-        if not watched:
+        _root = index_root(cfg)
+        if not _root:
             return ""
-        return cfg.knowledge.instructions
+        return (
+            f"{cfg.knowledge.instructions}\n"
+            f"Index root: {_root}\n"
+            "Paths in blerk arguments and results are relative to that root, "
+            "the same form you use for reading and editing files. "
+            "The directory argument is optional and defaults to the whole root."
+        ).strip()
     except Exception:
         return ""
 

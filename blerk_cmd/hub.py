@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from blerk import config, coordinator, db
-from blerk_cmd.util import normalize_dir
+from blerk_cmd.util import resolve_path
 
 PID_FILE = Path.home() / ".blerk" / "blerk.pid"
 
@@ -89,7 +89,7 @@ def managed(name: str, argv: list[str], shutdown_event: threading.Event) -> None
 
 
 def _purge_folder(db_path: str, folder: str) -> None:
-    prefix = normalize_dir(folder).rstrip("/") + "/"
+    prefix = resolve_path(folder) + "/"
     try:
         conn = db.open_db(db_path)
         with db._write_lock:

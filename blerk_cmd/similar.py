@@ -5,28 +5,22 @@ import sys
 from collections import defaultdict
 
 from blerk import config, db
-from blerk_cmd.query import _ext_sql
-from blerk_cmd.util import Scope, build_path_filters
+from blerk_cmd.util import Scope, index_root, scope_clause, to_relative
 
 
-def similar(conn, directory: str, threshold: float, exts: list[str] | None = None, top_k: int = 20) -> None:
+def similar(conn, directory: str, threshold: float, exts: list[str] | None = None, top_k: int = 20,
+            root: str = "") -> None:
     """Find semantically similar code blocks within a scoped directory."""
 
-    # Build WHERE clause for directory and extension filters
-    ext_clause, ext_params = _ext_sql(exts or [])
-    scope = Scope(directory=directory, exts=[])
-    dir_filters, dir_params = build_path_filters(scope)
-    dir_clause = ("AND " + " AND ".join(dir_filters)) if dir_filters else ""
+    scope_sql, where_params = scope_clause(Scope(directory=directory, exts=exts or [], root=root))
 
     where_fragments = [
         "AND cb.block_index = 0",
         "AND s.kind IN ('function', 'method')",
         "AND f.path NOT LIKE '%test%'",
-        ext_clause,
-        dir_clause,
+        scope_sql,
     ]
     where = "WHERE 1=1 " + " ".join(f for f in where_fragments if f)
-    where_params = ext_params + dir_params
 
     # Fetch all blocks in scope with embeddings
     all_blocks = conn.execute(
@@ -125,13 +119,12 @@ def similar(conn, directory: str, threshold: float, exts: list[str] | None = Non
     # Group nodes by component
     components: dict[int, list[int]] = defaultdict(list)
     for sym_id in all_syms:
-        root = find(sym_id)
-        components[root].append(sym_id)
+        components[find(sym_id)].append(sym_id)
 
     # Print grouped clusters (components with >1 member)
     group_num = 1
     has_groups = False
-    for root, member_ids in sorted(components.items()):
+    for _component, member_ids in sorted(components.items()):
         if len(member_ids) > 1:
             has_groups = True
             member_set = set(member_ids)
@@ -149,7 +142,7 @@ def similar(conn, directory: str, threshold: float, exts: list[str] | None = Non
                     min_dist = 0.0
 
                 name, path, line = sym_metadata[sym_id]
-                print(f"  {min_dist:.2f}  {path}:{line}  {name}")
+                print(f"  {min_dist:.2f}  {to_relative(path, root)}:{line}  {name}")
             print()
 
             group_num += 1
@@ -181,13 +174,14 @@ def main(argv: list[str] | None = None) -> int:
         default=20,
         help="max neighbours to scan per block (default: 20)",
     )
-    parser.add_argument("directory", help="directory to search within")
+    parser.add_argument("directory", nargs="?", default="",
+                        help="directory to search within, relative to the index root or absolute (default: the whole root)")
     args = parser.parse_args(argv)
 
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
     try:
-        similar(conn, args.directory, args.threshold, args.exts, args.top_k)
+        similar(conn, args.directory, args.threshold, args.exts, args.top_k, index_root(cfg))
     finally:
         conn.close()
 

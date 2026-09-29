@@ -338,7 +338,8 @@ def test_reset_findings_with_directory_filter(conn, tmp_path):
     sub = tmp_path / "sub"
     sub.mkdir()
 
-    p_in = str(sub / "in.py")
+    # The indexer always stores forward-slash paths, so seed them the same way here.
+    p_in = str(sub / "in.py").replace("\\", "/")
     conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (p_in,))
     fid_in = int(conn.execute("SELECT id FROM files WHERE hash=?", (p_in,)).fetchone()[0])
     conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (p_in, fid_in))
@@ -353,7 +354,7 @@ def test_reset_findings_with_directory_filter(conn, tmp_path):
         (sid_in, 0, "pass", 1, 5),
     )
 
-    p_out = str(tmp_path / "out.py")
+    p_out = str(tmp_path / "out.py").replace("\\", "/")
     conn.execute("INSERT OR IGNORE INTO files(hash, size) VALUES(?, 0)", (p_out,))
     fid_out = int(conn.execute("SELECT id FROM files WHERE hash=?", (p_out,)).fetchone()[0])
     conn.execute("INSERT INTO file_paths(path, mtime, file_id) VALUES(?, 0, ?)", (p_out, fid_out))

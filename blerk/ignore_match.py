@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from blerk.paths import to_slash
+
 
 class Kind(StrEnum):
     EXACT = "exact"
@@ -108,10 +110,6 @@ def load_ignore_file(path: str) -> list[Pattern]:
             has_slash = "/" in line
             patterns.append(compile_pattern(line, dir_only, has_slash))
     return patterns
-
-
-def to_slash(p: str) -> str:
-    return p.replace("\\", "/")
 
 
 def is_ignored(path: str, is_dir: bool, sets: list[IgnoreSet]) -> bool:

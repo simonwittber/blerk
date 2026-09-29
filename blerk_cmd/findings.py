@@ -6,7 +6,7 @@ import sys
 
 from blerk import config, db
 from blerk_cmd.analyze import Finding
-from blerk_cmd.util import Scope, build_path_filters as _build_path_filters
+from blerk_cmd.util import Scope, index_root, scope_filters, to_relative
 
 
 def _fetch_findings(
@@ -17,7 +17,7 @@ def _fetch_findings(
     severity: str,
     min_confidence: float,
 ) -> list[Finding]:
-    path_filters, path_params = _build_path_filters(scope)
+    path_filters, path_params = scope_filters(scope)
 
     filters = ["fn.confidence > 0"]
     params: list = []
@@ -76,13 +76,13 @@ def _fetch_findings(
     ]
 
 
-def _print_text(findings: list[Finding]) -> None:
+def _print_text(findings: list[Finding], root: str = "") -> None:
     if not findings:
         print("No findings.")
         return
     order = {"error": 0, "warning": 1, "info": 2}
     for f in sorted(findings, key=lambda x: (order.get(x.severity, 9), x.file_path, x.line)):
-        loc = f"{f.file_path}:{f.line}"
+        loc = f"{to_relative(f.file_path, root)}:{f.line}"
         stale = " [STALE]" if f.stale else ""
         print(f"{f.severity:<8} {f.rule_name:<32} [{f.confidence:.2f}]{stale}  {loc}  {f.symbol_name}")
         if f.message:
@@ -90,7 +90,7 @@ def _print_text(findings: list[Finding]) -> None:
         print()
 
 
-def _print_json(findings: list[Finding]) -> None:
+def _print_json(findings: list[Finding], root: str = "") -> None:
     print(json.dumps([
         {
             "rule": f.rule_name,
@@ -98,7 +98,7 @@ def _print_json(findings: list[Finding]) -> None:
             "message": f.message,
             "confidence": f.confidence,
             "symbol_name": f.symbol_name,
-            "file_path": f.file_path,
+            "file_path": to_relative(f.file_path, root),
             "line": f.line,
         }
         for f in findings
@@ -108,7 +108,8 @@ def _print_json(findings: list[Finding]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Show stored analyzer findings.")
     parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("directory", help="restrict to this directory")
+    parser.add_argument("directory", nargs="?", default="",
+                        help="restrict to this directory, relative to the index root or absolute (default: the whole root)")
     parser.add_argument("--ext", action="append", dest="exts", default=[], metavar="EXT")
     parser.add_argument("--exclude", action="append", dest="excludes", default=[], metavar="PATTERN")
     parser.add_argument("--analyzer", action="append", dest="analyzers", default=[], metavar="NAME")
@@ -118,20 +119,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", choices=["text", "json"], default="text")
     args = parser.parse_args(argv)
 
-    scope = Scope(directory=args.directory, exts=args.exts, excludes=args.excludes)
-
     cfg = config.load(args.config)
+    root = index_root(cfg)
+    scope = Scope(directory=args.directory, exts=args.exts, excludes=args.excludes, root=root)
+
     conn = db.open_db(cfg.db.path)
     try:
         findings = _fetch_findings(
             conn, scope, args.analyzers, args.rules, args.severity, args.min_confidence,
         )
         if args.output == "json":
-            _print_json(findings)
+            _print_json(findings, root)
         else:
             print(f"{len(findings)} finding{'s' if len(findings) != 1 else ''}.")
             print()
-            _print_text(findings)
+            _print_text(findings, root)
     finally:
         conn.close()
     return 0

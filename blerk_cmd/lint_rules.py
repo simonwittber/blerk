@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable
 
-from blerk_cmd.util import normalize_dir
+from blerk_cmd.util import Scope, scope_filters
 
 Violation = tuple[str, int, str, str, float]  # path, line, rule, display, score
 
@@ -28,18 +28,9 @@ def rule(default: int, flag: str, help: str):
     return decorator
 
 
-def build_scope(conn, directory: str, excludes: list[str]) -> None:
+def build_scope(conn, directory: str, excludes: list[str], root: str = "") -> None:
     conn.execute("DROP TABLE IF EXISTS _lint_files")
-    parts: list[str] = []
-    params: list = []
-    if directory:
-        norm = normalize_dir(directory).replace("\\", "/").rstrip("/")
-        parts.append("(f.path LIKE ? OR f.path LIKE ?)")
-        params += [f"%{norm}/%", f"%{norm}"]
-    for pat in excludes:
-        sql = pat.replace("\\", "/").replace("*", "%").replace("?", "_")
-        parts.append("f.path NOT LIKE ?")
-        params.append(sql)
+    parts, params = scope_filters(Scope(directory=directory, excludes=excludes, root=root))
     where = ("WHERE " + " AND ".join(parts)) if parts else ""
     conn.execute(
         f"CREATE TEMP TABLE _lint_files AS SELECT f.file_id AS file_id, f.path FROM file_paths f {where}",
