@@ -377,3 +377,87 @@ def test_main_ext_flag(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "alpha_py" in out
     assert "alpha_cs" not in out
+
+
+# --- reranker ---
+
+def _rows(n: int) -> list:
+    # (id, name, kind, path, line, end_line, desc, params) as _rerank expects
+    return [(i, f"sym{i}", "function", f"/r/{i}.py", 1, 5, "", "") for i in range(n)]
+
+
+def _reranker(**kw):
+    from blerk import config
+    return config.Reranker(endpoint="http://rr.local", model="m", enabled=True, **kw)
+
+
+def test_rerank_reorders_by_returned_indices(monkeypatch):
+    import httpx
+    monkeypatch.setattr(query.httpx, "post", lambda *a, **k: httpx.Response(
+        200, json={"choices": [{"message": {"content": "3, 1, 2"}}]}))
+    got = query._rerank(_reranker(), "q", _rows(3))
+    assert [r[1] for r in got] == ["sym2", "sym0", "sym1"]
+
+
+def test_rerank_http_error_warns_and_keeps_order(monkeypatch, capsys):
+    import httpx
+    monkeypatch.setattr(query.httpx, "post", lambda *a, **k: httpx.Response(401, text="unauthorized"))
+    rows = _rows(3)
+    assert query._rerank(_reranker(), "q", rows) == rows
+    err = capsys.readouterr().err
+    assert "reranker" in err and "401" in err and "unranked" in err
+
+
+def test_rerank_empty_reply_warns_and_keeps_order(monkeypatch, capsys):
+    """A reasoning model that spends its budget thinking returns no ranking; that must not pass silently."""
+    import httpx
+    monkeypatch.setattr(query.httpx, "post", lambda *a, **k: httpx.Response(
+        200, json={"choices": [{"message": {"content": ""}}]}))
+    rows = _rows(3)
+    assert query._rerank(_reranker(), "q", rows) == rows
+    assert "no ranking in reply" in capsys.readouterr().err
+
+
+def test_rerank_connection_error_warns_and_keeps_order(monkeypatch, capsys):
+    import httpx
+    def boom(*a, **k):
+        raise httpx.ConnectError("refused")
+    monkeypatch.setattr(query.httpx, "post", boom)
+    rows = _rows(2)
+    assert query._rerank(_reranker(), "q", rows) == rows
+    assert "reranker" in capsys.readouterr().err
+
+
+def test_rerank_sends_configured_max_tokens(monkeypatch):
+    import httpx
+    seen = {}
+    def handler(url, json=None, headers=None, timeout=None):
+        seen.update(json)
+        seen["url"] = url
+        return httpx.Response(200, json={"choices": [{"message": {"content": "1"}}]})
+    monkeypatch.setattr(query.httpx, "post", handler)
+    query._rerank(_reranker(max_tokens=4096), "q", _rows(1))
+    assert seen["max_tokens"] == 4096
+    assert seen["url"] == "http://rr.local/v1/chat/completions"
+
+
+def test_rerank_thinking_on_by_default(monkeypatch):
+    import httpx
+    seen = {}
+    def handler(url, json=None, headers=None, timeout=None):
+        seen.update(json)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "1"}}]})
+    monkeypatch.setattr(query.httpx, "post", handler)
+    query._rerank(_reranker(), "q", _rows(1))
+    assert "chat_template_kwargs" not in seen
+
+
+def test_rerank_think_false_disables_thinking(monkeypatch):
+    import httpx
+    seen = {}
+    def handler(url, json=None, headers=None, timeout=None):
+        seen.update(json)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "1"}}]})
+    monkeypatch.setattr(query.httpx, "post", handler)
+    query._rerank(_reranker(think=False), "q", _rows(1))
+    assert seen["chat_template_kwargs"] == {"enable_thinking": False}

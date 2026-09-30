@@ -284,7 +284,13 @@ def process_symbols(
         raise
 
 
-def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> None:
+def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False,
+        daemon_name: str = DAEMON) -> None:
+    """Symbolize queued files until shutdown.
+
+    daemon_name distinguishes the heartbeat rows when symbolizer.workers spawns more than one,
+    which previously had every worker overwriting the same row.
+    """
     conn = db.open_db(cfg.db.path)
     try:
         db.recover_orphans(conn, QUEUE)
@@ -392,7 +398,7 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
 
         try:
             db.write_heartbeat(conn, db.Heartbeat(
-                DAEMON, status, queue_depth,
+                daemon_name, status, queue_depth,
                 processed_today, retries_today, failures_today,
                 rate, eta, last_err,
             ))

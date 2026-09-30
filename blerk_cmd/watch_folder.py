@@ -397,43 +397,30 @@ def start_heartbeat_thread(conn: sqlite3.Connection, shutdown: threading.Event) 
     return t
 
 
-def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(message)s",
-        datefmt="%Y/%m/%d %H:%M:%S",
-    )
+def run(cfg: config.Config, shutdown: threading.Event, folders: list[str] | None = None,
+        ignore: str = "", scan_only: bool = False, silent: bool = False) -> None:
+    """Watch folders for changes until shutdown is set.
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default=config.default_path())
-    parser.add_argument("--ignore", default="", help="override ignore file path (default: watch.ignore_file from config)")
-    parser.add_argument("--scan", action="store_true", help="exit after initial scan without watching for changes")
-    parser.add_argument("--folder", default="", help="watch a single folder (overrides config folder list)")
-    parser.add_argument("--silent", action="store_true")
-    args = parser.parse_args()
-
-    cfg = config.load(args.config)
-    daemon_util.setup_logging(args.silent or cfg.silent)
+    Kept separate from main() so the hub can run this in a thread the same way it runs every other daemon.
+    """
     conn = db.open_db(cfg.db.path)
 
     debounce_s = cfg.watch.debounce_ms / 1000.0
-    shutdown = daemon_util.make_shutdown()
-    silent = args.silent or cfg.silent
-    if not args.scan:
+    if not scan_only:
         start_heartbeat_thread(conn, shutdown)
 
     observers = []
     debouncers = []
-    ignore_path = args.ignore or cfg.watch.ignore_file
-    folders = [args.folder] if args.folder else cfg.watch.folders
-    for folder in folders:
-        result = watch_folder(folder, conn, ignore_path, debounce_s, args.scan, shutdown, cfg.db.path, silent, cfg.watch.rescan_interval_s)
+    ignore_path = ignore or cfg.watch.ignore_file
+    for folder in (folders if folders is not None else cfg.watch.folders):
+        result = watch_folder(folder, conn, ignore_path, debounce_s, scan_only, shutdown,
+                              cfg.db.path, silent, cfg.watch.rescan_interval_s)
         if result is not None:
             obs, deb = result
             observers.append(obs)
             debouncers.append(deb)
 
-    if args.scan:
+    if scan_only:
         return
 
     try:
@@ -464,6 +451,34 @@ def main() -> None:
         obs.stop()
     for obs in observers:
         obs.join()
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(message)s",
+        datefmt="%Y/%m/%d %H:%M:%S",
+    )
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=config.default_path())
+    parser.add_argument("--ignore", default="", help="override ignore file path (default: watch.ignore_file from config)")
+    parser.add_argument("--scan", action="store_true", help="exit after initial scan without watching for changes")
+    parser.add_argument("--folder", default="", help="watch a single folder (overrides config folder list)")
+    parser.add_argument("--silent", action="store_true")
+    args = parser.parse_args()
+
+    cfg = config.load(args.config)
+    silent = args.silent or cfg.silent
+    daemon_util.setup_logging(silent)
+    run(
+        cfg,
+        daemon_util.make_shutdown(),
+        folders=[args.folder] if args.folder else None,
+        ignore=args.ignore,
+        scan_only=args.scan,
+        silent=silent,
+    )
 
 
 if __name__ == "__main__":

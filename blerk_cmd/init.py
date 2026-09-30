@@ -36,15 +36,12 @@ max_retries = 3
 {llm_section}
 
 [embedder]
-backend = {embed_backend}
 endpoint = {embed_endpoint}
 model = {embed_model}
 batch_size = 10
 poll_ms = 2000
 max_retries = 3
 max_embed_chars = 2000
-device = {embed_device}
-cache_dir = {embed_cache_dir}
 
 [reranker]
 enabled = {reranker_enabled}
@@ -250,13 +247,6 @@ def _toml_string_list(items: list[str]) -> str:
     return f"[{inner}]"
 
 
-def _get_default_embed_model(backend: str) -> str:
-    """Get appropriate default embedding model for backend."""
-    if backend == "sentence-transformers":
-        return "all-MiniLM-L6-v2"
-    return "nomic-embed-text"
-
-
 def _load_existing_config(config_path: Path) -> dict:
     """Load existing config and extract current values as defaults."""
     defaults = {
@@ -264,11 +254,8 @@ def _load_existing_config(config_path: Path) -> dict:
         "llm_enabled": True,
         "llm_endpoint": "http://localhost:11434",
         "llm_model": "llama3.2",
-        "embed_backend": "sentence-transformers",
-        "embed_endpoint": "",
-        "embed_model": "all-MiniLM-L6-v2",
-        "embed_device": "auto",
-        "embed_cache_dir": "~/.cache/huggingface",
+        "embed_endpoint": "http://localhost:11434",
+        "embed_model": "nomic-embed-text",
         "reranker_enabled": False,
         "reranker_endpoint": "http://localhost:11434",
         "reranker_model": "",
@@ -293,11 +280,8 @@ def _load_existing_config(config_path: Path) -> dict:
                 defaults["llm_model"] = cfg["llm"].get("model", defaults["llm_model"])
         if "embedder" in cfg:
             embed = cfg["embedder"]
-            defaults["embed_backend"] = embed.get("backend", defaults["embed_backend"])
             defaults["embed_endpoint"] = embed.get("endpoint", defaults["embed_endpoint"])
             defaults["embed_model"] = embed.get("model", defaults["embed_model"])
-            defaults["embed_device"] = embed.get("device", defaults["embed_device"])
-            defaults["embed_cache_dir"] = embed.get("cache_dir", defaults["embed_cache_dir"])
         if "reranker" in cfg:
             rr = cfg["reranker"]
             defaults["reranker_enabled"] = rr.get("enabled", defaults["reranker_enabled"])
@@ -309,17 +293,16 @@ def _load_existing_config(config_path: Path) -> dict:
     return defaults
 
 
-def _detect_embedding_model_change(existing: dict, new_backend: str, new_model: str, db_path: str) -> bool:
-    """Detect if embedding backend or model changed. If so, ask to re-queue."""
-    old_backend = existing.get("embed_backend", "ollama")
+def _detect_embedding_model_change(existing: dict, new_model: str, db_path: str) -> bool:
+    """Detect if the embedding model changed. If so, ask to re-queue."""
     old_model = existing.get("embed_model", "nomic-embed-text")
 
-    if old_backend == new_backend and old_model == new_model:
+    if old_model == new_model:
         return False  # No change
 
     print("⚠ Embedding model changed!")
-    print(f"  Old: {old_backend}/{old_model}")
-    print(f"  New: {new_backend}/{new_model}")
+    print(f"  Old: {old_model}")
+    print(f"  New: {new_model}")
     print()
 
     ans = input("Re-queue all blocks for re-embedding? [y/N]: ").strip().lower()
@@ -379,11 +362,8 @@ def main(argv: list[str] | None = None) -> int:
         llm_enabled = existing["llm_enabled"]
         llm_endpoint = existing["llm_endpoint"]
         llm_model = existing["llm_model"]
-        embed_backend = existing["embed_backend"]
         embed_endpoint = existing["embed_endpoint"]
         embed_model = existing["embed_model"]
-        embed_device = existing["embed_device"]
-        embed_cache_dir = existing["embed_cache_dir"]
         api_key = ""
         folders = existing["folders"]
         available_models = []
@@ -397,31 +377,19 @@ def main(argv: list[str] | None = None) -> int:
         llm_enabled = enable_llm != "n"
         print()
 
-        # Embedding backend (decide early)
-        backend_options = [
-            ("sentence-transformers", "HuggingFace models locally (no server needed, recommended)"),
-            ("ollama", "Use Ollama instance (requires Ollama running)")
-        ]
-        default_backend_idx = 0 if existing["embed_backend"] == "sentence-transformers" else 1
-        embed_backend = _prompt_choice("Select embedding backend:", backend_options, default_backend_idx)
-
-        # Only ask for/check Ollama endpoint if using Ollama backend
+        # Embedding endpoint. blerk never loads model weights itself, so a running server is required.
         available_models = []
-        if embed_backend == "ollama":
-            ollama_endpoint = _prompt("Ollama endpoint", existing["embed_endpoint"])
-            print(f"\nChecking Ollama at {ollama_endpoint}...")
-            available_models = _check_ollama(ollama_endpoint)
-            if available_models:
-                print(f"  OK — {len(available_models)} model(s) available:")
-                for m in available_models:
-                    print(f"    {m}")
-            else:
-                print("  Could not reach Ollama. Check that it is running.")
-                print("  Continuing with defaults — edit config.toml later if needed.")
-            print()
+        embed_endpoint = _prompt("Embedding endpoint (OpenAI-compatible, e.g. Ollama)", existing["embed_endpoint"])
+        print(f"\nChecking {embed_endpoint}...")
+        available_models = _check_ollama(embed_endpoint)
+        if available_models:
+            print(f"  OK, {len(available_models)} model(s) available:")
+            for m in available_models:
+                print(f"    {m}")
         else:
-            # sentence-transformers doesn't need Ollama
-            ollama_endpoint = existing["embed_endpoint"]
+            print("  Could not reach the endpoint. Check that it is running.")
+            print("  Continuing with defaults. Edit config.toml later if needed.")
+        print()
 
         # LLM configuration only if enabled
         if llm_enabled:
@@ -437,30 +405,16 @@ def main(argv: list[str] | None = None) -> int:
             api_key = ""
         print()
 
-        # Embedding backend-specific settings
-        if embed_backend == "ollama":
-            embed_endpoint = ollama_endpoint
-            ollama_models = [
-                ("nomic-embed-text", "Fast, widely used (768 dims)"),
-                ("mxbai-embed-large", "Larger, higher quality (1024 dims)"),
-            ]
-            default_ollama_idx = 0 if existing["embed_model"] == "nomic-embed-text" else 1
-            embed_model = _prompt_choice("Select Ollama embedding model:", ollama_models, default_ollama_idx)
-            embed_device = "auto"
-            embed_cache_dir = "~/.cache/huggingface"
-            print()
-        else:
-            # sentence-transformers: no endpoint needed
-            embed_endpoint = ""
-            st_models = [
-                ("all-MiniLM-L6-v2", "Fast, small (384 dims, recommended)"),
-                ("all-mpnet-base-v2", "Larger, more accurate (768 dims)"),
-            ]
-            default_st_idx = 0 if existing["embed_model"] == "all-MiniLM-L6-v2" else 1
-            embed_model = _prompt_choice("Select HuggingFace embedding model:", st_models, default_st_idx)
-            embed_device = _prompt("Device (cpu/cuda/auto)", existing["embed_device"])
-            embed_cache_dir = _prompt("HuggingFace cache directory", existing["embed_cache_dir"])
-            print()
+        # Embedding model
+        embed_models = [
+            ("nomic-embed-text", "Fast, widely used (768 dims)"),
+            ("mxbai-embed-large", "Larger, higher quality (1024 dims)"),
+        ]
+        default_embed_idx = 0 if existing["embed_model"] != "mxbai-embed-large" else 1
+        embed_model = _prompt_choice("Select embedding model:", embed_models, default_embed_idx)
+        if embed_model not in available_models and available_models:
+            print(f"  Not pulled yet. Run: ollama pull {embed_model}")
+        print()
 
         # Reranker
         enable_rr = input("Enable reranker (re-ranks query results via LLM)? [y/N]: ").strip().lower()
@@ -503,11 +457,8 @@ prompt_template = "You are writing documentation for other programmers. Describe
     config_content = _CONFIG_TEMPLATE.format(
         folders=_toml_string_list(folders),
         llm_section=llm_section,
-        embed_backend=_toml_string(embed_backend),
         embed_endpoint=_toml_string(embed_endpoint),
         embed_model=_toml_string(embed_model),
-        embed_device=_toml_string(embed_device),
-        embed_cache_dir=_toml_string(embed_cache_dir),
         reranker_enabled=_toml_bool(reranker_enabled),
         reranker_endpoint=_toml_string(reranker_endpoint),
         reranker_model=_toml_string(reranker_model),
@@ -548,45 +499,22 @@ prompt_template = "You are writing documentation for other programmers. Describe
         # Only check if DB already exists (not a fresh install)
         db_path = str(Path("~/.blerk/blerk.db").expanduser())
         if Path(db_path).exists():
-            _detect_embedding_model_change(existing, embed_backend, embed_model, db_path)
+            _detect_embedding_model_change(existing, embed_model, db_path)
 
     print()
 
-    # Test sentence-transformers and download model if configured
-    if not dry_run and embed_backend == "sentence-transformers":
-        print("Setting up sentence-transformers embedding model...")
+    # Verify the endpoint can actually embed with the chosen model, since nothing else will until a search runs.
+    if not dry_run:
+        print(f"Testing embeddings with '{embed_model}'...")
         try:
-            import sentence_transformers
-            import torch
-            print(f"  sentence-transformers {sentence_transformers.__version__} installed")
-
-            # Map "auto" to actual available device
-            device_to_use = embed_device
-            if device_to_use == "auto":
-                device_to_use = "cuda" if torch.cuda.is_available() else "cpu"
-                if torch.cuda.is_available():
-                    print(f"  Device: auto → cuda (GPU available)")
-                else:
-                    print(f"  Device: auto → cpu (no GPU)")
-            else:
-                print(f"  Device: {device_to_use}")
-
-            cache_path = Path(embed_cache_dir).expanduser()
-            print(f"  Cache directory: {cache_path}")
-            print(f"  Downloading model '{embed_model}'...")
-            print(f"  (This may take several minutes on first run)")
-
-            st = sentence_transformers.SentenceTransformer(
-                embed_model,
-                device=device_to_use,
-                cache_folder=str(cache_path)
-            )
-            print(f"  ✓ Model loaded successfully ({st.get_sentence_embedding_dimension()} dimensions)")
-        except ImportError as e:
-            print(f"  ✗ sentence-transformers not installed: {e}")
-            print(f"  Install with: pip install sentence-transformers")
+            from blerk import embedding
+            vec = embedding.embed(embed_endpoint, embed_model, "hello", api_key)
+            print(f"  OK, {len(vec)} dimensions")
+            if len(vec) != 768:
+                print(f"  Note: set vector_dim = {len(vec)} in config.toml")
         except Exception as e:
-            print(f"  ✗ Failed to load model: {e}")
+            print(f"  Failed: {e}")
+            print(f"  If the model is missing, run: ollama pull {embed_model}")
         print()
 
     print("Done. Start blerk with:  blerk")

@@ -4,16 +4,30 @@ import argparse
 import logging
 import os
 import signal
-import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from typing import Callable
 
 from blerk import config, coordinator, db
+from blerk_cmd import (
+    embedder,
+    fingerprinter,
+    git_enricher,
+    knowledge_dedup,
+    knowledge_extractor,
+    knowledge_refiner,
+    llm_describer,
+    symbolizer,
+    watch_folder,
+)
 from blerk_cmd.util import resolve_path
 
 PID_FILE = Path.home() / ".blerk" / "blerk.pid"
+# Graceful stop is requested through a file rather than a signal.
+# On Windows os.kill(pid, SIGTERM) becomes TerminateProcess, which gives the hub no chance to run cleanup.
+STOP_FILE = Path.home() / ".blerk" / "blerk.stop"
 
 
 MIN_BACKOFF = 1.0
@@ -22,9 +36,9 @@ STABLE_RUN = 30.0
 CONFIG_POLL_S = 5.0
 
 DAEMONS = [
-    ("git-enricher",  "blerk_cmd.git_enricher"),
-    ("embedder",      "blerk_cmd.embedder"),
-    ("fingerprinter", "blerk_cmd.fingerprinter"),
+    ("git-enricher",  git_enricher.run),
+    ("embedder",      embedder.run),
+    ("fingerprinter", fingerprinter.run),
 ]
 
 DAEMON = "knowledge-extractor"
@@ -32,60 +46,66 @@ DAEMON = "knowledge-extractor"
 log = logging.getLogger("hub")
 
 
-_POPEN_FLAGS: dict = (
-    {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-    if sys.platform == "win32" else {}
-)
+def supervise(name: str, fn: Callable[[], None], shutdown_event: threading.Event) -> None:
+    """Run a daemon function in this thread, restarting it with backoff until shutdown.
 
-
-def build_argv(module: str, cfg_path: str) -> list[str]:
-    return [sys.executable, "-m", module, "--config", cfg_path]
-
-
-def managed(name: str, argv: list[str], shutdown_event: threading.Event) -> None:
+    Replaces the previous subprocess supervisor.
+    The daemons were always written as run(cfg, shutdown, ...) loops over a threading.Event,
+    so the subprocess layer was wrapping something already shaped for a thread.
+    Backoff behaviour is unchanged: 1s doubling to 60s, reset to 1s after STABLE_RUN seconds of uptime.
+    """
     backoff = MIN_BACKOFF
     while not shutdown_event.is_set():
-        try:
-            proc = subprocess.Popen(argv, stdout=None, stderr=None, **_POPEN_FLAGS)
-        except OSError as e:
-            log.warning("[hub] failed to start %s: %s (retry in %.0fs)", name, e, backoff)
-            if shutdown_event.wait(timeout=backoff):
-                return
-            backoff = min(backoff * 2, MAX_BACKOFF)
-            continue
-
-        log.info("[hub] started %s (pid %d)", name, proc.pid)
         start = time.monotonic()
-
-        while True:
+        try:
+            fn()
+        except Exception:
+            log.exception("[hub] %s crashed", name)
+        else:
             if shutdown_event.is_set():
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        pass
                 log.info("[hub] stopped %s", name)
                 return
-            rc = proc.poll()
-            if rc is not None:
-                break
-            time.sleep(0.1)
+            log.info("[hub] %s returned (restart in %.0fs)", name, backoff)
 
-        elapsed = time.monotonic() - start
-        if elapsed >= STABLE_RUN:
+        if time.monotonic() - start >= STABLE_RUN:
             backoff = MIN_BACKOFF
-        if rc != 0:
-            log.warning("[hub] %s exited with code %d (retry in %.0fs)", name, rc, backoff)
-        else:
-            log.info("[hub] %s exited cleanly (retry in %.0fs)", name, backoff)
-
         if shutdown_event.wait(timeout=backoff):
             return
         backoff = min(backoff * 2, MAX_BACKOFF)
+
+
+def pid_is_alive(pid: int) -> bool:
+    """Return True when a process with this pid exists."""
+    if sys.platform == "win32":
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def running_hub_pid() -> int | None:
+    """Return the pid of a live hub, or None when there is none.
+
+    A PID file left behind by a killed hub is removed, because otherwise start would refuse forever.
+    Without this check, repeated `blerk start` calls stacked whole sets of daemons on top of each other.
+    """
+    try:
+        pid = int(PID_FILE.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if pid_is_alive(pid):
+        return pid
+    PID_FILE.unlink(missing_ok=True)
+    return None
 
 
 def _purge_folder(db_path: str, folder: str) -> None:
@@ -111,6 +131,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=config.default_path())
     args = parser.parse_args()
+
+    existing = running_hub_pid()
+    if existing is not None:
+        log.error("[hub] already running (pid %d). Run 'blerk stop' first.", existing)
+        sys.exit(1)
 
     try:
         cfg = config.load(args.config)
@@ -145,69 +170,51 @@ def main() -> None:
         log.error("[hub] failed to initialize database: %s", e)
         sys.exit(1)
 
-    coord = coordinator.CoordinatorServer(cfg.db.path, cfg.coordinator.port)
-    coord.start(shutdown)
+    coordinator.CoordinatorServer(cfg.db.path).start(shutdown)
 
     threads: list[threading.Thread] = []
-    for name, module in DAEMONS:
-        argv = build_argv(module, args.config)
-        t = threading.Thread(target=managed, args=(name, argv, shutdown), name=name, daemon=False)
+
+    def spawn(name: str, fn: Callable[[], None], stop: threading.Event | None = None,
+              track: bool = True) -> threading.Thread:
+        t = threading.Thread(target=supervise, args=(name, fn, stop or shutdown), name=name, daemon=False)
         t.start()
-        threads.append(t)
+        if track:
+            threads.append(t)
+        return t
+
+    silent = cfg.silent
+    for name, run_fn in DAEMONS:
+        spawn(name, lambda f=run_fn: f(cfg, shutdown, silent))
 
     n_sym = max(1, cfg.symbolizer.workers)
     for i in range(n_sym):
         daemon_name = "symbolizer" if n_sym == 1 else f"symbolizer-{i}"
-        argv = build_argv("blerk_cmd.symbolizer", args.config)
-        t = threading.Thread(target=managed, args=(daemon_name, argv, shutdown), name=daemon_name, daemon=False)
-        t.start()
-        threads.append(t)
+        spawn(daemon_name, lambda n=daemon_name: symbolizer.run(cfg, shutdown, silent, daemon_name=n))
 
     if cfg.knowledge.llm.enabled:
-        argv = build_argv("blerk_cmd.knowledge_extractor", args.config)
-        t = threading.Thread(target=managed, args=(DAEMON, argv, shutdown), name=DAEMON, daemon=False)
-        t.start()
-        threads.append(t)
-
-        dedup_argv = build_argv("blerk_cmd.knowledge_dedup", args.config)
-        dedup_name = "knowledge-dedup"
-        t = threading.Thread(target=managed, args=(dedup_name, dedup_argv, shutdown), name=dedup_name, daemon=False)
-        t.start()
-        threads.append(t)
-
-        refiner_argv = build_argv("blerk_cmd.knowledge_refiner", args.config) + ["--daemon"]
-        refiner_name = "knowledge-refiner"
-        t = threading.Thread(target=managed, args=(refiner_name, refiner_argv, shutdown), name=refiner_name, daemon=False)
-        t.start()
-        threads.append(t)
+        spawn(DAEMON, lambda: knowledge_extractor.run(cfg, shutdown))
+        spawn("knowledge-dedup", lambda: knowledge_dedup.run(cfg, shutdown))
+        spawn("knowledge-refiner", lambda: knowledge_refiner.run(cfg, shutdown))
 
     llms = cfg.llm
     for i, llm in enumerate(llms):
         if not llm.enabled:
             continue
         daemon_name = "llm-describer" if len(llms) == 1 else f"llm-describer-{i}"
-        argv = build_argv("blerk_cmd.llm_describer", args.config) + [
-            "--endpoint", llm.endpoint,
-            "--model", llm.model,
-            "--daemon-name", daemon_name,
-        ]
-        t = threading.Thread(target=managed, args=(daemon_name, argv, shutdown), name=daemon_name, daemon=False)
-        t.start()
-        threads.append(t)
+        spawn(daemon_name, lambda l=llm, n=daemon_name: llm_describer.run(cfg, l, shutdown, n, silent))
 
     # Per-folder watcher threads: {folder: (thread, folder_shutdown_event)}
     folder_threads: dict[str, tuple[threading.Thread, threading.Event]] = {}
 
     def _spawn_watcher(folder: str) -> tuple[threading.Thread, threading.Event]:
         folder_shutdown = threading.Event()
-        argv = build_argv("blerk_cmd.watch_folder", args.config) + ["--folder", folder]
-        t = threading.Thread(
-            target=managed,
-            args=(f"watch-folder:{folder}", argv, folder_shutdown),
-            name=f"watch-folder:{folder}",
-            daemon=False,
+        # Watchers are tracked in folder_threads instead, because config reload stops them individually.
+        t = spawn(
+            f"watch-folder:{folder}",
+            lambda f=folder, ev=folder_shutdown: watch_folder.run(cfg, ev, folders=[f], silent=silent),
+            folder_shutdown,
+            track=False,
         )
-        t.start()
         log.info("[hub] started watcher for %s", folder)
         return t, folder_shutdown
 
@@ -229,11 +236,17 @@ def main() -> None:
     except OSError:
         cfg_mtime = 0.0
 
+    STOP_FILE.unlink(missing_ok=True)
     PID_FILE.write_text(str(os.getpid()))
     try:
         while not shutdown.is_set():
             shutdown.wait(timeout=CONFIG_POLL_S)
             if shutdown.is_set():
+                break
+
+            if STOP_FILE.exists():
+                log.info("[hub] stop requested, shutting down")
+                shutdown.set()
                 break
 
             try:
@@ -265,6 +278,7 @@ def main() -> None:
         shutdown.set()
     finally:
         PID_FILE.unlink(missing_ok=True)
+        STOP_FILE.unlink(missing_ok=True)
 
     for folder in list(folder_threads):
         _stop_watcher(folder)

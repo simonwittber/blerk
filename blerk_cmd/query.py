@@ -181,22 +181,27 @@ def _rerank(reranker: config.Reranker, query_text: str, rows: list) -> list:
     headers: dict[str, str] = {}
     if reranker.api_key:
         headers["Authorization"] = f"Bearer {reranker.api_key}"
+    payload: dict = {
+        "model": reranker.model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": reranker.max_tokens,
+        "temperature": 0,
+    }
+    if not reranker.think:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     try:
         r = httpx.post(
-            reranker.endpoint + "/v1/chat/completions",
-            json={
-                "model": reranker.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 64,
-                "temperature": 0,
-            },
+            reranker.endpoint.rstrip("/") + "/v1/chat/completions",
+            json=payload,
             headers=headers,
-            timeout=30.0,
+            timeout=60.0,
         )
         if r.status_code != 200:
-            return rows
+            return _rerank_failed(reranker, f"HTTP {r.status_code}: {r.text.strip()[:200]}", rows)
         text = r.json()["choices"][0]["message"]["content"].strip()
         indices = [int(t.strip()) - 1 for t in text.split(",") if t.strip().isdigit()]
+        if not indices:
+            return _rerank_failed(reranker, f"no ranking in reply: {text[:200]!r}", rows)
         seen: set[int] = set()
         reordered = []
         for i in indices:
@@ -207,8 +212,20 @@ def _rerank(reranker: config.Reranker, query_text: str, rows: list) -> list:
             if i not in seen:
                 reordered.append(row)
         return reordered
-    except Exception:
-        return rows
+    except Exception as e:
+        return _rerank_failed(reranker, str(e), rows)
+
+
+def _rerank_failed(reranker: config.Reranker, detail: str, rows: list) -> list:
+    """Report a reranker that is switched on but not working, then fall back to the fused order.
+
+    Falling back silently is what made an enabled reranker look like it was running for months while every call failed.
+    """
+    print(
+        f"blerk: reranker ({reranker.model} at {reranker.endpoint}) failed, using unranked results. {detail}",
+        file=sys.stderr,
+    )
+    return rows
 
 
 class QueryResult(NamedTuple):
@@ -288,7 +305,10 @@ def query_symbols(
     # Ranking adjustments applied after row fetch.
     # Fields and variables are leaf data; downweight so semantic types surface first.
     # Test files are rarely the answer to a concept search.
-    # AI-described symbols have already been judged meaningful; give them a boost.
+    # Having a description is deliberately not a signal here.
+    # The describer runs on every function and method over min_describe_lines, so the flag means "described yet", not "meaningful".
+    # Boosting on it ranked whatever the describer had reached above whatever it had not.
+    # Descriptions still earn their place by feeding the FTS index and the embedding text.
     _TEST_MARKERS = ("/tests/", "/editmode/", "/playmode/", "/test/", "tests.cs", "test.cs")
     for id_, name, kind, path, line, end_line, desc, params in rows:
         mult = 1.0
@@ -297,8 +317,6 @@ def query_symbols(
         p = path.lower()
         if any(m in p for m in _TEST_MARKERS):
             mult *= 0.5
-        if desc:
-            mult *= 2.5
         scores[id_] *= mult
 
     rows.sort(key=lambda r: scores[r[0]], reverse=True)
@@ -382,8 +400,7 @@ def no_results(opts: QueryOptions) -> str:
 
 def snippet_search(conn, cfg: "config.Config", query_text: str, directory: str, n: int = 10) -> str:
     vec = embedding.embed(
-        cfg.embedder.backend, cfg.embedder.endpoint, cfg.embedder.model,
-        query_text, cfg.embedder.device, cfg.embedder.cache_dir,
+        cfg.embedder.endpoint, cfg.embedder.model, query_text, cfg.embedder.api_key,
     )
     blob = to_blob(vec)
     root = index_root(cfg)
@@ -412,8 +429,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load(args.config)
     conn = db.open_db(cfg.db.path)
 
-    vec = embedding.embed(cfg.embedder.backend, cfg.embedder.endpoint, cfg.embedder.model, args.query,
-                          cfg.embedder.device, cfg.embedder.cache_dir)
+    vec = embedding.embed(cfg.embedder.endpoint, cfg.embedder.model, args.query,
+                          cfg.embedder.api_key)
     blob = to_blob(vec)
 
     tag_filter: dict[str, str] = {}

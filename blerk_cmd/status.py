@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from blerk import config, db
-from blerk.coordinator import _port_file, _workers_dir
+from blerk_cmd.hub import running_hub_pid
 
 if TYPE_CHECKING:
     import sqlite3 as _sqlite3
@@ -157,13 +157,13 @@ def status(conn, db_path: str = "", cfg: "config.Config | None" = None) -> str:
     lines: list[str] = []
 
     if db_path:
-        try:
-            port = int(_port_file(db_path).read_text().strip())
-            wd = _workers_dir(db_path)
-            workers = len(list(wd.glob("*.worker"))) if wd.exists() else 0
-            lines.append(f"{'coordinator':<20}  running (port {port}, {workers} workers)")
-        except (OSError, ValueError):
-            lines.append(f"{'coordinator':<20}  not running")
+        # The daemons are threads of the hub, so what matters is whether the hub is up.
+        # This replaces a row that reported the old UDP coordinator's port and its on-disk worker files.
+        pid = running_hub_pid()
+        if pid is not None:
+            lines.append(f"{'hub':<20}  running (pid {pid})")
+        else:
+            lines.append(f"{'hub':<20}  not running")
 
     def _row(name: str, detail: str, eta: int | None, heartbeat: int | None, error: str) -> str:
         parts = [f"{name:<20}", detail]

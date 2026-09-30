@@ -47,20 +47,24 @@ class LLM:
     max_retries: int = 0
     max_context_chars: int = 0
     prompt_template: str = ""
+    # A local reasoning model reading max_context_chars of source routinely needs longer than half a minute.
+    timeout_s: float = 300.0
+    # Set false to tell a reasoning model to answer directly, which is usually what a one-sentence description needs.
+    think: bool = True
+    # Hard cap applied after generation, because a small model will not reliably obey a word limit in the prompt.
+    max_description_chars: int = 400
 
 
 @dataclass
 class Embedder:
-    backend: str = "ollama"
     endpoint: str = ""
     model: str = ""
+    api_key: str = ""
     batch_size: int = 0
     poll_ms: int = 0
     vector_dim: int = 0
     max_retries: int = 0
     max_embed_chars: int = 0
-    device: str = "auto"
-    cache_dir: str = "~/.cache/huggingface"
 
 
 _DEFAULT_RERANKER_PROMPT = """\
@@ -68,6 +72,20 @@ Rank these code symbols by relevance to: "{query_text}"
 Reply with only comma-separated indices, most relevant first.
 
 {numbered}"""
+
+# The limit and the formatting bans are not politeness, they are load bearing.
+# This text is appended to the embedding input, so a long formulaic description swamps the code and pulls every symbol's vector together.
+# "Be concise" alone produced a median of 1637 characters, nearly three times the size of the code being described.
+_DEFAULT_DESCRIBE_PROMPT = """\
+Summarise what this {kind} does, in at most 40 words.
+Be specific about its behaviour rather than restating its name.
+Reply with one or two plain sentences and nothing else.
+Do not use bullet points, headings or markdown. Do not restate the file path.
+
+{kind}: {name}
+file: {path}
+
+{context}"""
 
 
 @dataclass
@@ -77,6 +95,11 @@ class Reranker:
     api_key: str = ""
     enabled: bool = False
     prompt: str = _DEFAULT_RERANKER_PROMPT
+    # Reasoning models spend tokens before they answer, so a tight cap returns an empty reply rather than a ranking.
+    max_tokens: int = 2048
+    # Set false to tell a reasoning model to answer directly.
+    # Ranking a short list needs no deliberation, and the reply arrives in about half the time.
+    think: bool = True
 
 
 
@@ -172,11 +195,6 @@ class Knowledge:
 
 
 @dataclass
-class Coordinator:
-    port: int = 0
-
-
-@dataclass
 class Suppress:
     path: str = ""
     rules: list[str] = field(default_factory=list)
@@ -198,7 +216,6 @@ class Config:
     llm: list[LLM] = field(default_factory=list)
     embedder: Embedder = field(default_factory=Embedder)
     reranker: Reranker = field(default_factory=Reranker)
-    coordinator: Coordinator = field(default_factory=Coordinator)
     lint: Lint = field(default_factory=Lint)
     knowledge: Knowledge = field(default_factory=Knowledge)
     silent: bool = False
@@ -229,12 +246,13 @@ def defaults() -> Config:
             poll_ms=3000,
             max_retries=3,
             max_context_chars=16000,
-            prompt_template='Describe the following {kind} named "{name}" from {path}. Be concise and technical.\n\n{context}',
+            prompt_template=_DEFAULT_DESCRIBE_PROMPT,
         )],
         reranker=Reranker(
             endpoint="http://localhost:11434",
             model="",
             enabled=False,
+            max_tokens=2048,
         ),
         knowledge=Knowledge(
             llm=LLM(
@@ -263,7 +281,6 @@ def defaults() -> Config:
             ),
         ),
         embedder=Embedder(
-            backend="ollama",
             endpoint="http://localhost:11434",
             model="nomic-embed-text",
             batch_size=10,
@@ -271,8 +288,6 @@ def defaults() -> Config:
             vector_dim=768,
             max_retries=3,
             max_embed_chars=8000,
-            device="auto",
-            cache_dir="~/.cache/huggingface",
         ),
     )
 
@@ -342,21 +357,31 @@ def load(path: str) -> Config:
     cfg.watch.folders = [resolve_path(expand_home(p)) for p in cfg.watch.folders]
     cfg.watch.ignore_file = expand_home(cfg.watch.ignore_file)
 
-    secrets_path = expand_home(cfg.secrets_file)
+    secrets: dict = {}
     try:
-        with open(secrets_path, "rb") as f:
+        with open(expand_home(cfg.secrets_file), "rb") as f:
             secrets = tomllib.load(f)
-        api_key = secrets.get("llm", {}).get("api_key", "")
-        if api_key:
-            for llm in cfg.llm:
-                if not llm.api_key:
-                    llm.api_key = api_key
-            if not cfg.reranker.api_key:
-                cfg.reranker.api_key = api_key
-            if not cfg.knowledge.llm.api_key:
-                cfg.knowledge.llm.api_key = api_key
     except (FileNotFoundError, tomllib.TOMLDecodeError):
         pass
+
+    def secret_key(section: str) -> str:
+        """Return a section's own api_key from secrets.toml, falling back to the shared [llm] one.
+
+        Every section may carry its own key, because the reranker and the embedder are often different services.
+        Reading only [llm] silently ignored a key the file format plainly accepts.
+        """
+        own = (secrets.get(section) or {}).get("api_key", "")
+        return own or (secrets.get("llm") or {}).get("api_key", "")
+
+    for llm in cfg.llm:
+        if not llm.api_key:
+            llm.api_key = secret_key("llm")
+    if not cfg.reranker.api_key:
+        cfg.reranker.api_key = secret_key("reranker")
+    if not cfg.knowledge.llm.api_key:
+        cfg.knowledge.llm.api_key = secret_key("knowledge")
+    if not cfg.embedder.api_key:
+        cfg.embedder.api_key = secret_key("embedder")
 
     return cfg
 

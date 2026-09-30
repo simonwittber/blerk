@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS code_blocks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_code_blocks_symbol ON code_blocks(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_code_blocks_hash ON code_blocks(content_hash);
 
 CREATE TABLE IF NOT EXISTS symbol_tags (
     symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
@@ -257,8 +258,15 @@ BEGIN
     INSERT INTO code_block_embed_queue(block_id) VALUES (NEW.id);
 END;
 
-CREATE TRIGGER IF NOT EXISTS code_blocks_describe_insert
+-- Only functions and methods are worth describing.
+-- A field is a one-line declaration, so a generated sentence about it adds nothing its name does not already say,
+-- and asking a model to describe one reliably produces padding that then pollutes the embedding text.
+-- The unfiltered version of this trigger queued every block, which was 41,410 rows where 12,951 were wanted.
+DROP TRIGGER IF EXISTS code_blocks_describe_insert;
+
+CREATE TRIGGER IF NOT EXISTS code_blocks_describe_fn_insert
 AFTER INSERT ON code_blocks
+WHEN (SELECT kind FROM symbols WHERE id = NEW.symbol_id) IN ('function', 'method')
 BEGIN
     INSERT INTO code_block_describe_queue(block_id) VALUES (NEW.id);
 END;

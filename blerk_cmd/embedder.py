@@ -20,7 +20,7 @@ log = logging.getLogger("embedder")
 _client = httpx.Client(timeout=120.0)
 
 
-def embed_with_truncation(backend: str, endpoint: str, model: str, text: str, device: str = "auto", cache_dir: str = "~/.cache/huggingface") -> list[float]:
+def embed_with_truncation(endpoint: str, model: str, text: str, api_key: str = "") -> list[float]:
     max_iters = 20
     iters = 0
     while text:
@@ -28,7 +28,7 @@ def embed_with_truncation(backend: str, endpoint: str, model: str, text: str, de
             raise RuntimeError("embed_with_truncation exceeded max iterations")
         iters += 1
         try:
-            return embedding.embed(backend, endpoint, model, text, device, cache_dir)
+            return embedding.embed(endpoint, model, text, api_key)
         except httpx.TimeoutException as e:
             raise RuntimeError(f"embed timed out: {e}") from e
         except RuntimeError as e:
@@ -37,6 +37,113 @@ def embed_with_truncation(backend: str, endpoint: str, model: str, text: str, de
             text = text[: len(text) // 2]
     raise RuntimeError("text truncated to empty string")
 
+
+def embed_texts(cfg: config.Config, texts: list[str]) -> list[list[float] | Exception]:
+    """Embed a batch of texts, returning a vector or the failure for each one.
+
+    One request covers the whole batch.
+    If that request fails, each text is retried alone, so a single oversized or malformed input cannot fail its neighbours.
+    """
+    emb = cfg.embedder
+    try:
+        return list(embedding.embed_batch(emb.endpoint, emb.model, texts, emb.api_key))
+    except Exception:
+        pass
+
+    results: list[list[float] | Exception] = []
+    for text in texts:
+        try:
+            results.append(embed_with_truncation(emb.endpoint, emb.model, text, emb.api_key))
+        except Exception as e:
+            results.append(e)
+    return results
+
+
+
+def build_embed_text(conn: sqlite3.Connection, block_id: int, model: str) -> tuple[str, str, str, str] | None:
+    """Build the text to embed for one code block.
+
+    Returns (content_hash, symbol name, path, text), or None when the block is gone or already has a vector for this model.
+    """
+    blk_row = conn.execute(
+        "SELECT cb.content, cb.content_hash, cb.block_index,"
+        " s.id, s.name, COALESCE(s.description, ''), f.path,"
+        " COALESCE(s.params, ''), s.kind, s.file_id, s.line, s.nesting_depth"
+        " FROM code_blocks cb"
+        " JOIN symbols s ON s.id = cb.symbol_id"
+        " JOIN file_paths f ON f.file_id = s.file_id"
+        " WHERE cb.id=?",
+        (block_id,),
+    ).fetchone()
+    if not blk_row:
+        return None
+
+    (block_content, content_hash, block_index,
+     sym_id, name, description, path,
+     params, kind, file_id, line, nesting_depth) = blk_row
+
+    # Skip if a vector for this content and model already exists.
+    if content_hash and conn.execute(
+        "SELECT 1 FROM embeddings WHERE content_hash=? AND model=?",
+        (content_hash, model),
+    ).fetchone():
+        return None
+
+    parent_row = None
+    if nesting_depth and nesting_depth > 0:
+        parent_row = conn.execute(
+            "SELECT name FROM symbols "
+            "WHERE file_id=? AND kind IN ('class','struct','interface','enum','type') "
+            "AND line<=? AND (end_line IS NULL OR end_line>=?) "
+            "AND nesting_depth=? "
+            "ORDER BY line DESC LIMIT 1",
+            (file_id, line, line, nesting_depth - 1),
+        ).fetchone()
+    parent_class = parent_row[0] if parent_row else ""
+
+    ns_row = conn.execute(
+        "SELECT value FROM symbol_tags WHERE symbol_id=? AND key='namespace'",
+        (sym_id,),
+    ).fetchone()
+    namespace = ns_row[0] if ns_row else ""
+
+    callers = conn.execute(
+        "SELECT s.name FROM symbol_refs r JOIN symbols s ON s.id = r.caller_id "
+        "WHERE r.callee_id=? LIMIT 10",
+        (sym_id,),
+    ).fetchall()
+    callees = conn.execute(
+        "SELECT s.name FROM symbol_refs r JOIN symbols s ON s.id = r.callee_id "
+        "WHERE r.caller_id=? LIMIT 10",
+        (sym_id,),
+    ).fetchall()
+
+    sig = f"({params})" if params else ""
+    ns_prefix = f"{namespace}." if namespace else ""
+    cls_prefix = f"{parent_class}." if parent_class else ""
+    if block_index == 0:
+        block_desc = description
+    else:
+        bd_row = conn.execute(
+            "SELECT COALESCE(description, '') FROM code_blocks WHERE id=?",
+            (block_id,),
+        ).fetchone()
+        block_desc = bd_row[0] if bd_row else ""
+
+    parts = [f"{ns_prefix}{cls_prefix}{name}{sig}"]
+    if block_desc:
+        parts.append(": ")
+        parts.append(block_desc)
+    parts.append(f"\nin {path}")
+    if callers:
+        parts.append("\ncallers: " + ", ".join(r[0] for r in callers))
+    if callees:
+        parts.append("\ncallees: " + ", ".join(r[0] for r in callees))
+    if block_content and kind in ("function", "method"):
+        parts.append("\n\n")
+        parts.append(block_content)
+
+    return content_hash, name, path, "".join(parts)
 
 
 def _process_knowledge_queue(conn: sqlite3.Connection, cfg: config.Config, silent: bool) -> None:
@@ -68,8 +175,7 @@ def _process_knowledge_queue(conn: sqlite3.Connection, cfg: config.Config, silen
     body = k_row[0]
     try:
         vec = embed_with_truncation(
-            cfg.embedder.backend, cfg.embedder.endpoint, cfg.embedder.model, body,
-            cfg.embedder.device, cfg.embedder.cache_dir,
+            cfg.embedder.endpoint, cfg.embedder.model, body, cfg.embedder.api_key,
         )
         blob = embedding.to_float32_blob(vec)
         conn.execute(
@@ -122,105 +228,29 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
 
         if rows:
             status = "running"
+
+            # Gather first, then embed the whole batch in one request, then write.
+            pending: list[tuple[object, str, str, str, str]] = []
             for row in rows:
-                blk_row = conn.execute(
-                    "SELECT cb.content, cb.content_hash, cb.start_line, cb.block_index,"
-                    " s.id, s.name, COALESCE(s.description, ''), f.path,"
-                    " COALESCE(s.params, ''), s.kind, s.file_id, s.line, s.nesting_depth"
-                    " FROM code_blocks cb"
-                    " JOIN symbols s ON s.id = cb.symbol_id"
-                    " JOIN file_paths f ON f.file_id = s.file_id"
-                    " WHERE cb.id=?",
-                    (row.target_id,),
-                ).fetchone()
-                if not blk_row:
+                built = build_embed_text(conn, row.target_id, cfg.embedder.model)
+                if built is None:
                     try:
                         db.mark_done(conn, QUEUE, row.id)
                     except sqlite3.Error as e:
                         log.warning("mark done %s %d: %s", QUEUE, row.id, e)
                     continue
+                content_hash, name, path, text = built
+                pending.append((row, content_hash, name, path, text))
 
-                (block_content, content_hash, block_start, block_index,
-                 sym_id, name, description, path,
-                 params, kind, file_id, line, nesting_depth) = blk_row
+            t0 = time.monotonic()
+            vectors = embed_texts(cfg, [p[4] for p in pending])
+            batch_time = time.monotonic() - t0
 
-                # Skip if a vector for this content and model already exists.
-                if content_hash and conn.execute(
-                    "SELECT 1 FROM embeddings WHERE content_hash=? AND model=?",
-                    (content_hash, cfg.embedder.model),
-                ).fetchone():
+            for (row, content_hash, name, path, _text), vec in zip(pending, vectors):
+                if isinstance(vec, Exception):
+                    log.warning("embed %s: %s", name, vec)
                     try:
-                        db.mark_done(conn, QUEUE, row.id)
-                    except sqlite3.Error as e:
-                        log.warning("mark done %s %d: %s", QUEUE, row.id, e)
-                    continue
-
-                parent_row = None
-                if nesting_depth and nesting_depth > 0:
-                    parent_row = conn.execute(
-                        "SELECT name FROM symbols "
-                        "WHERE file_id=? AND kind IN ('class','struct','interface','enum','type') "
-                        "AND line<=? AND (end_line IS NULL OR end_line>=?) "
-                        "AND nesting_depth=? "
-                        "ORDER BY line DESC LIMIT 1",
-                        (file_id, line, line, nesting_depth - 1),
-                    ).fetchone()
-                parent_class = parent_row[0] if parent_row else ""
-
-                ns_row = conn.execute(
-                    "SELECT value FROM symbol_tags WHERE symbol_id=? AND key='namespace'",
-                    (sym_id,),
-                ).fetchone()
-                namespace = ns_row[0] if ns_row else ""
-
-                callers = conn.execute(
-                    "SELECT s.name FROM symbol_refs r JOIN symbols s ON s.id = r.caller_id "
-                    "WHERE r.callee_id=? LIMIT 10",
-                    (sym_id,),
-                ).fetchall()
-                callees = conn.execute(
-                    "SELECT s.name FROM symbol_refs r JOIN symbols s ON s.id = r.callee_id "
-                    "WHERE r.caller_id=? LIMIT 10",
-                    (sym_id,),
-                ).fetchall()
-
-                sig = f"({params})" if params else ""
-                ns_prefix = f"{namespace}." if namespace else ""
-                cls_prefix = f"{parent_class}." if parent_class else ""
-                block_desc = ""
-                if block_index == 0:
-                    block_desc = description
-                else:
-                    bd_row = conn.execute(
-                        "SELECT COALESCE(description, '') FROM code_blocks WHERE id=?",
-                        (row.target_id,),
-                    ).fetchone()
-                    block_desc = bd_row[0] if bd_row else ""
-
-                parts = [f"{ns_prefix}{cls_prefix}{name}{sig}"]
-                if block_desc:
-                    parts.append(": ")
-                    parts.append(block_desc)
-                parts.append(f"\nin {path}")
-                if callers:
-                    parts.append("\ncallers: " + ", ".join(r[0] for r in callers))
-                if callees:
-                    parts.append("\ncallees: " + ", ".join(r[0] for r in callees))
-                if block_content and kind in ("function", "method"):
-                    parts.append("\n\n")
-                    parts.append(block_content)
-                text = "".join(parts)
-
-                t0 = time.monotonic()
-                try:
-                    vec = embed_with_truncation(
-                        cfg.embedder.backend, cfg.embedder.endpoint, cfg.embedder.model, text,
-                        cfg.embedder.device, cfg.embedder.cache_dir
-                    )
-                except Exception as e:
-                    log.warning("embed %s: %s", name, e)
-                    try:
-                        failed = db.requeue(conn, QUEUE, row.id, str(e), cfg.embedder.max_retries)
+                        failed = db.requeue(conn, QUEUE, row.id, str(vec), cfg.embedder.max_retries)
                     except sqlite3.Error as req_err:
                         log.warning("requeue %s %d: %s", QUEUE, row.id, req_err)
                         failed = False
@@ -257,7 +287,7 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
                     log.warning("mark done %s %d: %s", QUEUE, row.id, e)
 
                 if not silent:
-                    log.info("%s: %s, %s in %s", DAEMON, daemon_util.fmt_duration(time.monotonic() - t0), name, path)
+                    log.info("%s: %s in %s", DAEMON, name, path)
 
                 now = datetime.now()
                 if (now - day_start).total_seconds() >= 24 * 3600:
@@ -267,6 +297,9 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
                     failures_today = 0
                 rate_window.append(time.monotonic())
                 processed_today += 1
+
+            if pending and not silent:
+                log.info("%s: batch of %d in %s", DAEMON, len(pending), daemon_util.fmt_duration(batch_time))
 
         _process_knowledge_queue(conn, cfg, silent)
 

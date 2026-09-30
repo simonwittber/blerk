@@ -1,59 +1,66 @@
 from __future__ import annotations
 
-import logging
-import os
 import struct
-import threading
-from typing import Optional
 
 import httpx
 
-# Suppress HuggingFace Hub warnings about unauthenticated requests
-logging.getLogger("huggingface_hub.utils._token").setLevel(logging.ERROR)
+# Every embedding goes to an OpenAI-compatible /v1/embeddings endpoint.
+# Ollama serves that natively, as do vllm, LM Studio and the hosted providers, so blerk never loads model weights itself.
+# That is the same protocol the describer and the reranker already speak.
 
-_st_model: Optional[object] = None
-_st_lock = threading.Lock()
-
-
-def _get_sentence_transformer(model: str, device: str, cache_dir: str):
-    global _st_model
-    if _st_model is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError:
-            raise RuntimeError("sentence-transformers not installed; install with: pip install sentence-transformers")
-
-        device_to_use = device
-        if device_to_use == "auto":
-            try:
-                import torch
-                device_to_use = "cuda" if torch.cuda.is_available() else "cpu"
-            except ImportError:
-                device_to_use = "cpu"
-
-        cache_path = os.path.expanduser(cache_dir)
-        os.makedirs(cache_path, exist_ok=True)
-        _st_model = SentenceTransformer(model, device=device_to_use, cache_folder=cache_path)
-    return _st_model
+_TIMEOUT = 120.0
 
 
-def embed(backend: str, endpoint: str, model: str, text: str, device: str = "auto", cache_dir: str = "~/.cache/huggingface") -> list[float]:
-    if backend == "ollama":
-        r = httpx.post(
-            endpoint + "/api/embeddings",
-            json={"model": model, "prompt": text},
-            timeout=30.0,
+def _headers(api_key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
+def unreachable(endpoint: str, detail: str) -> RuntimeError:
+    """Build the error for an endpoint that did not answer, naming the two things that fix it."""
+    return RuntimeError(
+        f"cannot reach the embedding endpoint at {endpoint}: {detail}."
+        " Start it (for Ollama, run 'ollama serve') or correct embedder.endpoint in config.toml."
+    )
+
+
+def embed_batch(endpoint: str, model: str, texts: list[str], api_key: str = "") -> list[list[float]]:
+    """Embed several strings in one request.
+
+    Results are ordered by the index field rather than by array position, because the OpenAI schema does not promise an order.
+    """
+    if not texts:
+        return []
+    if not endpoint:
+        raise RuntimeError(
+            "embedder.endpoint is not set in config.toml."
+            " blerk embeds through an OpenAI-compatible server, so point it at one"
+            " (for Ollama that is http://localhost:11434) or run 'blerk init'."
         )
-        if r.status_code != 200:
-            raise RuntimeError(f"ollama {r.status_code}: {r.text}")
-        return r.json()["embedding"]
-    elif backend == "sentence-transformers":
-        st = _get_sentence_transformer(model, device, cache_dir)
-        with _st_lock:
-            vecs = st.encode([text], convert_to_numpy=True)
-        return vecs[0].tolist()
-    else:
-        raise RuntimeError(f"unknown embedding backend: {backend}")
+    try:
+        r = httpx.post(
+            endpoint.rstrip("/") + "/v1/embeddings",
+            json={"model": model, "input": texts},
+            headers=_headers(api_key),
+            timeout=_TIMEOUT,
+        )
+    except httpx.RequestError as e:
+        raise unreachable(endpoint, str(e)) from e
+
+    if r.status_code != 200:
+        raise RuntimeError(f"embedding endpoint {r.status_code}: {r.text.strip()}")
+
+    rows = r.json().get("data") or []
+    if len(rows) != len(texts):
+        raise RuntimeError(
+            f"embedding endpoint returned {len(rows)} vectors for {len(texts)} inputs"
+        )
+    rows.sort(key=lambda d: d.get("index", 0))
+    return [d["embedding"] for d in rows]
+
+
+def embed(endpoint: str, model: str, text: str, api_key: str = "") -> list[float]:
+    """Embed a single string."""
+    return embed_batch(endpoint, model, [text], api_key)[0]
 
 
 def to_float32_blob(vec: list[float]) -> bytes:

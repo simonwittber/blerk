@@ -1,175 +1,83 @@
 from __future__ import annotations
 
 import logging
-import os
-import socket
-import sys
 import threading
-import time
-from pathlib import Path
 
 log = logging.getLogger("coordinator")
 
+# Wake-ups used to travel over UDP, because each daemon was its own process.
+# That needed a socket per daemon, a port file, a *.worker file per daemon on disk, and liveness checks
+# to tell a registered worker from a crashed one.
+# The daemons now run as threads in the hub, so the whole mechanism is a shared registry of Events.
+# The class and method names are unchanged so no daemon loop had to be touched.
 
-def _workers_dir(db_path: str) -> Path:
-    return Path(db_path).parent / "workers"
+_lock = threading.Lock()
+_waiters: dict[str, list[threading.Event]] = {}
+_next: dict[str, int] = {}
 
 
-def _port_file(db_path: str) -> Path:
-    return Path(db_path).parent / "coordinator.port"
+def _register(queue: str) -> threading.Event:
+    event = threading.Event()
+    with _lock:
+        _waiters.setdefault(queue, []).append(event)
+    return event
 
 
-def _is_alive(pid: int) -> bool:
-    if sys.platform == "win32":
-        import ctypes
-        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-        if handle:
-            ctypes.windll.kernel32.CloseHandle(handle)
-            return True
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+def _unregister(queue: str, event: threading.Event) -> None:
+    with _lock:
+        waiters = _waiters.get(queue)
+        if waiters and event in waiters:
+            waiters.remove(event)
+
+
+def _wake_one(queue: str) -> None:
+    """Wake a single waiter on this queue, round robin, matching the old routing."""
+    with _lock:
+        waiters = list(_waiters.get(queue, ()))
+        if not waiters:
+            return
+        idx = _next.get(queue, 0) % len(waiters)
+        _next[queue] = idx + 1
+    waiters[idx].set()
+
+
+def reset() -> None:
+    """Drop all registrations. For tests."""
+    with _lock:
+        _waiters.clear()
+        _next.clear()
 
 
 class CoordinatorServer:
-    """UDP server run by hub to route NOTIFY messages to idle workers."""
+    """Kept so the hub's startup reads the same. Routing is now in-process, so there is nothing to serve."""
 
-    def __init__(self, db_path: str, port: int = 0) -> None:
+    def __init__(self, db_path: str) -> None:
         self._db_path = db_path
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.bind(("127.0.0.1", port))
-        self._bound_port = self._sock.getsockname()[1]
-        self._sock.settimeout(0.5)
-        self._rr: dict[str, int] = {}
 
     def start(self, shutdown: threading.Event) -> None:
-        _port_file(self._db_path).write_text(str(self._bound_port))
-        t = threading.Thread(
-            target=self._run, args=(shutdown,), name="coordinator", daemon=True
-        )
-        t.start()
-        log.info("[coordinator] listening on port %d", self._bound_port)
-
-    def _run(self, shutdown: threading.Event) -> None:
-        try:
-            while not shutdown.is_set():
-                try:
-                    data, _ = self._sock.recvfrom(256)
-                except (socket.timeout, OSError):
-                    continue
-                msg = data.decode("utf-8", errors="ignore").strip()
-                if msg.startswith("NOTIFY "):
-                    queue = msg[7:].strip()
-                    self._route(queue)
-        finally:
-            self._sock.close()
-            _port_file(self._db_path).unlink(missing_ok=True)
-
-    def _route(self, queue: str) -> None:
-        workers_dir = _workers_dir(self._db_path)
-        if not workers_dir.exists():
-            return
-        candidates: list[int] = []
-        for f in workers_dir.glob("*.worker"):
-            try:
-                data: dict[str, str] = {}
-                for line in f.read_text().splitlines():
-                    k, _, v = line.partition("=")
-                    data[k.strip()] = v.strip()
-                if data.get("queue") != queue:
-                    continue
-                pid = int(data["pid"])
-                port = int(data["port"])
-                if _is_alive(pid):
-                    candidates.append(port)
-            except (OSError, ValueError, KeyError):
-                continue
-        if not candidates:
-            return
-        idx = self._rr.get(queue, 0) % len(candidates)
-        self._rr[queue] = idx + 1
-        try:
-            self._sock.sendto(b"CHECK", ("127.0.0.1", candidates[idx]))
-        except OSError as e:
-            log.debug("send CHECK to port %d: %s", candidates[idx], e)
+        log.info("[coordinator] in-process wake-ups active")
 
 
 class CoordinatorClient:
-    """Per-daemon UDP client. Registers with the coordinator and waits for CHECK signals."""
+    """Per-daemon handle for waiting on work and notifying other queues."""
 
     def __init__(self, queue: str, db_path: str) -> None:
         self._queue = queue
-        self._db_path = db_path
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.bind(("127.0.0.1", 0))
-        self._port = self._sock.getsockname()[1]
-        self._hub_port: int | None = None
-        self._worker_file = _workers_dir(db_path) / f"{queue}-{os.getpid()}.worker"
-        self._register()
-
-    def _hub_port_cached(self) -> int | None:
-        if self._hub_port is not None:
-            return self._hub_port
-        try:
-            text = _port_file(self._db_path).read_text().strip()
-            self._hub_port = int(text)
-        except (OSError, ValueError):
-            pass
-        return self._hub_port
-
-    def _register(self) -> None:
-        workers_dir = _workers_dir(self._db_path)
-        workers_dir.mkdir(parents=True, exist_ok=True)
-        for f in workers_dir.glob("*.worker"):
-            try:
-                lines = {k: v for k, _, v in (l.partition("=") for l in f.read_text().splitlines()) if k}
-                if not _is_alive(int(lines["pid"])):
-                    f.unlink(missing_ok=True)
-            except (OSError, ValueError, KeyError):
-                pass
-        self._worker_file.write_text(
-            f"pid={os.getpid()}\nport={self._port}\nqueue={self._queue}\n"
-        )
+        self._event = _register(queue)
 
     def notify(self, queue: str) -> None:
-        hub_port = self._hub_port_cached()
-        if hub_port is None:
-            return
-        try:
-            self._sock.sendto(f"NOTIFY {queue}".encode(), ("127.0.0.1", hub_port))
-        except OSError:
-            pass
+        _wake_one(queue)
 
     def wait(self, shutdown: threading.Event, timeout_s: float) -> bool:
-        """Block until CHECK arrives, timeout fires, or shutdown is set.
+        """Block until notified, the timeout fires, or shutdown is set.
 
         Returns True if shutdown was requested (caller should break), False otherwise.
         """
-        deadline = time.monotonic() + timeout_s
-        while not shutdown.is_set():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            self._sock.settimeout(min(remaining, 0.05))
-            try:
-                data, _ = self._sock.recvfrom(64)
-                if data.strip() == b"CHECK":
-                    return False
-            except (socket.timeout, OSError):
-                pass
-        return True
+        if shutdown.is_set():
+            return True
+        if self._event.wait(timeout=timeout_s):
+            self._event.clear()
+        return shutdown.is_set()
 
     def close(self) -> None:
-        try:
-            self._worker_file.unlink(missing_ok=True)
-        except OSError:
-            pass
-        try:
-            self._sock.close()
-        except OSError:
-            pass
+        _unregister(self._queue, self._event)

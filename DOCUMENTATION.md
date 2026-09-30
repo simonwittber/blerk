@@ -38,7 +38,7 @@ batch_size = 10
 poll_ms = 1000
 max_retries = 3
 min_describe_lines = 5  # skip LLM description for symbols shorter than this
-workers = 4             # number of parallel symbolizer processes
+workers = 4             # number of parallel symbolizer threads
 
 [git_enricher]
 batch_size = 20
@@ -52,9 +52,10 @@ batch_size = 5
 poll_ms = 3000
 max_retries = 3
 max_context_chars = 16000
-prompt_template = """Describe the following {kind} named "{name}" from {path}. Be concise and technical.
-
-{context}"""
+timeout_s = 300              # per request; a large context needs far more than 30s
+think = true                 # false tells a reasoning model to answer directly
+max_description_chars = 400  # hard cap applied after generation
+# prompt_template = "..."    # optional: override the default prompt
 
 [embedder]
 endpoint = "http://localhost:11434"
@@ -69,8 +70,15 @@ vector_dim = 768
 endpoint = "http://localhost:11434"
 model = ""
 enabled = false
+max_tokens = 2048  # a reasoning model returns nothing if this is too tight
+think = true       # false roughly halves the wait for the same ranking
 # prompt = "Rank these code symbols by relevance to: ..."  # optional: override the default prompt
 ```
+
+Descriptions are capped by `max_description_chars` because the text is appended to the embedding
+input. An unbounded description swamps the code it describes and pulls every symbol's vector toward
+the same region. Only functions and methods are described; a field declaration has nothing to
+summarise.
 
 ### LLM API key
 
@@ -253,7 +261,8 @@ blerk remove <path>           # Remove a folder from the watch list and purge it
 
 ## Daemons
 
-The hub manages background processes. You can also run them individually:
+`blerk start` runs a single process. Each daemon is a supervised thread inside it, restarted with
+exponential backoff if it crashes. Each one also has its own entry point, so you can run it alone:
 
 | Command | Role |
 |---|---|
@@ -265,6 +274,9 @@ The hub manages background processes. You can also run them individually:
 | `blerk-fingerprint` | Computes normhash and SimHash fingerprints for duplicate detection |
 
 Each daemon writes a heartbeat row to the `daemon_status` table every poll cycle, including queue depth, rate, and ETA.
+
+`blerk stop` requests a graceful shutdown through `~/.blerk/blerk.stop`, which the hub notices within
+a few seconds. `blerk start` refuses to run a second hub while one is alive.
 
 ## Symbol extraction
 

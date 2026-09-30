@@ -52,6 +52,49 @@ def purge_missing(conn, dry_run: bool = False) -> int:
     return len(to_delete)
 
 
+def purge_orphans(conn, dry_run: bool = False) -> tuple[int, int]:
+    """Remove content no path refers to any more, plus the embeddings left behind.
+
+    Every other purge step deletes only file_paths rows, and so does the watcher when a file disappears.
+    The files row holding the content survives, and so does everything hanging off it, so that debris accumulates until it is swept here.
+    Deleting the files row cascades to symbols, code_blocks, symbol_refs, symbol_tags, fingerprints and git_files.
+    embeddings has no foreign key and is keyed by content hash, so it is cleaned separately and must run after the cascade.
+    """
+    orphan_ids = [
+        r[0] for r in conn.execute(
+            "SELECT f.id FROM files f"
+            " WHERE NOT EXISTS (SELECT 1 FROM file_paths p WHERE p.file_id = f.id)"
+        ).fetchall()
+    ]
+
+    # Hashes still reachable from a path once the orphans are gone.
+    # Naming the surviving set rather than the doomed one makes this correct on either side of the delete,
+    # so the dry run predicts exactly what the real run removes.
+    surviving = (
+        "SELECT cb.content_hash FROM code_blocks cb"
+        " JOIN symbols s ON s.id = cb.symbol_id"
+        " WHERE cb.content_hash IS NOT NULL"
+        "   AND EXISTS (SELECT 1 FROM file_paths p WHERE p.file_id = s.file_id)"
+    )
+
+    if dry_run:
+        n_emb = conn.execute(
+            f"SELECT COUNT(*) FROM embeddings WHERE content_hash NOT IN ({surviving})"
+        ).fetchone()[0]
+        return len(orphan_ids), n_emb
+
+    for i in range(0, len(orphan_ids), 500):
+        chunk = orphan_ids[i:i + 500]
+        ph = ",".join("?" * len(chunk))
+        conn.execute(f"DELETE FROM files WHERE id IN ({ph})", chunk)
+
+    n_emb = conn.execute(
+        f"DELETE FROM embeddings WHERE content_hash NOT IN ({surviving})"
+    ).rowcount
+    conn.commit()
+    return len(orphan_ids), n_emb
+
+
 def _worktree_paths(folder: str) -> list[str]:
     try:
         result = subprocess.run(
@@ -177,6 +220,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-missing", action="store_true", help="Skip removing files missing from disk")
     parser.add_argument("--no-worktrees", action="store_true", help="Skip removing files from git worktrees")
     parser.add_argument("--no-gitignored", action="store_true", help="Skip removing gitignored files")
+    parser.add_argument("--no-orphans", action="store_true",
+                        help="Skip removing content and embeddings no path refers to any more")
     args = parser.parse_args(argv)
 
     cfg = config.load(args.config)
@@ -213,6 +258,14 @@ def main(argv: list[str] | None = None) -> int:
             verb = "would remove" if args.dry_run else "removed"
             print(f"{verb} {n} explicitly ignored file(s)")
         total += n
+
+    # Runs last, so content orphaned by the steps above is swept in the same pass.
+    if not args.no_orphans:
+        n_files, n_emb = purge_orphans(conn, dry_run=args.dry_run)
+        if n_files or n_emb:
+            verb = "would remove" if args.dry_run else "removed"
+            print(f"{verb} {n_files} orphaned content row(s) and {n_emb} unreferenced embedding(s)")
+        total += n_files + n_emb
 
     conn.close()
 

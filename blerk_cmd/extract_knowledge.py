@@ -154,7 +154,7 @@ def _unpack(data: bytes) -> list[float]:
 def get_embedding(cfg: "_config_mod.Config", text: str) -> list[float]:
     from blerk import embedding as _emb
     emb = cfg.embedder
-    return _emb.embed(emb.backend, emb.endpoint, emb.model, text, emb.device, emb.cache_dir)
+    return _emb.embed(emb.endpoint, emb.model, text, emb.api_key)
 
 
 def embed_knowledge(

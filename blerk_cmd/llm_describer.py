@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import logging
+import re
 import sqlite3
 import sys
 import threading
@@ -21,20 +22,26 @@ DAEMON = "llm-describer"
 
 log = logging.getLogger("llm-describer")
 
-_client = httpx.Client(timeout=30.0)
+# Kept as one pooled client because a full description pass makes tens of thousands of requests.
+# The timeout is per request, so it stays configurable.
+_client = httpx.Client(timeout=300.0)
 
 
-def describe(endpoint: str, model: str, api_key: str, prompt: str) -> str:
-    body = {
+def describe(endpoint: str, model: str, api_key: str, prompt: str,
+             timeout_s: float = 300.0, think: bool = True) -> str:
+    body: dict = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
     }
+    if not think:
+        body["chat_template_kwargs"] = {"enable_thinking": False}
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    r = _client.post(endpoint + "/v1/chat/completions", json=body, headers=headers)
+    r = _client.post(endpoint.rstrip("/") + "/v1/chat/completions", json=body,
+                     headers=headers, timeout=timeout_s)
     if r.status_code != 200:
         raise RuntimeError(f"llm {r.status_code}: {r.text}")
 
@@ -43,6 +50,35 @@ def describe(endpoint: str, model: str, api_key: str, prompt: str) -> str:
     if not choices:
         raise RuntimeError("empty response from llm")
     return choices[0]["message"]["content"]
+
+
+_BULLET_RE = re.compile(r"(?m)^\s*(?:[-*+•]|\d+[.)])\s+")
+_HEADING_RE = re.compile(r"(?m)^\s*#{1,6}\s+")
+_BOLD_LABEL_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def tidy_description(text: str, max_chars: int = 400) -> str:
+    """Flatten a description to one paragraph and cap its length.
+
+    A small model does not reliably obey a word limit, and this text is appended to the embedding input,
+    so an unbounded multi-paragraph answer swamps the code it is meant to describe.
+    The cap is applied at a sentence boundary where one is available, so the result still reads as a sentence.
+    """
+    if not text:
+        return ""
+    s = _HEADING_RE.sub("", text)
+    s = _BULLET_RE.sub("", s)
+    s = _BOLD_LABEL_RE.sub(r"\1", s)
+    s = " ".join(s.split())
+    if max_chars <= 0 or len(s) <= max_chars:
+        return s
+
+    window = s[:max_chars]
+    cut = max(window.rfind(". "), window.rfind("! "), window.rfind("? "))
+    if cut >= max_chars // 3:
+        return window[:cut + 1]
+    cut = window.rfind(" ")
+    return (window[:cut] if cut > 0 else window).rstrip(",;:") + "..."
 
 
 @dataclasses.dataclass
@@ -147,7 +183,8 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
 
                 t0 = time.monotonic()
                 try:
-                    desc = describe(llm.endpoint, llm.model, llm.api_key, prompt)
+                    desc = describe(llm.endpoint, llm.model, llm.api_key, prompt,
+                                    llm.timeout_s, llm.think)
                 except Exception as e:
                     log.warning("describe %s: %s", sym_name, e)
                     try:
@@ -159,6 +196,8 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
                     if failed:
                         failures_today += 1
                     continue
+
+                desc = tidy_description(desc, llm.max_description_chars)
 
                 try:
                     conn.execute(

@@ -206,3 +206,92 @@ def test_code_block_insert_enqueues_embed_and_describe(tmp_path):
         assert describe_count == 1
     finally:
         conn.close()
+
+
+def test_describe_omits_thinking_kwarg_by_default():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    original = _install_transport(handler)
+    try:
+        describe("http://api.local", "m", "", "p")
+        assert "chat_template_kwargs" not in seen
+    finally:
+        _restore_client(original)
+
+
+def test_describe_think_false_disables_thinking():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    original = _install_transport(handler)
+    try:
+        describe("http://api.local", "m", "", "p", think=False)
+        assert seen["chat_template_kwargs"] == {"enable_thinking": False}
+    finally:
+        _restore_client(original)
+
+
+def test_describe_trailing_slash_does_not_double_up():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    original = _install_transport(handler)
+    try:
+        describe("http://api.local/", "m", "", "p")
+        assert seen["url"] == "http://api.local/v1/chat/completions"
+    finally:
+        _restore_client(original)
+
+
+# --- tidy_description ---
+
+from blerk_cmd.llm_describer import tidy_description
+
+
+def test_tidy_flattens_newlines():
+    assert tidy_description("one\n\ntwo\nthree") == "one two three"
+
+
+def test_tidy_strips_bullets_and_headings():
+    raw = "## Summary\n- does a thing\n- and another\n1. numbered too"
+    assert tidy_description(raw) == "Summary does a thing and another numbered too"
+
+
+def test_tidy_unwraps_bold_labels():
+    assert tidy_description("**Purpose:** spawns enemies") == "Purpose: spawns enemies"
+
+
+def test_tidy_keeps_short_text_untouched():
+    s = "Increments the kill counter and updates the HUD text."
+    assert tidy_description(s) == s
+
+
+def test_tidy_caps_at_a_sentence_boundary():
+    s = "First sentence here. Second sentence here. " + "x" * 500
+    out = tidy_description(s, 60)
+    assert out == "First sentence here. Second sentence here."
+    assert len(out) <= 60
+
+
+def test_tidy_falls_back_to_word_boundary_when_no_sentence_end():
+    out = tidy_description("alpha beta gamma delta epsilon zeta eta theta", 20)
+    assert len(out) <= 23
+    assert out.endswith("...")
+    assert " " in out and not out.startswith(" ")
+
+
+def test_tidy_handles_empty_and_zero_cap():
+    assert tidy_description("") == ""
+    assert tidy_description("keep all of this", 0) == "keep all of this"

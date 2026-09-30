@@ -2,6 +2,139 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-30
+
+### blerk start is one process
+
+**Breaking for anyone reading `[coordinator]` in config.toml.** Every daemon now runs as a supervised thread inside the hub instead of as a subprocess.
+
+**Why**
+
+`blerk stop` signals the hub, but on Windows `os.kill(pid, SIGTERM)` is `TerminateProcess`, so the hub died without running cleanup and every child survived. A single session accumulated **94 orphaned daemons**, including three generations of `llm-describer` writing to the database at the same time, which silently corrupted several measurements before the cause was found. `blerk start` also never checked whether a hub was already running, which is what let the count get that high.
+
+**What changed**
+
+`hub.managed`, `build_argv` and `_POPEN_FLAGS` are replaced by `hub.supervise(name, fn, shutdown)`, with identical backoff (1s doubling to 60s, reset after 30s of uptime). Every daemon already exposed `run(cfg, shutdown, ...)` over a `threading.Event`, so no daemon loop changed. The symbolizer runs as a thread too; there is no special case.
+
+`watch_folder` gained a `run(cfg, shutdown, folders, ...)` function. Its logic previously lived in `main()`, which was the only thing stopping it being called like every other daemon.
+
+**The coordinator is in-process**
+
+`blerk/coordinator.py` went from 176 lines of UDP sockets, a port file, `*.worker` files on disk and ctypes liveness checks to a registry of `threading.Event`s. `CoordinatorServer` and `CoordinatorClient` keep their names and method signatures, so `client.wait(shutdown, poll)` and `client.notify(queue)` are unchanged at every call site. The `[coordinator] port` setting is removed, along with the `coordinator.port` file and the `workers/` directory.
+
+**Shutdown and startup**
+
+- `blerk stop` writes `~/.blerk/blerk.stop`, which the hub notices on its next poll and acts on, shutting down cleanly on every platform. Signals remain only as a fallback for a hub that is not polling.
+- `blerk start` refuses when `blerk.pid` names a live process, and clears the file when it names a dead one.
+- `blerk status` reports `hub running (pid N)` in place of a row describing the old UDP coordinator's port and worker files.
+
+**Consequence worth knowing**
+
+`db._write_lock` is a module-level `threading.Lock`, so with separate processes it serialized nothing. In one process it finally applies, which means contention SQLite previously absorbed through `busy_timeout` now blocks in Python. The embedder is the heaviest writer.
+
+**Also**
+
+`symbolizer.run` takes a `daemon_name`, so `symbolizer.workers > 1` no longer has every worker overwriting the same `daemon_status` row.
+
+### Descriptions are short, and only for functions
+
+**Only functions and methods are described.** The `code_blocks_describe_insert` trigger queued every block regardless of kind; it is replaced by `code_blocks_describe_fn_insert`, which filters to `function` and `method`. On one index that cut the work from 41,410 blocks to 12,951. Describing a field produced padding about the enclosing class, because a one-line declaration has nothing to summarise, and that padding went into the embedding.
+
+**Length is enforced in code.** `tidy_description` flattens the reply to one paragraph, strips headings, bullets and bold, and caps it at `llm.max_description_chars` (default 400) at a sentence boundary where one exists. "Be concise and technical" in the prompt produced a median of **1,637 characters, 2.76x the size of the code being described**, with 201 of 212 samples containing bullet lists. A small model will not obey a word limit, so the limit does not depend on it. The default prompt is also rewritten to ask for at most 40 words and ban markdown. Median is now **196 characters**.
+
+**Timeouts are configurable.** `_client = httpx.Client(timeout=30.0)` was hardcoded, which a reasoning model reading `max_context_chars` of source exceeds routinely. `llm.timeout_s` defaults to 300. `llm.think` sends `chat_template_kwargs: {"enable_thinking": false}` so a reasoning model answers directly.
+
+### Reranker
+
+- **`max_tokens` was hardcoded at 64**, which is fatal for a reasoning model: it spends the budget thinking and returns an empty string, which the old code treated as "no reordering" and swallowed. Now `reranker.max_tokens`, default 2048.
+- **Failures were silent.** `except Exception: return rows` meant an enabled reranker that never worked was indistinguishable from one that did. Failures now report the model, the endpoint and the cause to stderr.
+- **`reranker.think`** added, matching the describer. Measured on a local 27B model: thinking on 8.0s, off 4.3s, identical ranking.
+
+### Fix: per-section API keys in secrets.toml were ignored
+
+`config.load` only read `secrets['llm']['api_key']` and copied it to the reranker, embedder and knowledge sections. A key written under `[reranker]` was silently discarded, which presented as an unexplained HTTP 401. Each section now reads its own key, with `[llm]` as the shared fallback.
+
+### Fix: purge left embeddings behind
+
+`purge` gains an orphan sweep, run last so content orphaned by the earlier steps is cleaned in the same pass, with `--no-orphans` to skip it.
+
+The `file_paths_after_delete_orphan` trigger already removed the content row when its last path went, and that cascade handles symbols, code_blocks, symbol_refs, symbol_tags, fingerprints and git_files. But `embeddings` has no foreign key and is keyed by content hash, so vectors survived every deletion path. On one index the first real run removed **734 unreferenced embeddings** and 0 orphaned content rows, which is exactly the gap. The sweep also repairs historical debris from before that trigger existed: one index carried 2,943 orphaned content rows covering 106,003 code blocks.
+
+Added `idx_code_blocks_hash`, without which the unreferenced-embedding query ran for over five minutes.
+
+### Embeddings move behind an endpoint, torch is gone
+
+**Breaking.** blerk no longer loads embedding model weights. Every embedding is an HTTP POST to an OpenAI-compatible `/v1/embeddings` endpoint. `sentence-transformers` and `torch` are removed from the dependencies, which drops roughly 195 MiB of downloads including torch, scipy, transformers and scikit-learn.
+
+**Why**
+
+The in-process backend only worked well in one of its two call sites. Inside the embedder daemon the model stayed warm. In `blerk query` it reloaded the weights for one short string on every invocation, and every MCP search paid that again as a subprocess. Moving the model behind a URL puts it in a process that stays warm, and Ollama already is one.
+
+**Config changes**
+
+`embedder.backend`, `embedder.device` and `embedder.cache_dir` are gone. `embedder.api_key` is new, and picks up the shared key from `secrets.toml` like the LLM and reranker already do. Old configs still load, because unknown keys are ignored, but an empty `embedder.endpoint` now raises an error naming the setting instead of building a malformed URL.
+
+Set `endpoint` to an OpenAI-compatible server (`http://localhost:11434` for Ollama) and `model` to an embedding model it serves. Anything previously indexed with a different model needs `blerk reindex --all`.
+
+**One protocol**
+
+The describer and the reranker already spoke OpenAI-compatible `/v1/chat/completions`. The embedder used Ollama-native `/api/embeddings`. Now the whole tool speaks one protocol, and vllm, LM Studio and hosted providers work without a code change.
+
+**Real batching**
+
+`/api/embeddings` takes one string per request, so `embedder.batch_size = 10` meant ten round trips. The embedder now gathers the whole claimed batch, sends it as one request, and writes the results. If the batch request fails it retries each text alone, so one oversized or malformed input cannot fail its neighbours.
+
+**Hardware placement belongs to the server**
+
+There is no device setting any more. To run embeddings on CPU while a chat model uses the GPU, set `num_gpu` to 0 in an Ollama Modelfile for the embedding model.
+
+**Better failures**
+
+An unset endpoint, an unreachable one, and an error response each produce a message naming the endpoint and the fix. `blerk init` now embeds a test string against the configured model and reports the dimension count, so a broken setup is caught at configuration time rather than at first search.
+
+### One way to resolve and match paths
+
+Every command used to roll its own directory filter, and no two agreed. Searching `blerk` matched `blerk_cmd` through an unanchored LIKE, while browsing `blerk` found nothing because it anchored at a path boundary. An empty result looked identical to a wrong path.
+
+**New module: `blerk/paths.py`**
+
+The mechanical helpers live here and depend on nothing else: `to_slash`, `resolve_path`, `is_absolute`, `resolve_root`, `to_relative`. `blerk/config.py` and `blerk/ignore_match.py` both use them, which removed two duplicate copies of the slash normalizer.
+
+**One matcher in `blerk_cmd/util.py`**
+
+`Scope` gains a `root` and a `loose` flag. `scope_filters` is the single directory matcher, `scope_clause` formats it, and `scope_readings` decides how hard to try. Eleven hand-rolled directory clauses were deleted, along with `normalize_dir`, `build_path_filters` and `_ext_sql`.
+
+Directory matches are now anchored at a path boundary, so `blerk` never matches `blerk_cmd`. Anchored prefix matching can also use an index on `path`, unlike the old floating `%x%`.
+
+**Directory arguments are repo-relative and optional**
+
+A relative directory joins to the index root, which is the `watch.folders` entry containing the working directory. It no longer joins to the process working directory, so the same argument means the same thing from any subdirectory.
+
+Every command that takes a directory now treats it as optional, defaulting to the whole root: `query`, `browse`, `deps`, `tags`, `summary`, `rescan`, `reindex`, `lint`, `similar`, `analyze` and `findings`.
+
+**Results print relative to the root**
+
+`blerk_cmd/query.py:52` instead of `C:/Users/simon/git/blerk/blerk_cmd/query.py:52`. That is the same string used for reading and editing files, and it is much cheaper in context.
+
+**Widening, with a notice**
+
+A directory that matches nothing is retried against two wider readings: the root is dropped so the argument matches any path ending in it, then it is treated as a plain substring. `search` prints a line saying when a wider reading is what matched, so a fragment such as `Scripts` resolves without silently pretending it was an exact scope.
+
+**Empty results name the scope**
+
+`No indexed files in NoSuchFolder. Index root: C:/Users/simon/git/module-games.` replaces the old bare `No indexed files found.`
+
+**MCP surface**
+
+`directory` is no longer required on `search`, `browse` or `deps`, and every path argument gained a description saying it is repo-relative. `detail`'s `file_path` is renamed to `file` to match `show`. `browse` with `roots=true` lists the index roots, which solves the cold-start problem of having to guess a directory before anything can be listed. The `initialize` instructions now carry the resolved index root.
+
+**Bug fixes**
+
+- `tags` and `reindex` joined the `files` table and filtered `f.path`, but `files` has no `path` column. Any `tags` or `reindex` call carrying a directory or extension filter raised `no such column: f.path`. Both now join `file_paths`.
+- `query` called `httpx` without importing it, so an enabled reranker silently did nothing inside a bare `except Exception`.
+- `analyze` called `log.warning` in a module with no logger, crashing the file-mode save path on an unrecognised symbol name from the LLM.
+- `blerk init` wrote config values with Python's `repr()`, which emits single-quoted strings that TOML reads without escape processing, so Windows paths ended up with doubled backslashes. It now quotes TOML basic strings itself and writes lowercase booleans.
+
 ### Git worktree support
 
 Blerk now tracks git context separately from file content and skips worktree directories during indexing.

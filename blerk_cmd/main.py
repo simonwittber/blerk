@@ -75,24 +75,54 @@ def _dispatch(module_name: str, cmd: str) -> int:
     return mod.main() or 0
 
 
-def _stop() -> int:
+def _stop(grace_s: float = 20.0) -> int:
+    """Ask the hub to shut down, then make sure it did.
+
+    A signal is not enough: on Windows os.kill(pid, SIGTERM) becomes TerminateProcess, so the hub dies
+    without running cleanup. The hub polls for a stop file instead, which lets it exit gracefully on
+    every platform. Killing is the fallback for a hub that is wedged and not polling.
+    """
     import os
     import signal as _signal
-    from pathlib import Path
+    import time
 
-    pid_path = Path.home() / ".blerk" / "blerk.pid"
-    if not pid_path.exists():
+    from blerk_cmd.hub import PID_FILE, STOP_FILE, pid_is_alive
+
+    if not PID_FILE.exists():
         print("blerk: no running instance found (no PID file)")
         return 1
     try:
-        pid = int(pid_path.read_text().strip())
-        os.kill(pid, _signal.SIGTERM)
-        print(f"Sent SIGTERM to blerk hub (pid {pid})")
-        return 0
-    except (ValueError, ProcessLookupError, PermissionError) as e:
-        print(f"blerk stop: {e}")
-        pid_path.unlink(missing_ok=True)
+        pid = int(PID_FILE.read_text().strip())
+    except ValueError:
+        print("blerk stop: unreadable PID file, removing it")
+        PID_FILE.unlink(missing_ok=True)
         return 1
+
+    if not pid_is_alive(pid):
+        print(f"blerk: hub (pid {pid}) is not running, clearing stale PID file")
+        PID_FILE.unlink(missing_ok=True)
+        return 0
+
+    STOP_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STOP_FILE.write_text("stop")
+    print(f"Asked blerk hub (pid {pid}) to stop...")
+
+    deadline = time.monotonic() + grace_s
+    while time.monotonic() < deadline:
+        if not pid_is_alive(pid):
+            print("Stopped.")
+            STOP_FILE.unlink(missing_ok=True)
+            return 0
+        time.sleep(0.25)
+
+    print(f"blerk: hub did not stop within {grace_s:.0f}s, terminating it")
+    try:
+        os.kill(pid, _signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError) as e:
+        print(f"blerk stop: {e}")
+    STOP_FILE.unlink(missing_ok=True)
+    PID_FILE.unlink(missing_ok=True)
+    return 0
 
 
 def main() -> int:

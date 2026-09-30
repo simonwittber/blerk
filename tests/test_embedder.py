@@ -38,22 +38,128 @@ def test_to_float32_blob_empty():
     assert embedding.to_float32_blob([]) == b""
 
 
-def test_embed_unknown_backend():
+def _fake_post(monkeypatch, handler):
+    monkeypatch.setattr(embedding.httpx, "post", handler)
+
+
+def test_embed_posts_openai_shape(monkeypatch):
+    seen = {}
+
+    def handler(url, json=None, headers=None, timeout=None):
+        seen["url"] = url
+        seen["json"] = json
+        seen["headers"] = headers
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0, 2.0]}]})
+
+    _fake_post(monkeypatch, handler)
+    assert embedding.embed("http://host:11434", "nomic", "hello") == [1.0, 2.0]
+    assert seen["url"] == "http://host:11434/v1/embeddings"
+    assert seen["json"] == {"model": "nomic", "input": ["hello"]}
+    assert seen["headers"] == {}
+
+
+def test_embed_batch_sends_one_request_for_many_inputs(monkeypatch):
+    calls = []
+
+    def handler(url, json=None, headers=None, timeout=None):
+        calls.append(json)
+        return httpx.Response(200, json={"data": [
+            {"index": 0, "embedding": [1.0]},
+            {"index": 1, "embedding": [2.0]},
+            {"index": 2, "embedding": [3.0]},
+        ]})
+
+    _fake_post(monkeypatch, handler)
+    got = embedding.embed_batch("http://host", "nomic", ["a", "b", "c"])
+    assert got == [[1.0], [2.0], [3.0]]
+    assert len(calls) == 1
+
+
+def test_embed_batch_orders_by_index(monkeypatch):
+    def handler(url, json=None, headers=None, timeout=None):
+        return httpx.Response(200, json={"data": [
+            {"index": 2, "embedding": [3.0]},
+            {"index": 0, "embedding": [1.0]},
+            {"index": 1, "embedding": [2.0]},
+        ]})
+
+    _fake_post(monkeypatch, handler)
+    assert embedding.embed_batch("http://host", "m", ["a", "b", "c"]) == [[1.0], [2.0], [3.0]]
+
+
+def test_embed_batch_empty_makes_no_request(monkeypatch):
+    def handler(*a, **kw):
+        raise AssertionError("should not post for an empty batch")
+
+    _fake_post(monkeypatch, handler)
+    assert embedding.embed_batch("http://host", "m", []) == []
+
+
+def test_embed_sends_api_key_when_given(monkeypatch):
+    seen = {}
+
+    def handler(url, json=None, headers=None, timeout=None):
+        seen.update(headers or {})
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0]}]})
+
+    _fake_post(monkeypatch, handler)
+    embedding.embed("http://host", "m", "x", "sk-test")
+    assert seen == {"Authorization": "Bearer sk-test"}
+
+
+def test_embed_trailing_slash_does_not_double_up(monkeypatch):
+    seen = {}
+
+    def handler(url, json=None, headers=None, timeout=None):
+        seen["url"] = url
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0]}]})
+
+    _fake_post(monkeypatch, handler)
+    embedding.embed("http://host:11434/", "m", "x")
+    assert seen["url"] == "http://host:11434/v1/embeddings"
+
+
+def test_embed_unreachable_endpoint_says_how_to_fix(monkeypatch):
+    def handler(*a, **kw):
+        raise httpx.ConnectError("connection refused")
+
+    _fake_post(monkeypatch, handler)
     with pytest.raises(RuntimeError) as exc:
-        embedding.embed("unknown", "http://api.local", "nomic", "hello")
-    assert "unknown embedding backend" in str(exc.value)
+        embedding.embed("http://host:11434", "m", "x")
+    msg = str(exc.value)
+    assert "cannot reach the embedding endpoint at http://host:11434" in msg
+    assert "ollama serve" in msg
 
 
-def test_embed_sentence_transformers_import_error(monkeypatch):
-    def mock_import(name, *args, **kwargs):
-        if name == "sentence_transformers":
-            raise ImportError("test error")
-        return __import__(name, *args, **kwargs)
+def test_embed_error_status_is_reported(monkeypatch):
+    def handler(*a, **kw):
+        return httpx.Response(404, text='model "missing" not found')
 
-    monkeypatch.setattr("builtins.__import__", mock_import)
+    _fake_post(monkeypatch, handler)
     with pytest.raises(RuntimeError) as exc:
-        embedding.embed("sentence-transformers", "", "all-MiniLM", "hello")
-    assert "sentence-transformers not installed" in str(exc.value)
+        embedding.embed("http://host", "missing", "x")
+    assert "404" in str(exc.value)
+    assert "not found" in str(exc.value)
+
+
+def test_embed_empty_endpoint_names_the_setting(monkeypatch):
+    def handler(*a, **kw):
+        raise AssertionError("should not post without an endpoint")
+
+    _fake_post(monkeypatch, handler)
+    with pytest.raises(RuntimeError) as exc:
+        embedding.embed("", "nomic", "hello")
+    assert "embedder.endpoint is not set" in str(exc.value)
+
+
+def test_embed_batch_rejects_short_response(monkeypatch):
+    def handler(*a, **kw):
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0]}]})
+
+    _fake_post(monkeypatch, handler)
+    with pytest.raises(RuntimeError) as exc:
+        embedding.embed_batch("http://host", "m", ["a", "b"])
+    assert "1 vectors for 2 inputs" in str(exc.value)
 
 
 def _build_text(name: str, description: str, snippet: str, max_embed_chars: int = 0) -> str:

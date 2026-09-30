@@ -174,6 +174,57 @@ path = "/abs/db.sqlite"
     assert cfg.llm[0].api_key == "sk-test-123"
 
 
+def test_secrets_per_section_key_is_used(tmp_path: Path) -> None:
+    """A key under its own section must reach that section, not be ignored in favour of [llm]."""
+    secrets_path = tmp_path / "secrets.toml"
+    secrets_path.write_text(
+        '[llm]\napi_key = ""\n\n[reranker]\napi_key = "sk-rerank"\n[embedder]\napi_key = "sk-embed"\n',
+        encoding="utf-8",
+    )
+    toml = f"""
+secrets_file = "{secrets_path.as_posix()}"
+
+[db]
+path = "/abs/db.sqlite"
+"""
+    cfg = config.load(write_cfg(tmp_path, toml))
+    assert cfg.reranker.api_key == "sk-rerank"
+    assert cfg.embedder.api_key == "sk-embed"
+    assert cfg.llm[0].api_key == ""
+
+
+def test_secrets_llm_key_is_the_shared_fallback(tmp_path: Path) -> None:
+    secrets_path = tmp_path / "secrets.toml"
+    secrets_path.write_text('[llm]\napi_key = "sk-shared"\n', encoding="utf-8")
+    toml = f"""
+secrets_file = "{secrets_path.as_posix()}"
+
+[db]
+path = "/abs/db.sqlite"
+"""
+    cfg = config.load(write_cfg(tmp_path, toml))
+    assert cfg.llm[0].api_key == "sk-shared"
+    assert cfg.reranker.api_key == "sk-shared"
+    assert cfg.embedder.api_key == "sk-shared"
+    assert cfg.knowledge.llm.api_key == "sk-shared"
+
+
+def test_secrets_section_key_wins_over_shared(tmp_path: Path) -> None:
+    secrets_path = tmp_path / "secrets.toml"
+    secrets_path.write_text(
+        '[llm]\napi_key = "sk-shared"\n\n[reranker]\napi_key = "sk-own"\n', encoding="utf-8"
+    )
+    toml = f"""
+secrets_file = "{secrets_path.as_posix()}"
+
+[db]
+path = "/abs/db.sqlite"
+"""
+    cfg = config.load(write_cfg(tmp_path, toml))
+    assert cfg.reranker.api_key == "sk-own"
+    assert cfg.llm[0].api_key == "sk-shared"
+
+
 def test_secrets_missing_ok(tmp_path: Path) -> None:
     missing = tmp_path / "nope.toml"
     toml = f"""

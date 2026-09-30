@@ -19,9 +19,6 @@ def fmt_duration(s: float) -> str:
 
 def setup_logging(silent: bool) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
-    logging.getLogger("transformers").setLevel(logging.WARNING)
-    logging.getLogger("torch").setLevel(logging.WARNING)
     if silent:
         logging.getLogger().setLevel(logging.WARNING)
 
