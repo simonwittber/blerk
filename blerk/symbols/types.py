@@ -113,7 +113,67 @@ def _build_stripped(lines: list[str], syms: list[Symbol], target_line: int, targ
     return "\n".join(out)
 
 
+TRIMMED_PLACEHOLDER = "    // ... (trimmed)"
+
+
+def _window_around_target(text: str, max_chars: int) -> str:
+    """Cut a marked-up context down to max_chars, keeping the target symbol and the lines nearest it.
+
+    Stripping only removes other symbol bodies, so a file dense with declarations still produced contexts of
+    25,000 characters, and the model server silently truncated the prompt instead.
+    Here the target is kept first, then surrounding lines are added alternately after and before it.
+    If the target alone exceeds the budget, its opening lines are kept, since that is where the signature is.
+    """
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    lines = text.split("\n")
+    try:
+        start = lines.index(MARKER_START)
+        end = lines.index(MARKER_END, start)
+    except ValueError:
+        return text[:max_chars]
+
+    target = lines[start:end + 1]
+    used = sum(len(l) + 1 for l in target)
+    if used > max_chars:
+        kept, size = [], 0
+        for l in target[:-1]:
+            if size + len(l) + 1 > max_chars - len(MARKER_END) - len(TRIMMED_PLACEHOLDER) - 2:
+                break
+            kept.append(l)
+            size += len(l) + 1
+        return "\n".join(kept + [TRIMMED_PLACEHOLDER, MARKER_END])
+
+    lo, hi = start - 1, end + 1
+    before: list[str] = []
+    after: list[str] = []
+    turn_after = True
+    while lo >= 0 or hi < len(lines):
+        take_after = hi < len(lines) and (turn_after or lo < 0)
+        line = lines[hi] if take_after else lines[lo]
+        if used + len(line) + 1 > max_chars:
+            break
+        used += len(line) + 1
+        if take_after:
+            after.append(line)
+            hi += 1
+        else:
+            before.append(line)
+            lo -= 1
+        turn_after = not turn_after
+
+    out = ([TRIMMED_PLACEHOLDER] if lo >= 0 else []) + before[::-1] + target + after
+    if hi < len(lines):
+        out.append(TRIMMED_PLACEHOLDER)
+    return "\n".join(out)
+
+
 def build_context(path: str, target_line: int, target_end_line: int, max_chars: int) -> str:
+    """Return the file with the target symbol marked, never longer than max_chars.
+
+    A file under max_chars is sent whole. A larger one has other symbol bodies stripped, and if that is still
+    over budget it is windowed around the target.
+    """
     with open(path, "rb") as f:
         data = f.read()
     text = data.decode("utf-8", errors="replace")
@@ -123,4 +183,4 @@ def build_context(path: str, target_line: int, target_end_line: int, max_chars: 
     # File exceeds max_chars: strip other symbol bodies using tree-sitter.
     from blerk.symbols.treesitter_extractor import Extractor
     syms, _ = Extractor().extract(path)
-    return _build_stripped(lines, syms, target_line, target_end_line)
+    return _window_around_target(_build_stripped(lines, syms, target_line, target_end_line), max_chars)

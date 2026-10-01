@@ -20,6 +20,7 @@ See the "Paths and scope" section of ARCHITECTURE.md for how the readings widen 
 - **blerk never loads model weights.** No torch, no sentence-transformers, no device or cache settings. Every embedding is an HTTP POST to an OpenAI-compatible `/v1/embeddings` endpoint, built only in `blerk/embedding.py`.
 - **One protocol.** The describer and reranker use `/v1/chat/completions`, the embedder uses `/v1/embeddings`. Do not add a provider-native call path.
 - **Hardware placement is the server's job.** If someone wants CPU embeddings, that is an Ollama Modelfile with `num_gpu 0`, not a blerk setting.
+- **A vector is current only if it was built from the exact text the embedder would build now.** That is `embeddings.input_hash`. Never decide "already embedded" from `content_hash`: it covers only the code, and doing so once meant no description ever reached a vector and `blerk reindex` silently did nothing.
 - **Never let an embedding failure degrade silently.** A wrong or missing vector space produces plausible rankings that are quietly wrong, so unset, unreachable and error responses must all name the endpoint and the fix.
 
 ## Daemons

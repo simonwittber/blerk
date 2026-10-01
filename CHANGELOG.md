@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-01
+
+Fixes to how descriptions are produced and how they reach the embeddings. The database migrates itself from schema 21 to 22 on first open.
+
+### Fix: descriptions never reached the vectors
+
+The embedder decided a block was "already embedded" by `content_hash`, which covers only the code. The embedded text also includes the description, callers, callees and path, so none of those changing ever caused a rebuild. Because the embedder finishes in seconds and the describer takes hours, every vector was built before its description existed, and stayed that way. `blerk reindex --all` could not repair it either: it requeued every block, and the embedder skipped each one.
+
+- **Schema 22** adds `embeddings.input_hash`, a hash of the exact text embedded. Existing vectors have none, so each is rebuilt once on its next pass.
+- The embedder skips a block only when its stored `input_hash` matches the text it would embed now.
+- A new trigger, `symbols_description_reembed`, requeues a symbol's blocks whenever its description changes. Descriptions now reach search on their own, with no reindex.
+
+Vectors are still shared by content hash, so identical code in two files holds one vector, built from whichever file's text was embedded last.
+
+### Fix: chunked methods were described by their first fragment
+
+A long method is split into several code blocks for embedding. The describer passed the block's line range to `build_context`, so for a method split across lines 18 to 190 the prompt marked only lines 18 to 54, and that fragment's description became the symbol's. The markers now wrap the whole symbol.
+
+### Fix: one description per symbol
+
+Every block of a chunked method was queued for description, and since the prompt asks what "this method" does, each produced a near-identical description of the whole method. On one index that was 657 redundant calls. The describe trigger is now `code_blocks_describe_symbol_insert` and queues only block 0, and every block of a symbol embeds the symbol's description.
+
+### Fix: prompts could overflow the model's context and be silently truncated
+
+`build_context` treats `max_context_chars` as a threshold: under it the whole file is sent, over it other symbol bodies are stripped. But stripping keeps every non-symbol line and nothing bounded the result, so files dense with declarations produced 25,000-character prompts. Against a 4,096-token window, about 2% of prompts were truncated by the model server, which drops the start of the prompt and can lose the symbol being described. `_window_around_target` now caps the context at `max_context_chars`, keeping the target whole and the lines nearest it. The largest prompt observed afterwards was 1,970 tokens.
+
+A lower `max_context_chars` also tends to describe better, not just more safely: more files take the stripped path, and on a whole file the model sometimes described the neighbouring method instead of the target. 10,000 is the documented default.
+
+### blerk stop waits longer
+
+The graceful-stop grace period is 90 seconds, up from 20. A daemon finishes the batch it is inside before exiting, and a describer batch is several LLM calls, so 20 seconds hit the kill fallback on almost every ordinary stop.
+
 ## [0.9.0] - 2026-09-30
 
 ### blerk start is one process

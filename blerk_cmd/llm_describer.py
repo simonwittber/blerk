@@ -144,10 +144,12 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
         if rows:
             status = "running"
             for row in rows:
+                # The markers must wrap the whole symbol, not this block's line range.
+                # Using the block range meant a method split into several blocks was described by its first fragment alone.
                 blk_row = conn.execute(
                     "SELECT cb.description, cb.block_index,"
                     " s.id, s.name, s.kind, fp.path,"
-                    " COALESCE(cb.start_line, s.line), COALESCE(cb.end_line, s.end_line, s.line)"
+                    " s.line, COALESCE(s.end_line, s.line)"
                     " FROM code_blocks cb"
                     " JOIN symbols s ON s.id = cb.symbol_id"
                     " JOIN file_paths fp ON fp.file_id = s.file_id"
@@ -163,7 +165,8 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
 
                 blk_desc, block_index, sym_id, sym_name, sym_kind, path, start_line, end_line = blk_row
 
-                if blk_desc is not None:
+                # Continuation blocks are not described; the symbol is, once, through block 0.
+                if blk_desc is not None or block_index != 0:
                     try:
                         db.mark_done(conn, QUEUE, row.id)
                     except sqlite3.Error as e:
@@ -204,11 +207,10 @@ def run(cfg: config.Config, llm: config.LLM, shutdown: threading.Event, daemon_n
                         "UPDATE code_blocks SET description=?, described_at=unixepoch() WHERE id=?",
                         (desc, row.target_id),
                     )
-                    if block_index == 0:
-                        conn.execute(
-                            "UPDATE symbols SET description=?, described_at=unixepoch() WHERE id=?",
-                            (desc, sym_id),
-                        )
+                    conn.execute(
+                        "UPDATE symbols SET description=?, described_at=unixepoch() WHERE id=?",
+                        (desc, sym_id),
+                    )
                 except sqlite3.Error as e:
                     try:
                         failed = db.requeue(conn, QUEUE, row.id, str(e), llm.max_retries)

@@ -75,12 +75,16 @@ def _dispatch(module_name: str, cmd: str) -> int:
     return mod.main() or 0
 
 
-def _stop(grace_s: float = 20.0) -> int:
+def _stop(grace_s: float = 90.0) -> int:
     """Ask the hub to shut down, then make sure it did.
 
     A signal is not enough: on Windows os.kill(pid, SIGTERM) becomes TerminateProcess, so the hub dies
     without running cleanup. The hub polls for a stop file instead, which lets it exit gracefully on
     every platform. Killing is the fallback for a hub that is wedged and not polling.
+
+    The grace period has to cover a daemon finishing the batch it is inside. A describer batch is
+    batch_size requests against an LLM, which is tens of seconds, so 20s was short enough to hit the
+    kill path on every ordinary stop.
     """
     import os
     import signal as _signal

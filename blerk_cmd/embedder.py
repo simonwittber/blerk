@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import sqlite3
 import threading
@@ -63,7 +64,7 @@ def embed_texts(cfg: config.Config, texts: list[str]) -> list[list[float] | Exce
 def build_embed_text(conn: sqlite3.Connection, block_id: int, model: str) -> tuple[str, str, str, str] | None:
     """Build the text to embed for one code block.
 
-    Returns (content_hash, symbol name, path, text), or None when the block is gone or already has a vector for this model.
+    Returns (content_hash, symbol name, path, text), or None when the block is gone or already has a vector built from this exact text.
     """
     blk_row = conn.execute(
         "SELECT cb.content, cb.content_hash, cb.block_index,"
@@ -81,13 +82,6 @@ def build_embed_text(conn: sqlite3.Connection, block_id: int, model: str) -> tup
     (block_content, content_hash, block_index,
      sym_id, name, description, path,
      params, kind, file_id, line, nesting_depth) = blk_row
-
-    # Skip if a vector for this content and model already exists.
-    if content_hash and conn.execute(
-        "SELECT 1 FROM embeddings WHERE content_hash=? AND model=?",
-        (content_hash, model),
-    ).fetchone():
-        return None
 
     parent_row = None
     if nesting_depth and nesting_depth > 0:
@@ -121,14 +115,8 @@ def build_embed_text(conn: sqlite3.Connection, block_id: int, model: str) -> tup
     sig = f"({params})" if params else ""
     ns_prefix = f"{namespace}." if namespace else ""
     cls_prefix = f"{parent_class}." if parent_class else ""
-    if block_index == 0:
-        block_desc = description
-    else:
-        bd_row = conn.execute(
-            "SELECT COALESCE(description, '') FROM code_blocks WHERE id=?",
-            (block_id,),
-        ).fetchone()
-        block_desc = bd_row[0] if bd_row else ""
+    # Every block of a symbol carries the symbol's description, since only the symbol as a whole is described.
+    block_desc = description
 
     parts = [f"{ns_prefix}{cls_prefix}{name}{sig}"]
     if block_desc:
@@ -142,8 +130,24 @@ def build_embed_text(conn: sqlite3.Connection, block_id: int, model: str) -> tup
     if block_content and kind in ("function", "method"):
         parts.append("\n\n")
         parts.append(block_content)
+    text = "".join(parts)
 
-    return content_hash, name, path, "".join(parts)
+    # Skip only when the stored vector was built from exactly this text.
+    # Matching on content_hash alone skipped every block whose description, callers or path had changed since.
+    if content_hash:
+        row = conn.execute(
+            "SELECT input_hash FROM embeddings WHERE content_hash=? AND model=?",
+            (content_hash, model),
+        ).fetchone()
+        if row and row[0] == input_hash(text):
+            return None
+
+    return content_hash, name, path, text
+
+
+def input_hash(text: str) -> str:
+    """Hash of the exact text sent for embedding, stored alongside the vector."""
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
 def _process_knowledge_queue(conn: sqlite3.Connection, cfg: config.Config, silent: bool) -> None:
@@ -246,7 +250,7 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
             vectors = embed_texts(cfg, [p[4] for p in pending])
             batch_time = time.monotonic() - t0
 
-            for (row, content_hash, name, path, _text), vec in zip(pending, vectors):
+            for (row, content_hash, name, path, text), vec in zip(pending, vectors):
                 if isinstance(vec, Exception):
                     log.warning("embed %s: %s", name, vec)
                     try:
@@ -263,12 +267,13 @@ def run(cfg: config.Config, shutdown: threading.Event, silent: bool = False) -> 
 
                 try:
                     conn.execute(
-                        "INSERT INTO embeddings(content_hash, model, vector, embedded_at) "
-                        "VALUES(?, ?, ?, unixepoch()) "
+                        "INSERT INTO embeddings(content_hash, model, vector, embedded_at, input_hash) "
+                        "VALUES(?, ?, ?, unixepoch(), ?) "
                         "ON CONFLICT(content_hash, model) DO UPDATE SET "
                         "vector = excluded.vector, "
-                        "embedded_at = excluded.embedded_at",
-                        (content_hash, cfg.embedder.model, blob),
+                        "embedded_at = excluded.embedded_at, "
+                        "input_hash = excluded.input_hash",
+                        (content_hash, cfg.embedder.model, blob, input_hash(text)),
                     )
                 except sqlite3.Error as e:
                     try:

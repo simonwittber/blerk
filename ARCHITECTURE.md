@@ -78,15 +78,22 @@ File system event
 4. **git-enricher** claims from `git_queue`. For each file it resolves the enclosing repository with `git rev-parse --git-common-dir`, runs `git log -1 --format=%H|%an|%D`, and upserts `git_commit`, `git_author` and `git_branch` into `git_files` keyed by `(repository_id, rel_path, git_branch)`.
 
 5. Two triggers fire when the symbolizer inserts a `code_blocks` row:
-   - `code_blocks_describe_fn_insert`: fires only for blocks whose parent symbol is `function` or `method`, enqueues into `code_block_describe_queue`. The earlier unfiltered version queued every block, which on one index was 41,410 rows where 12,951 were wanted, and produced field descriptions that padded with class-level detail because there is nothing to say about a one-line declaration.
+   - `code_blocks_describe_symbol_insert`: fires only for block 0 of a `function` or `method`, enqueues into `code_block_describe_queue`. One description per symbol: a long method is split into several code blocks for embedding, and describing each block produced several near-identical descriptions of the whole method. Fields are never described, because a one-line declaration has nothing to summarise and asking for one produced padding about the enclosing class.
    - `code_blocks_embed_insert`: fires for all blocks except those with parent kind `heading`, enqueues into `code_block_embed_queue`.
+   - `symbols_description_reembed`: fires when a symbol's description changes, and requeues that symbol's blocks for embedding. The describer finishes long after the embedder, so without this every vector was built before its description existed.
    - Fingerprinting is still triggered on `symbols` INSERT (for `function` and `method`).
 
-6. **llm-describer** claims from `code_block_describe_queue`. It builds a prompt from the symbol's source context (surrounding file content with markers) and POSTs to an OpenAI-compatible `/v1/chat/completions` endpoint. The reply goes through `tidy_description`, which flattens it to one paragraph, strips markdown, and caps it at `llm.max_description_chars`. It writes the result to `code_blocks.description`, and for block 0 also to `symbols.description`.
+6. **llm-describer** claims from `code_block_describe_queue`. It builds a prompt from the symbol's source context and POSTs to an OpenAI-compatible `/v1/chat/completions` endpoint. The reply goes through `tidy_description`, which flattens it to one paragraph, strips markdown, and caps it at `llm.max_description_chars`. It writes the result to `symbols.description` and to the description of the symbol's block 0.
+
+   The context markers wrap the **whole symbol's** line range, not the block's. Using the block range meant a method split into several blocks was described from its first fragment.
+
+   `build_context` sends the whole file when it is under `llm.max_context_chars`. A larger file has other symbol bodies stripped, and if that is still over budget, `_window_around_target` keeps the target and the lines nearest it. That last step matters: stripping keeps every non-symbol line, so a file dense with declarations still produced 25,000-character contexts, and the model server silently truncated the prompt, which can cut the target out entirely. The cap is enforced before the request rather than left to the server.
 
    The cap is load bearing, not cosmetic. Descriptions are appended to the embedding input, so a long formulaic answer swamps the code it describes and pulls every symbol's vector toward the same region. Asking a 7B model to "be concise" produced a median of 1,637 characters, nearly three times the size of the code being described; the prompt limit plus the hard cap brought the median to 196. A small model will not reliably obey a word limit, so the limit is enforced in code.
 
-7. **embedder** claims from `code_block_embed_queue`. It builds an input string per block from the symbol header and block content, sends the whole claimed batch as one `/v1/embeddings` request, encodes each response as a little-endian float32 blob, and upserts into `embeddings(content_hash, model)`. If the batch request fails, each text is retried alone so one bad input cannot fail its neighbours.
+7. **embedder** claims from `code_block_embed_queue`. It builds an input string per block from the symbol header, the symbol's description, its callers and callees, the path, and the block content. It sends the whole claimed batch as one `/v1/embeddings` request, encodes each response as a little-endian float32 blob, and upserts into `embeddings(content_hash, model)` along with `input_hash`, a hash of the exact text embedded. If the batch request fails, each text is retried alone so one bad input cannot fail its neighbours.
+
+   A block is skipped only when the stored vector's `input_hash` matches the text it would embed now. Matching on `content_hash` alone, as it once did, could not see that a description, a caller or a path had changed, because `content_hash` covers only the code; every such change was silently ignored, and `blerk reindex` requeued blocks only for the embedder to skip them. Every block of a symbol carries the symbol's description.
 
 8. **fingerprinter** claims from `fingerprint_queue`. For each symbol it fetches block 0 content and computes two fingerprints:
    - `normhash`: SHA256 of the whitespace- and case-normalised content. Two functions with the same normhash are exact clones.
@@ -250,7 +257,7 @@ Results print relative to the index root: `blerk_cmd/query.py:52`, not the full 
 | `symbols` | One row per extracted symbol. Holds name, kind, line range, content_hash, params, nesting depth, param count, description, and file extension. No snippet column. |
 | `code_blocks` | One or more rows per symbol. Holds block_index, content, start/end line, and optional description. Used for embedding and LLM description. |
 | `symbol_tags` | Key/value tags per symbol. Used for extractor-specific metadata. |
-| `embeddings` | One row per (block_id, model) pair. Stores the float32 vector blob. |
+| `embeddings` | One row per (content_hash, model) pair. Stores the float32 vector blob and `input_hash`, a hash of the full text it was built from. |
 | `fingerprints` | One row per (symbol, kind) pair. Stores `normhash` and `simhash` values for duplicate detection. |
 | `symbol_refs` | Caller/callee pairs between symbols in the index. |
 | `external_refs` | Calls from indexed symbols to external names not in the index. |

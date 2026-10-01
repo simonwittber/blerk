@@ -93,12 +93,16 @@ CREATE INDEX IF NOT EXISTS idx_symbols_kind_param_count ON symbols(kind, param_c
 CREATE INDEX IF NOT EXISTS idx_symbols_kind_nesting ON symbols(kind, nesting_depth);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind_file ON symbols(kind, file_id);
 
+-- input_hash is a hash of the full text that was embedded: code plus description, callers, callees and path.
+-- content_hash covers only the code, so on its own it could not tell that a description arriving later
+-- had changed what should be embedded, and every re-embed was skipped.
 CREATE TABLE IF NOT EXISTS embeddings (
     id           INTEGER PRIMARY KEY,
     content_hash TEXT    NOT NULL,
     model        TEXT    NOT NULL,
     vector       BLOB    NOT NULL,
-    embedded_at  INTEGER NOT NULL
+    embedded_at  INTEGER NOT NULL,
+    input_hash   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS symbol_queue (
@@ -262,11 +266,26 @@ END;
 -- A field is a one-line declaration, so a generated sentence about it adds nothing its name does not already say,
 -- and asking a model to describe one reliably produces padding that then pollutes the embedding text.
 -- The unfiltered version of this trigger queued every block, which was 41,410 rows where 12,951 were wanted.
+-- One description per symbol, so only block 0 is queued.
+-- A long method is split into several code blocks for embedding, and describing each one produced
+-- several near-identical descriptions of the whole method; the embedder now uses the symbol's description for every block.
 DROP TRIGGER IF EXISTS code_blocks_describe_insert;
+DROP TRIGGER IF EXISTS code_blocks_describe_fn_insert;
 
-CREATE TRIGGER IF NOT EXISTS code_blocks_describe_fn_insert
+-- A description is part of the embedding input, and the describer finishes long after the embedder.
+-- Without this, every vector was built before its description existed and never rebuilt.
+CREATE TRIGGER IF NOT EXISTS symbols_description_reembed
+AFTER UPDATE OF description ON symbols
+WHEN NEW.description IS NOT OLD.description
+BEGIN
+    INSERT INTO code_block_embed_queue(block_id)
+    SELECT id FROM code_blocks WHERE symbol_id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS code_blocks_describe_symbol_insert
 AFTER INSERT ON code_blocks
-WHEN (SELECT kind FROM symbols WHERE id = NEW.symbol_id) IN ('function', 'method')
+WHEN NEW.block_index = 0
+ AND (SELECT kind FROM symbols WHERE id = NEW.symbol_id) IN ('function', 'method')
 BEGIN
     INSERT INTO code_block_describe_queue(block_id) VALUES (NEW.id);
 END;
@@ -436,7 +455,7 @@ def open_db(path: str, init_schema: bool = True) -> sqlite3.Connection:
     return conn
 
 
-_CURRENT_VERSION = 21
+_CURRENT_VERSION = 22
 
 
 def _get_version(conn: sqlite3.Connection) -> int:
@@ -457,6 +476,12 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     version = _get_version(conn)
     if version == 0:
         _set_version(conn, _CURRENT_VERSION)
+    elif version == 21:
+        # v22: embeddings.input_hash. Existing rows keep NULL, so their next embed pass rebuilds them.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(embeddings)")}
+        if "input_hash" not in cols:
+            conn.execute("ALTER TABLE embeddings ADD COLUMN input_hash TEXT")
+        _set_version(conn, 22)
     elif version < _CURRENT_VERSION:
         raise RuntimeError(
             f"Database schema version {version} is too old to migrate automatically. "
